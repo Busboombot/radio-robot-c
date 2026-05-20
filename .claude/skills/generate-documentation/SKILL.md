@@ -1,0 +1,1 @@
+/Volumes/Proj/proj/RobotProjects/radio-robot-c/.agents/skills/generate-documentation/SKILL.md
