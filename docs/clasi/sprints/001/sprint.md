@@ -1,11 +1,11 @@
 ---
-id: '001'
-title: HAL Layer and Project Skeleton
-status: planning-docs
+id: "001"
+title: "HAL Layer and Project Skeleton"
+status: open
 branch: sprint/001-hal-layer-and-project-skeleton
 use-cases: []
 issues:
-- plan-c-port-of-radio-robot-firmware
+  - plan-c-port-of-radio-robot-firmware
 ---
 <!-- CLASI: Before changing code or making plans, review the SE process in CLAUDE.md -->
 
@@ -118,11 +118,5 @@ Before tickets can be created, all of the following must be true:
 
 | # | Title | Depends On |
 |---|-------|------------|
-| 001 | Create shared type headers Config.h and Protocol.h | — |
-| 002 | Implement NezhaV2 HAL driver (I2C motor and encoder) | 001 |
-| 003 | Implement SerialPort and Radio HAL drivers | 001 |
-| 004 | Implement sensor HAL drivers (OtosSensor, LineSensor, ColorSensor, GripperServo, PortIO) | 001, 002 |
-| 005 | Implement Announcer, Robot skeleton, and replacement main.cpp | 002, 003, 004 |
-| 006 | Build verification — run python build.py and fix all compile errors | 005 |
 
 Tickets execute serially in the order listed.
