@@ -10,6 +10,9 @@
 #include "SerialPort.h"
 #include "Radio.h"
 #include "Announcer.h"
+#include "MotorController.h"
+#include "Odometry.h"
+#include "CommandProcessor.h"
 
 /**
  * Robot — top-level object that owns all firmware subsystems.
@@ -48,6 +51,11 @@ private:
     GripperServo _gripper;
     bool         _gripperPresent;
     PortIO       _portio;
+
+    // Control layer — declared after _motor and _cal to ensure correct init order.
+    MotorController  _mc;
+    Odometry         _odo;
+    CommandProcessor _cmd;
 
     char _buf[128];  // shared tick-loop scratch buffer
 };

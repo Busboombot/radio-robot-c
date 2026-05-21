@@ -1,5 +1,13 @@
 #include "Robot.h"
 
+static void serialReply(const char* msg, void* ctx) {
+    static_cast<SerialPort*>(ctx)->send(msg);
+}
+
+static void radioReply(const char* msg, void* ctx) {
+    static_cast<Radio*>(ctx)->send(msg);
+}
+
 Robot::Robot()
     : uBit(),
       _motor(uBit.i2c),
@@ -15,7 +23,10 @@ Robot::Robot()
       _colorPresent(false),
       _gripper(uBit.io.P1),
       _gripperPresent(false),
-      _portio(uBit.io)
+      _portio(uBit.io),
+      _mc(_motor, _cal),
+      _odo(),
+      _cmd()
 {
     // uBit.init() MUST be called before any subsystem initialization.
     // Member initialization above only stores references — actual I2C
@@ -35,6 +46,14 @@ Robot::Robot()
 
     // Emit initial announcement so the host can detect the device.
     _announcer.announce();
+
+    // Wire hardware pointers into the command processor.
+    _cmd.init(&_motor, &_mc, &_odo,
+              _otosPresent ? &_otos : nullptr,
+              _linePresent ? &_line : nullptr,
+              _colorPresent ? &_color : nullptr,
+              _gripperPresent ? &_gripper : nullptr,
+              &_portio);
 }
 
 void Robot::run() {
@@ -42,15 +61,15 @@ void Robot::run() {
     while (true) {
         while (_serial.readLine(_buf, sizeof(_buf))) {
             if (!_announcer.handle(_buf)) {
-                // sprint 2: _cmd.dispatch(_buf, ...)
+                _cmd.process(_buf, serialReply, &_serial);
             }
         }
         while (_radio.poll(_buf, sizeof(_buf), isRelayed)) {
             if (!_announcer.handle(_buf)) {
-                // sprint 2: _cmd.dispatch(_buf, ...)
+                _cmd.process(_buf, radioReply, &_radio);
             }
         }
-        // sprint 2+: _cmd.tick()
+        _cmd.tick(uBit.systemTime(), serialReply, &_serial);
         uBit.sleep(20);
     }
 }
