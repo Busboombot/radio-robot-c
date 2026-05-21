@@ -1,11 +1,12 @@
 ---
-id: "002"
-title: "Build verification and deploy"
-status: open
+id: '002'
+title: Build verification and deploy
+status: done
 use-cases: []
-depends-on: ["001"]
-github-issue: ""
-issue: ""
+depends-on:
+- '001'
+github-issue: ''
+issue: ''
 completes_issue: true
 ---
 <!-- CLASI: Before changing code or making plans, review the SE process in CLAUDE.md -->
@@ -97,8 +98,8 @@ separately (`chore: bump version`), per the git rules.
 
 ## Acceptance Criteria
 
-- [ ] `python build.py` exits with no errors and no warnings
-- [ ] Firmware deployed to robot micro:bit via `python scripts/deploy.py --usb-mount "/Volumes/MICROBIT 1"`
+- [x] `python build.py` exits with no errors and no warnings
+- [x] Firmware deployed to robot micro:bit via `python scripts/deploy.py --usb-mount "/Volumes/MICROBIT 1"`
 - [ ] `OI` → "ACK:OI" verified on hardware
 - [ ] `OP` returns a pose reply (not a crash or ERR) when OTOS is connected
 - [ ] `LS` returns 4 sensor values
@@ -108,5 +109,5 @@ separately (`chore: bump version`), per the git rules.
 - [ ] `P+1+1` and `P+1` work for digital port
 - [ ] `PA+1` returns an analog reading
 - [ ] `K` still returns calibration dump (no regression)
-- [ ] Changes committed on the sprint branch with ticket reference in commit message
+- [x] Changes committed on the sprint branch with ticket reference in commit message
 - [ ] `dotconfig version bump` run and committed after the main commit
