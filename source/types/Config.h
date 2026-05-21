@@ -36,8 +36,8 @@ inline CalibParams defaultCalibParams() {
     p.ratioPidKi      = 0.0f;
     p.ratioPidKd      = 0.0f;
     p.ratioPidMax     = 30.0f;
-    p.turnThresholdMm = 5.0f;
-    p.doneTolMm       = 3.0f;
+    p.turnThresholdMm = 50.0f;
+    p.doneTolMm       = 5.0f;
     return p;
 }
 
