@@ -1,14 +1,11 @@
-#include "MicroBit.h"
-#include "samples/Tests.h"
+#include "Robot.h"
 
-MicroBit uBit;
+// MicroBit uBit singleton lives inside Robot as its first member.
+// There is no global uBit here — it is encapsulated in the Robot class
+// to guarantee correct construction order for all subsystems.
+static Robot robot;
 
-int main()
-{
-    uBit.init();
-
-    out_of_box_experience();
-
-    microbit_panic( 999 );
+int main() {
+    robot.run();
+    return 0;
 }
-
