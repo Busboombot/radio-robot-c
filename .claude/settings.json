@@ -1,4 +1,11 @@
 {
+  "permissions": {
+    "allow": [
+      "Read(//Volumes/Proj/proj/league-projects/scratch/radio-robot/.clasi/issues/**)",
+      "Bash(find /Volumes/Proj/proj/league-projects/scratch/radio-robot/.clasi -name \"*.md\" | head -20)",
+      "Read(//Volumes/Proj/proj/league-projects/scratch/radio-robot/.clasi/**)"
+    ]
+  },
   "hooks": {
     "UserPromptSubmit": [
       {
