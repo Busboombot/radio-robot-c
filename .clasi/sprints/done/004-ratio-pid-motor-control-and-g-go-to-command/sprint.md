@@ -1,12 +1,12 @@
 ---
-id: "004"
-title: "Ratio PID Motor Control and G Go-To Command"
-status: open
+id: '004'
+title: Ratio PID Motor Control and G Go-To Command
+status: done
 branch: sprint/004-ratio-pid-motor-control-and-g-go-to-command
 use-cases: []
 issues:
-  - nezha-ratio-pid-algorithm
-  - firmware-ratio-pid-and-g-command
+- nezha-ratio-pid-algorithm
+- firmware-ratio-pid-and-g-command
 ---
 <!-- CLASI: Before changing code or making plans, review the SE process in CLAUDE.md -->
 
@@ -160,5 +160,9 @@ Before tickets can be created, all of the following must be true:
 
 | # | Title | Depends On |
 |---|-------|------------|
+| 001 | Add ratio PID params to Config.h and create RatioPidController | — |
+| 002 | Replace MotorController tick body with ratio PID algorithm | 001 |
+| 003 | Add computeArc and G go-to command to CommandProcessor | 001, 002 |
+| 004 | Build verification and deploy | 003 |
 
 Tickets execute serially in the order listed.
