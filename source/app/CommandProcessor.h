@@ -1,5 +1,6 @@
 #pragma once
 #include <stdint.h>
+#include <math.h>
 #include "Config.h"
 #include "NezhaV2.h"
 #include "MotorController.h"
@@ -54,6 +55,9 @@ public:
               GripperServo*    gripper,
               PortIO*          portio);
 
+    // Set live calibration params pointer (call after init, from Robot.cpp).
+    void setCalib(CalibParams* cal);
+
     // Parse and dispatch one command line. line must be NUL-terminated.
     // Calls replyFn(msg, ctx) for each response line.
     void process(const char* line, ReplyFn replyFn, void* ctx);
@@ -73,6 +77,7 @@ private:
     ColorSensor*     _color;
     GripperServo*    _gripper;
     PortIO*          _portio;
+    CalibParams*     _cal;
 
     // Drive mode state
     DriveMode _mode;
@@ -88,6 +93,17 @@ private:
     int32_t   _dEncStartR;
     int32_t   _dTargetMm;
     uint32_t  _dTimeoutMs;
+
+    // G go-to state machine
+    enum class GPhase { IDLE, PRE_ROTATE, ARC };
+    GPhase    _gPhase;
+    float     _gTargetX;
+    float     _gTargetY;
+    float     _gSpeed;
+    float     _gArcLeftMm;
+    float     _gArcRightMm;
+    float     _gArcStartL;
+    float     _gArcStartR;
 
     // Streaming state
     int32_t   _encTickCount;  // counts up to encReportEvery
@@ -109,6 +125,8 @@ private:
     static int  parseSignedArgs(const char* s, int32_t* out, int maxArgs);
     static int  clampInt(int v, int lo, int hi);
     static int  clampMinSpeed(int mms, int minSpeedMms);
+    static void computeArc(float tx, float ty, float trackwidthMm,
+                           float& leftMm, float& rightMm);
     void        fullStop(ReplyFn replyFn, void* ctx);
     void        reportEncoders(ReplyFn replyFn, void* ctx);
     void        reportOdo(ReplyFn replyFn, void* ctx);

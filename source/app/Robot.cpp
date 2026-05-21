@@ -54,6 +54,7 @@ Robot::Robot()
               _colorPresent ? &_color : nullptr,
               _gripperPresent ? &_gripper : nullptr,
               &_portio);
+    _cmd.setCalib(&_cal);
 }
 
 void Robot::run() {

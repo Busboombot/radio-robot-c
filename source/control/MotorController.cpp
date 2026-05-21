@@ -92,6 +92,11 @@ void MotorController::resetIntegrators()
     _pid.reset();
 }
 
+void MotorController::updatePidGains(float kP, float kI, float kD, float iClamp)
+{
+    _pid.updateGains(kP, kI, kD, iClamp);
+}
+
 void MotorController::tick(float dt_s)
 {
     if (dt_s <= 0.0f) return;

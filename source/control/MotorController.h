@@ -50,6 +50,9 @@ public:
     // Reset integrators only (called by CommandProcessor on mode change).
     void resetIntegrators();
 
+    // Update PID gains at runtime (called by K-command setters).
+    void updatePidGains(float kP, float kI, float kD, float iClamp);
+
     // Run one control tick. dt_s is elapsed seconds since last tick.
     // Reads encoders, runs ratio PID + FF, clamps output, calls NezhaV2::setPwm().
     void tick(float dt_s);

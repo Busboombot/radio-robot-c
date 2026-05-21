@@ -29,6 +29,7 @@ CommandProcessor::CommandProcessor()
     , _color(nullptr)
     , _gripper(nullptr)
     , _portio(nullptr)
+    , _cal(nullptr)
     , _mode(DriveMode::IDLE)
     , _lastSMs(0)
     , _tgtL(0.0f)
@@ -38,6 +39,14 @@ CommandProcessor::CommandProcessor()
     , _dEncStartR(0)
     , _dTargetMm(0)
     , _dTimeoutMs(0)
+    , _gPhase(GPhase::IDLE)
+    , _gTargetX(0.0f)
+    , _gTargetY(0.0f)
+    , _gSpeed(0.0f)
+    , _gArcLeftMm(0.0f)
+    , _gArcRightMm(0.0f)
+    , _gArcStartL(0.0f)
+    , _gArcStartR(0.0f)
     , _encTickCount(0)
     , _lastTickMs(0)
     , _currentTimeMs(0)
@@ -77,6 +86,11 @@ void CommandProcessor::init(NezhaV2*         motor,
     _color   = color;
     _gripper = gripper;
     _portio  = portio;
+}
+
+void CommandProcessor::setCalib(CalibParams* cal)
+{
+    _cal = cal;
 }
 
 // ---------------------------------------------------------------------------
@@ -130,6 +144,32 @@ int CommandProcessor::clampMinSpeed(int mms, int minSpeedMms)
     if (mms > 0 && mms < minSpeedMms) return minSpeedMms;
     if (mms < 0 && mms > -minSpeedMms) return -minSpeedMms;
     return mms;
+}
+
+/**
+ * Compute differential arc wheel distances for a relative XY target.
+ * Robot starts at (0,0,0). Heading=0 is forward (+X direction).
+ *
+ * @param tx           Target X in mm (forward from robot)
+ * @param ty           Target Y in mm (left from robot)
+ * @param trackwidthMm Distance between wheel contact patches in mm
+ * @param leftMm       Output: left wheel distance in mm (signed)
+ * @param rightMm      Output: right wheel distance in mm (signed)
+ */
+void CommandProcessor::computeArc(float tx, float ty, float trackwidthMm,
+                                   float& leftMm, float& rightMm)
+{
+    float W = trackwidthMm;
+    // Special case: ty == 0 means straight ahead
+    if (fabsf(ty) < 0.001f) {
+        leftMm  = tx;
+        rightMm = tx;
+        return;
+    }
+    float R     = (tx * tx + ty * ty) / (2.0f * ty);
+    float alpha = atan2f(ty, tx + R);
+    leftMm  = (R - W / 2.0f) * alpha;
+    rightMm = (R + W / 2.0f) * alpha;
 }
 
 // ---------------------------------------------------------------------------
@@ -208,9 +248,7 @@ void CommandProcessor::process(const char* line, ReplyFn replyFn, void* ctx)
         int leftMms  = clampMinSpeed((int)args[0], (int)params.minSpeedMms);
         int rightMms = clampMinSpeed((int)args[1], (int)params.minSpeedMms);
 
-        if (_mode != DriveMode::STREAMING) {
-            _mc->resetIntegrators();
-        }
+        _mc->startDrive((float)leftMms, (float)rightMms);
         _mc->setTarget((float)leftMms, (float)rightMms);
         _tgtL    = (float)leftMms;
         _tgtR    = (float)rightMms;
@@ -237,7 +275,7 @@ void CommandProcessor::process(const char* line, ReplyFn replyFn, void* ctx)
         int rightMms   = (int)args[1];
         int durationMs = clampInt((int)args[2], 1, 5000);
 
-        _mc->resetIntegrators();
+        _mc->startDriveClean((float)leftMms, (float)rightMms);
         _mc->setTarget((float)leftMms, (float)rightMms);
         _tgtL   = (float)leftMms;
         _tgtR   = (float)rightMms;
@@ -265,7 +303,7 @@ void CommandProcessor::process(const char* line, ReplyFn replyFn, void* ctx)
         int targetMm = abs((int)args[2]);
         if (targetMm < 1) targetMm = 1;
 
-        _mc->resetIntegrators();
+        _mc->startDriveClean((float)leftMms, (float)rightMms);
         _mc->setTarget((float)leftMms, (float)rightMms);
         _tgtL = (float)leftMms;
         _tgtR = (float)rightMms;
@@ -334,23 +372,9 @@ void CommandProcessor::process(const char* line, ReplyFn replyFn, void* ctx)
             replyFn(kbuf, ctx);
             snprintf(kbuf, sizeof(kbuf), "K:KMR:%+d", (int)(params.mmPerDegR * 1000.0f + 0.5f));
             replyFn(kbuf, ctx);
-            if (_mc) {
-                snprintf(kbuf, sizeof(kbuf), "K:KFF:%+d", (int)(_mc->gains.kFF * 1000.0f + 0.5f));
+            if (_cal) {
+                snprintf(kbuf, sizeof(kbuf), "K:KFF:%+d", (int)(_cal->kFF * 1000.0f + 0.5f));
                 replyFn(kbuf, ctx);
-                snprintf(kbuf, sizeof(kbuf), "K:KSP:%+d", (int)(_mc->gains.kP * 1000.0f + 0.5f));
-                replyFn(kbuf, ctx);
-                snprintf(kbuf, sizeof(kbuf), "K:KSI:%+d", (int)(_mc->gains.kI * 1000.0f + 0.5f));
-                replyFn(kbuf, ctx);
-                snprintf(kbuf, sizeof(kbuf), "K:KIC:%+d", (int)(_mc->gains.iClamp));
-                replyFn(kbuf, ctx);
-                snprintf(kbuf, sizeof(kbuf), "K:KSR:%+d", (int)(_mc->gains.kRatio * 1000.0f + 0.5f));
-                replyFn(kbuf, ctx);
-            } else {
-                replyFn("K:KFF:+150", ctx);
-                replyFn("K:KSP:+50", ctx);
-                replyFn("K:KSI:+200", ctx);
-                replyFn("K:KIC:+60", ctx);
-                replyFn("K:KSR:+10", ctx);
             }
             snprintf(kbuf, sizeof(kbuf), "K:KSM:%+d", (int)params.minSpeedMms);
             replyFn(kbuf, ctx);
@@ -364,6 +388,34 @@ void CommandProcessor::process(const char* line, ReplyFn replyFn, void* ctx)
             replyFn(kbuf, ctx);
             snprintf(kbuf, sizeof(kbuf), "K:KST:%+d", (int)(params.turnScale * 100.0f + 0.5f));
             replyFn(kbuf, ctx);
+            if (_cal) {
+                snprintf(kbuf, sizeof(kbuf), "K:KLF:%+d", (int)(_cal->kScaleLF * 1000.0f + 0.5f));
+                replyFn(kbuf, ctx);
+                snprintf(kbuf, sizeof(kbuf), "K:KLB:%+d", (int)(_cal->kScaleLB * 1000.0f + 0.5f));
+                replyFn(kbuf, ctx);
+                snprintf(kbuf, sizeof(kbuf), "K:KRF:%+d", (int)(_cal->kScaleRF * 1000.0f + 0.5f));
+                replyFn(kbuf, ctx);
+                snprintf(kbuf, sizeof(kbuf), "K:KRB:%+d", (int)(_cal->kScaleRB * 1000.0f + 0.5f));
+                replyFn(kbuf, ctx);
+                snprintf(kbuf, sizeof(kbuf), "K:KCP:%+d", (int)(_cal->ratioPidKp * 10.0f + 0.5f));
+                replyFn(kbuf, ctx);
+                snprintf(kbuf, sizeof(kbuf), "K:KCI:%+d", (int)(_cal->ratioPidKi * 1000.0f + 0.5f));
+                replyFn(kbuf, ctx);
+                snprintf(kbuf, sizeof(kbuf), "K:KCD:%+d", (int)(_cal->ratioPidKd * 1000.0f + 0.5f));
+                replyFn(kbuf, ctx);
+                snprintf(kbuf, sizeof(kbuf), "K:KCC:%+d", (int)(_cal->ratioPidMax));
+                replyFn(kbuf, ctx);
+                snprintf(kbuf, sizeof(kbuf), "K:KAT:%+d", (int)(_cal->kAdjThreshold * 1000.0f + 0.5f));
+                replyFn(kbuf, ctx);
+                snprintf(kbuf, sizeof(kbuf), "K:KAG:%+d", (int)(_cal->kAdjGain * 1000.0f + 0.5f));
+                replyFn(kbuf, ctx);
+                snprintf(kbuf, sizeof(kbuf), "K:KTW:%+d", (int)(_cal->trackwidthMm));
+                replyFn(kbuf, ctx);
+                snprintf(kbuf, sizeof(kbuf), "K:KGT:%+d", (int)(_cal->turnThresholdMm));
+                replyFn(kbuf, ctx);
+                snprintf(kbuf, sizeof(kbuf), "K:KGD:%+d", (int)(_cal->doneTolMm));
+                replyFn(kbuf, ctx);
+            }
             return;
         }
 
@@ -394,36 +446,81 @@ void CommandProcessor::process(const char* line, ReplyFn replyFn, void* ctx)
                 replyFn(reply, ctx);
                 return;
             }
-            if (_mc) {
+            if (_cal) {
                 if (memcmp(key, "FF", 2) == 0) {
-                    _mc->gains.kFF = v / 1000.0f;
-                    snprintf(reply, sizeof(reply), "ACK:KFF %d", (int)(_mc->gains.kFF * 1000.0f + 0.5f));
+                    _cal->kFF = v / 1000.0f;
+                    snprintf(reply, sizeof(reply), "ACK:KFF %d", (int)(_cal->kFF * 1000.0f + 0.5f));
                     replyFn(reply, ctx);
                     return;
                 }
-                if (memcmp(key, "SP", 2) == 0) {
-                    _mc->gains.kP = v / 1000.0f;
-                    snprintf(reply, sizeof(reply), "ACK:KSP %d", (int)(_mc->gains.kP * 1000.0f + 0.5f));
-                    replyFn(reply, ctx);
-                    return;
+                if (memcmp(key, "LF", 2) == 0) {
+                    _cal->kScaleLF = v / 1000.0f;
+                    snprintf(reply, sizeof(reply), "ACK:KLF %d", (int)(_cal->kScaleLF * 1000.0f + 0.5f));
+                    replyFn(reply, ctx); return;
                 }
-                if (memcmp(key, "SI", 2) == 0) {
-                    _mc->gains.kI = v / 1000.0f;
-                    snprintf(reply, sizeof(reply), "ACK:KSI %d", (int)(_mc->gains.kI * 1000.0f + 0.5f));
-                    replyFn(reply, ctx);
-                    return;
+                if (memcmp(key, "LB", 2) == 0) {
+                    _cal->kScaleLB = v / 1000.0f;
+                    snprintf(reply, sizeof(reply), "ACK:KLB %d", (int)(_cal->kScaleLB * 1000.0f + 0.5f));
+                    replyFn(reply, ctx); return;
                 }
-                if (memcmp(key, "IC", 2) == 0) {
-                    _mc->gains.iClamp = (float)v;
-                    snprintf(reply, sizeof(reply), "ACK:KIC %d", (int)_mc->gains.iClamp);
-                    replyFn(reply, ctx);
-                    return;
+                if (memcmp(key, "RF", 2) == 0) {
+                    _cal->kScaleRF = v / 1000.0f;
+                    snprintf(reply, sizeof(reply), "ACK:KRF %d", (int)(_cal->kScaleRF * 1000.0f + 0.5f));
+                    replyFn(reply, ctx); return;
                 }
-                if (memcmp(key, "SR", 2) == 0) {
-                    _mc->gains.kRatio = v / 1000.0f;
-                    snprintf(reply, sizeof(reply), "ACK:KSR %d", (int)(_mc->gains.kRatio * 1000.0f + 0.5f));
-                    replyFn(reply, ctx);
-                    return;
+                if (memcmp(key, "RB", 2) == 0) {
+                    _cal->kScaleRB = v / 1000.0f;
+                    snprintf(reply, sizeof(reply), "ACK:KRB %d", (int)(_cal->kScaleRB * 1000.0f + 0.5f));
+                    replyFn(reply, ctx); return;
+                }
+                if (memcmp(key, "CP", 2) == 0) {
+                    _cal->ratioPidKp = v / 10.0f;
+                    if (_mc) _mc->updatePidGains(_cal->ratioPidKp, _cal->ratioPidKi, _cal->ratioPidKd, _cal->ratioPidMax);
+                    snprintf(reply, sizeof(reply), "ACK:KCP %d", (int)(_cal->ratioPidKp * 10.0f + 0.5f));
+                    replyFn(reply, ctx); return;
+                }
+                if (memcmp(key, "CI", 2) == 0) {
+                    _cal->ratioPidKi = v / 1000.0f;
+                    if (_mc) _mc->updatePidGains(_cal->ratioPidKp, _cal->ratioPidKi, _cal->ratioPidKd, _cal->ratioPidMax);
+                    snprintf(reply, sizeof(reply), "ACK:KCI %d", (int)(_cal->ratioPidKi * 1000.0f + 0.5f));
+                    replyFn(reply, ctx); return;
+                }
+                if (memcmp(key, "CD", 2) == 0) {
+                    _cal->ratioPidKd = v / 1000.0f;
+                    if (_mc) _mc->updatePidGains(_cal->ratioPidKp, _cal->ratioPidKi, _cal->ratioPidKd, _cal->ratioPidMax);
+                    snprintf(reply, sizeof(reply), "ACK:KCD %d", (int)(_cal->ratioPidKd * 1000.0f + 0.5f));
+                    replyFn(reply, ctx); return;
+                }
+                if (memcmp(key, "CC", 2) == 0) {
+                    _cal->ratioPidMax = (float)v;
+                    if (_mc) _mc->updatePidGains(_cal->ratioPidKp, _cal->ratioPidKi, _cal->ratioPidKd, _cal->ratioPidMax);
+                    snprintf(reply, sizeof(reply), "ACK:KCC %d", (int)_cal->ratioPidMax);
+                    replyFn(reply, ctx); return;
+                }
+                if (memcmp(key, "AT", 2) == 0) {
+                    _cal->kAdjThreshold = v / 1000.0f;
+                    snprintf(reply, sizeof(reply), "ACK:KAT %d", (int)(_cal->kAdjThreshold * 1000.0f + 0.5f));
+                    replyFn(reply, ctx); return;
+                }
+                if (memcmp(key, "AG", 2) == 0) {
+                    _cal->kAdjGain = v / 1000.0f;
+                    snprintf(reply, sizeof(reply), "ACK:KAG %d", (int)(_cal->kAdjGain * 1000.0f + 0.5f));
+                    replyFn(reply, ctx); return;
+                }
+                if (memcmp(key, "TW", 2) == 0) {
+                    _cal->trackwidthMm = (float)v;
+                    snprintf(reply, sizeof(reply), "ACK:KTW %d", (int)_cal->trackwidthMm);
+                    replyFn(reply, ctx); return;
+                }
+                if (memcmp(key, "GT", 2) == 0) {
+                    _cal->turnThresholdMm = (float)v;
+                    snprintf(reply, sizeof(reply), "ACK:KGT %d", (int)_cal->turnThresholdMm);
+                    replyFn(reply, ctx); return;
+                }
+                if (memcmp(key, "GD", 2) == 0) {
+                    _cal->doneTolMm = (float)v;
+                    snprintf(reply, sizeof(reply), "ACK:KGD %d", (int)_cal->doneTolMm);
+                    replyFn(reply, ctx); return;
                 }
             }
             if (memcmp(key, "SM", 2) == 0) {
@@ -635,27 +732,93 @@ void CommandProcessor::process(const char* line, ReplyFn replyFn, void* ctx)
         return;
     }
 
-    // ── G — gripper ────────────────────────────────────────────────────────
+    // ── G — go-to XY or gripper ─────────────────────────────────────────────
     if (buf[0] == 'G' && (len == 1 || buf[1] == '+' || buf[1] == '-')) {
-        if (len == 1) {
-            // Query current angle
-            if (!_gripper) { replyFn("ERR:G", ctx); return; }
-            char r[16];
-            snprintf(r, sizeof(r), "G%+d", (int)_currentGripperAngle);
-            replyFn(r, ctx);
-        } else {
-            // Set angle
-            int32_t args[1] = {0};
-            int n = parseSignedArgs(buf + 1, args, 1);
-            if (n < 1) { replyFn("ERR:G", ctx); return; }
-            if (!_gripper) { replyFn("ERR:G", ctx); return; }
-            int deg = clampInt((int)args[0], 0, 180);
-            _gripper->setAngle((uint8_t)deg);
-            _currentGripperAngle = deg;
-            char r[24];
-            snprintf(r, sizeof(r), "ACK:G %d", deg);
-            replyFn(r, ctx);
+        int32_t args[3] = {0, 0, 0};
+        int n = (len > 1) ? parseSignedArgs(buf + 1, args, 3) : 0;
+
+        if (n == 3) {
+            // G+X+Y+Speed — go-to command
+            float tx    = (float)args[0];
+            float ty    = (float)args[1];
+            float speed = fabsf((float)args[2]);
+            if (speed < 1.0f) speed = 1.0f;
+
+            _gTargetX = tx;
+            _gTargetY = ty;
+            _gSpeed   = speed;
+
+            float angleRad = atan2f(ty, tx);
+            float kgt = _cal ? _cal->turnThresholdMm : 50.0f;  // degrees threshold
+            float angleDeg = angleRad * 57.2957795f;            // radians to degrees
+
+            if (fabsf(angleDeg) > kgt) {
+                // Pre-rotate phase: rotate in place to face target
+                float turnSign = (ty >= 0.0f) ? 1.0f : -1.0f;
+                _mc->startDriveClean(-turnSign * speed, turnSign * speed);
+                _mc->setTarget(-turnSign * speed, turnSign * speed);
+                _tgtL = -turnSign * speed;
+                _tgtR =  turnSign * speed;
+                // Compute how far to turn: arc length = (trackwidth/2) * |angleRad|
+                float tw = _cal ? _cal->trackwidthMm : 120.0f;
+                _gArcLeftMm  = -turnSign * (tw / 2.0f) * fabsf(angleRad);
+                _gArcRightMm =  turnSign * (tw / 2.0f) * fabsf(angleRad);
+                int32_t el, er;
+                _mc->getEncoderPositions(el, er);
+                _gArcStartL = (float)el;
+                _gArcStartR = (float)er;
+                _gPhase = GPhase::PRE_ROTATE;
+                _mode = DriveMode::GO_TO;
+            } else {
+                // Arc phase directly (shallow angle)
+                float tw = _cal ? _cal->trackwidthMm : 120.0f;
+                computeArc(tx, ty, tw, _gArcLeftMm, _gArcRightMm);
+                // Scale arc distances to speed ratio
+                float maxArc = fmaxf(fabsf(_gArcLeftMm), fabsf(_gArcRightMm));
+                float leftSpd  = (maxArc > 0.001f) ? (speed * _gArcLeftMm  / maxArc) : speed;
+                float rightSpd = (maxArc > 0.001f) ? (speed * _gArcRightMm / maxArc) : speed;
+                _mc->startDriveClean(leftSpd, rightSpd);
+                _mc->setTarget(leftSpd, rightSpd);
+                _tgtL = leftSpd;
+                _tgtR = rightSpd;
+                int32_t el, er;
+                _mc->getEncoderPositions(el, er);
+                _gArcStartL = (float)el;
+                _gArcStartR = (float)er;
+                _gPhase = GPhase::ARC;
+                _mode = DriveMode::GO_TO;
+            }
+
+            char reply[48];
+            snprintf(reply, sizeof(reply), "ACK:G %d %d %d",
+                     (int)tx, (int)ty, (int)speed);
+            replyFn(reply, ctx);
+            return;
         }
+
+        if (n == 1 || n == 0) {
+            // Gripper backward-compat path
+            if (n == 0) {
+                if (!_gripper) { replyFn("ERR:G", ctx); return; }
+                char r[16];
+                snprintf(r, sizeof(r), "G%+d", (int)_currentGripperAngle);
+                replyFn(r, ctx);
+            } else {
+                if (!_gripper) { replyFn("ERR:G", ctx); return; }
+                int deg = clampInt((int)args[0], 0, 180);
+                _gripper->setAngle((uint8_t)deg);
+                _currentGripperAngle = deg;
+                char r[24];
+                snprintf(r, sizeof(r), "ACK:G %d", deg);
+                replyFn(r, ctx);
+            }
+            return;
+        }
+
+        // n == 2: unrecognized
+        char errbuf[140];
+        snprintf(errbuf, sizeof(errbuf), "ERR:%s", buf);
+        replyFn(errbuf, ctx);
         return;
     }
 
@@ -752,6 +915,49 @@ void CommandProcessor::tick(uint32_t now_ms, ReplyFn replyFn, void* ctx)
             fullStop(replyFn, ctx);
             reportOdo(replyFn, ctx);
             replyFn("ACK:D+DONE", ctx);
+        }
+    }
+
+    // G-mode: advance go-to state machine
+    if (_mode == DriveMode::GO_TO) {
+        int32_t el, er;
+        _mc->getEncoderPositions(el, er);
+        float kgd = _cal ? _cal->doneTolMm : 5.0f;
+
+        if (_gPhase == GPhase::PRE_ROTATE) {
+            // Check if pre-rotation is complete
+            float dL = fabsf((float)el - _gArcStartL);
+            float dR = fabsf((float)er - _gArcStartR);
+            float targetL = fabsf(_gArcLeftMm);
+            float targetR = fabsf(_gArcRightMm);
+            bool doneL = dL >= targetL - kgd;
+            bool doneR = dR >= targetR - kgd;
+            if (doneL && doneR) {
+                // Advance to arc phase
+                float tw = _cal ? _cal->trackwidthMm : 120.0f;
+                computeArc(_gTargetX, _gTargetY, tw, _gArcLeftMm, _gArcRightMm);
+                float maxArc = fmaxf(fabsf(_gArcLeftMm), fabsf(_gArcRightMm));
+                float leftSpd  = (maxArc > 0.001f) ? (_gSpeed * _gArcLeftMm  / maxArc) : _gSpeed;
+                float rightSpd = (maxArc > 0.001f) ? (_gSpeed * _gArcRightMm / maxArc) : _gSpeed;
+                _mc->startDriveClean(leftSpd, rightSpd);
+                _mc->setTarget(leftSpd, rightSpd);
+                _tgtL = leftSpd;
+                _tgtR = rightSpd;
+                _gArcStartL = (float)el;
+                _gArcStartR = (float)er;
+                _gPhase = GPhase::ARC;
+            }
+        } else if (_gPhase == GPhase::ARC) {
+            // Check if arc drive is complete
+            float dL = (float)el - _gArcStartL;
+            float dR = (float)er - _gArcStartR;
+            bool doneL = fabsf(dL - _gArcLeftMm)  <= kgd;
+            bool doneR = fabsf(dR - _gArcRightMm) <= kgd;
+            if (doneL && doneR) {
+                fullStop(replyFn, ctx);
+                _gPhase = GPhase::IDLE;
+                replyFn("G+DONE", ctx);
+            }
         }
     }
 

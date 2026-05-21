@@ -22,6 +22,10 @@ void RatioPidController::reset() {
     _firstCall = true;
 }
 
+void RatioPidController::updateGains(float kP, float kI, float kD, float iClamp) {
+    _kP = kP; _kI = kI; _kD = kD; _iClamp = iClamp;
+}
+
 float RatioPidController::clamp(float v, float lo, float hi) {
     return v < lo ? lo : (v > hi ? hi : v);
 }

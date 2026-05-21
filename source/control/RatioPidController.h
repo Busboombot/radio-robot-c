@@ -24,6 +24,9 @@ public:
     /** Reset integrator and derivative state. Call on new command start. */
     void reset();
 
+    /** Update PID gains at runtime (called by K-command setters). */
+    void updateGains(float kP, float kI, float kD, float iClamp);
+
     float integral;  // public — read by slower-wheel adjustment logic
 
 private:
