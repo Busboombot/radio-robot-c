@@ -2,13 +2,14 @@
 #include "MicroBit.h"
 #include "NezhaV2.h"
 #include "Config.h"
+#include "RatioPidController.h"
 
 /**
- * MotorController — PI + feed-forward wheel speed control.
+ * MotorController — cumulative-distance ratio PID wheel speed control.
  *
- * Owns two independent PI integrators (left, right) and a ratio
- * cross-coupling correction. Sprint 5 replaces the tick() body with
- * a ratio PID; callers in CommandProcessor are unchanged.
+ * Sprint 4 replaces the PI+FF tick() body with a ratio PID algorithm that
+ * tracks cumulative encoder distance since the command started and keeps
+ * the ratio of left:right distance equal to the ratio of commanded speeds.
  *
  * Thread safety: single-threaded tick loop only.
  */
@@ -29,16 +30,28 @@ public:
     // Set speed targets in mm/s. Zero both to coast (not brake).
     void setTarget(float leftMms, float rightMms);
 
-    // Stop: zero targets and reset integrators.
+    /**
+     * startDriveClean — used by T, D, and G commands.
+     * Full clean start: snapshot encoders, compute ratio, reset PID.
+     * Always call this when starting a new bounded command.
+     */
+    void startDriveClean(float leftMms, float rightMms);
+
+    /**
+     * startDrive — used by the S (streaming) command only.
+     * Re-seeds cmdEncStart to preserve accumulated ratio history across keepalive re-sends.
+     * Does NOT reset PID unless the faster/slower assignment changes.
+     */
+    void startDrive(float leftMms, float rightMms);
+
+    // Stop: zero targets, reset PID, and write zero PWM.
     void stop();
 
-    // Reset integrators only (called by CommandProcessor on mode change,
-    // NOT on S-command watchdog refresh — integrators survive keepalives).
+    // Reset integrators only (called by CommandProcessor on mode change).
     void resetIntegrators();
 
     // Run one control tick. dt_s is elapsed seconds since last tick.
-    // Reads encoders, runs PI+FF+ratio, clamps output, calls NezhaV2::setPwm().
-    // Sprint 5 replaces this body only.
+    // Reads encoders, runs ratio PID + FF, clamps output, calls NezhaV2::setPwm().
     void tick(float dt_s);
 
     // Read actual wheel velocities in mm/s (encoder delta since last tick).
@@ -54,10 +67,14 @@ private:
     NezhaV2&           _motor;
     const CalibParams& _cal;
 
-    float _targetL;    // mm/s
-    float _targetR;    // mm/s
-    float _integralL;  // PI integral accumulator, left wheel
-    float _integralR;  // PI integral accumulator, right wheel
+    // Ratio PID state
+    RatioPidController _pid;
+    float _cmdEncStartL;     // encoder mm snapshot at command start (left)
+    float _cmdEncStartR;     // encoder mm snapshot at command start (right)
+    float _cmdRatio;         // |fasterSpeed| / |slowerSpeed|, always >= 1.0
+    bool  _fasterIsRight;    // true if right wheel is the commanded-faster wheel
+    float _tgtLMms;          // current speed targets in mm/s
+    float _tgtRMms;
 
     // Cached encoder readings from the most recent tick() call.
     // Used to compute velocity and expose via getActualVelocity().
@@ -65,6 +82,9 @@ private:
     int32_t _prevEncR;
     float   _actualVelL; // mm/s computed in tick()
     float   _actualVelR;
+
+    // Read encoder and convert to mm.
+    float encoderMm(bool left);
 
     // clamp helper
     static float clamp(float v, float lo, float hi);
