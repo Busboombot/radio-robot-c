@@ -1,7 +1,7 @@
 ---
 id: '003'
-title: "cli.py, builder.py, and Unit Tests"
-status: open
+title: cli.py, builder.py, and Unit Tests
+status: done
 use-cases:
 - SUC-002
 - SUC-003
@@ -28,76 +28,76 @@ logic is tested without requiring connected hardware.
 
 ### `builder.py`
 
-- [ ] `builder.run(clean=False, verbose=False, jobs=None, build_cmd=None)` shells
+- [x] `builder.run(clean=False, verbose=False, jobs=None, build_cmd=None)` shells
   out to `python3 build.py` in CWD by default (or `build_cmd` if given), mapping
   `--clean`, `--verbose`, and `-j N` flags to the corresponding `build.py` CLI args.
-- [ ] Returns the subprocess exit code (not raising on failure).
-- [ ] Emits an informative error message if `build.py` is not found in CWD and no
+- [x] Returns the subprocess exit code (not raising on failure).
+- [x] Emits an informative error message if `build.py` is not found in CWD and no
   `--build-cmd` was given.
 
 ### `cli.py` — `build` subcommand
 
-- [ ] Calls `builder.run()` with the parsed flags.
-- [ ] Exits with the same code as the build subprocess.
+- [x] Calls `builder.run()` with the parsed flags.
+- [x] Exits with the same code as the build subprocess.
 
 ### `cli.py` — `list` subcommand
 
-- [ ] Calls `flashable_probes()` and `port_serial_map()` from `devices.py`.
-- [ ] Loads `config/devices.json` (via `load_devices`) for annotation.
-- [ ] Prints a table: enum (if known), UID, port, role, name. One row per probe.
-- [ ] Exits 0 even if no probes are found (prints empty table or "no devices found").
-- [ ] Does NOT write to `config/devices.json`.
+- [x] Calls `flashable_probes()` and `port_serial_map()` from `devices.py`.
+- [x] Loads `config/devices.json` (via `load_devices`) for annotation.
+- [x] Prints a table: enum (if known), UID, port, role, name. One row per probe.
+- [x] Exits 0 even if no probes are found (prints empty table or "no devices found").
+- [x] Does NOT write to `config/devices.json`.
 
 ### `cli.py` — `probe` subcommand
 
-- [ ] Calls `probe_all(config_path)` from `devices.py`.
-- [ ] Prints the updated table: enum, UID, port, role, name.
-- [ ] Exits 0.
+- [x] Calls `probe_all(config_path)` from `devices.py`.
+- [x] Prints the updated table: enum, UID, port, role, name.
+- [x] Exits 0.
 
 ### `cli.py` — `deploy` subcommand
 
-- [ ] If `[target]` is omitted, auto-picks the unique non-relay device from
+- [x] If `[target]` is omitted, auto-picks the unique non-relay device from
   `config/devices.json`; errors if zero or more than one non-relay device.
-- [ ] Resolves `[target]` via `resolve_target(token, devices)`.
-- [ ] Refuses if `is_relay(entry["role"])` unless `--force-relay` is given; exits
+- [x] Resolves `[target]` via `resolve_target(token, devices)`.
+- [x] Refuses if `is_relay(entry["role"])` unless `--force-relay` is given; exits
   non-zero with a clear error message.
-- [ ] Re-confirms the resolved UID is in the live `flashable_probes()` list; exits
+- [x] Re-confirms the resolved UID is in the live `flashable_probes()` list; exits
   non-zero with "device not connected: <uid>" if not found.
-- [ ] If `--build` is given, runs `builder.run()` first; stops if build fails.
-- [ ] Flashes via `pyocd flash -t <mcu> --uid <uid> <hex>` then
+- [x] If `--build` is given, runs `builder.run()` first; stops if build fails.
+- [x] Flashes via `pyocd flash -t <mcu> --uid <uid> <hex>` then
   `pyocd reset -t <mcu> --uid <uid>` using `subprocess.run`.
-- [ ] `--hex PATH` overrides the hex file path (default `MICROBIT.hex` in CWD).
-- [ ] `--target-mcu` overrides the MCU target (default `nrf52833`).
-- [ ] `--config PATH` overrides the registry path.
+- [x] `--hex PATH` overrides the hex file path (default `MICROBIT.hex` in CWD).
+- [x] `--target-mcu` overrides the MCU target (default `nrf52833`).
+- [x] `--config PATH` overrides the registry path.
 
 ### Unit Tests
 
 Tests must be written in `mbdeploy/tests/test_devices.py` (or `test_cli.py` if
 testing CLI argument parsing). All tests must pass without connected hardware.
 
-- [ ] **Relay refusal**: Monkeypatch `flashable_probes` to return one relay UID and
+- [x] **Relay refusal**: Monkeypatch `flashable_probes` to return one relay UID and
   `load_devices` to return a registry entry with relay role. Assert `deploy` exits
   non-zero when `--force-relay` is absent.
-- [ ] **Force relay override**: Same setup as above; `deploy --force-relay` proceeds
+- [x] **Force relay override**: Same setup as above; `deploy --force-relay` proceeds
   past the relay check (may fail later at pyocd step; test only the guard logic).
-- [ ] **Unique-device auto-pick**: Monkeypatch to return exactly one non-relay device
+- [x] **Unique-device auto-pick**: Monkeypatch to return exactly one non-relay device
   and one relay device. Assert auto-pick (no target arg) selects the non-relay device.
-- [ ] **Ambiguous auto-pick**: Two non-relay devices in registry + probes. Assert
+- [x] **Ambiguous auto-pick**: Two non-relay devices in registry + probes. Assert
   auto-pick errors with an ambiguous message.
-- [ ] **Target resolution — enum**: `resolve_target("1", devices)` where one entry has
+- [x] **Target resolution — enum**: `resolve_target("1", devices)` where one entry has
   `enum=1`. Returns the correct entry.
-- [ ] **Target resolution — path**: `resolve_target("/dev/cu.usbmodem123", devices)`
+- [x] **Target resolution — path**: `resolve_target("/dev/cu.usbmodem123", devices)`
   where one entry has `port="/dev/cu.usbmodem123"`. Returns the correct entry.
-- [ ] **Target resolution — UID**: `resolve_target("9906" + "a"*36, devices)` where
+- [x] **Target resolution — UID**: `resolve_target("9906" + "a"*36, devices)` where
   one entry has that UID. Returns the correct entry. (Use a 40-char hex string.)
-- [ ] **Target resolution — name via `common_name`**: `resolve_target("gutov", devices)`
+- [x] **Target resolution — name via `common_name`**: `resolve_target("gutov", devices)`
   where one entry has `common_name="gutov"`. Returns the correct entry.
-- [ ] **Target resolution — name via `device_name`**: `resolve_target("relay1", devices)`
+- [x] **Target resolution — name via `device_name`**: `resolve_target("relay1", devices)`
   where one entry has `device_name="relay1"` but `common_name="relay"`. Returns entry.
-- [ ] **Device not connected**: Monkeypatch `flashable_probes` to return empty list
+- [x] **Device not connected**: Monkeypatch `flashable_probes` to return empty list
   while registry has a known UID. Assert deploy exits non-zero with "device not
   connected" message.
-- [ ] **`is_relay` checks**: Unit test `is_relay` directly:
+- [x] **`is_relay` checks**: Unit test `is_relay` directly:
   - `is_relay("RADIOBRIDGE")` → True
   - `is_relay("RADIORELAY")` → True
   - `is_relay("Nezha2")` → False
