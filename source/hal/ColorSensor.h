@@ -21,6 +21,11 @@ public:
     // Fills r, g, b, c with 16-bit raw counts. Blocks up to ~250 ms.
     bool readRGBC(uint16_t& r, uint16_t& g, uint16_t& b, uint16_t& c);
 
+    // Non-blocking poll: returns true and fills outputs only if fresh data is
+    // available immediately. Returns false (does not block) if sensor is not ready.
+    // Use this in time-critical loops instead of readRGBC().
+    bool pollRGBC(uint16_t& r, uint16_t& g, uint16_t& b, uint16_t& c);
+
 private:
     MicroBitI2C& _i2c;
     bool _isAlt;

@@ -24,6 +24,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--console-key", default=None, help="Console auth key")
     parser.add_argument("--usb-mount", default=None, help="USB mount path")
     parser.add_argument("--timeout", type=int, default=30, help="HTTP timeout seconds")
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Flash even when device type can't be confirmed (never overrides "
+        "the radio-relay safety check)",
+    )
 
     return parser.parse_args()
 
@@ -52,6 +58,8 @@ def run_deploy(args: argparse.Namespace) -> int:
         cmd.extend(["--console-key", args.console_key])
     if args.usb_mount:
         cmd.extend(["--usb-mount", args.usb_mount])
+    if args.force:
+        cmd.append("--force")
     cmd.extend(["--timeout", str(args.timeout)])
 
     print("==> Running deploy")

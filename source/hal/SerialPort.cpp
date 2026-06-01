@@ -33,7 +33,7 @@ bool SerialPort::readLine(char* buf, uint16_t len) {
 }
 
 void SerialPort::send(const char* msg) {
-    _serial.send(ManagedString(msg));
+    _serial.send(ManagedString(msg) + ManagedString("\r\n"));
 }
 
 void SerialPort::sendf(const char* fmt, ...) {

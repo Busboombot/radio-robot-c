@@ -80,11 +80,12 @@ private:
     float _tgtRMms;
 
     // Cached encoder readings from the most recent tick() call.
-    // Used to compute velocity and expose via getActualVelocity().
     int32_t _prevEncL;   // mm at start of last tick
     int32_t _prevEncR;
     float   _actualVelL; // mm/s computed in tick()
     float   _actualVelR;
+    float   _encLMm;     // current encoder position (mm), updated in tick()
+    float   _encRMm;
 
     // Read encoder and convert to mm.
     float encoderMm(bool left);

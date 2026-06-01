@@ -11,6 +11,7 @@ Radio::Radio(MicroBitRadio& radio, MessageBus& bus)
 
 void Radio::begin() {
     _instance = this;
+    // FIXME set channel?
     _radio.setGroup(10);
     _radio.enable();
     _radio.setTransmitPower(7);

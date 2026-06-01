@@ -15,7 +15,12 @@ which handles the full lifecycle.
 
 ## Process
 
-1. **Confirm with stakeholder**: Present a summary of the sprint —
+1. **Gather sprint context**: Call `list_sprints()` to identify the
+   active sprint. Record the `id` and `branch` values — you will need
+   them as `sprint_id` and `branch_name` in step 4. Do not proceed
+   without these values in hand.
+
+2. **Confirm with stakeholder**: Present a summary of the sprint —
    list the completed tickets and key changes. Ask whether to proceed:
    - "Close sprint and merge to main" (recommended)
    - "Review completed work first"
@@ -23,11 +28,18 @@ which handles the full lifecycle.
    If the stakeholder chooses to review, invoke the `sprint-review`
    skill first.
 
-2. **Call close_sprint**: Invoke the `close_sprint` MCP tool:
+3. **Load the tool schema**: Call `ToolSearch` with query
+   `select:mcp__clasi__close_sprint` to load the tool's parameter schema.
+   This is required because CLASI MCP tools are deferred — calling them
+   without first loading their schema causes all parameters to be silently
+   dropped.
+
+4. **Call close_sprint**: Invoke the `close_sprint` MCP tool using the
+   `sprint_id` and `branch` values collected in step 1:
    ```
    close_sprint(
-       sprint_id="NNN",
-       branch_name="sprint/NNN-slug",
+       sprint_id="NNN",        ← from list_sprints() in step 1
+       branch_name="sprint/NNN-slug",  ← from list_sprints() in step 1
        main_branch="master",
        push_tags=True,
        delete_branch=True,
@@ -48,7 +60,7 @@ which handles the full lifecycle.
    - Version bump and git tag
    - Merge to master, push tags, delete branch
 
-3. **Report result**: On success, report the version tag and merged
+5. **Report result**: On success, report the version tag and merged
    branch. On error, report the blocker and recovery steps.
 
 ## Issue Preconditions

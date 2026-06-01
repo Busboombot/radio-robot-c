@@ -968,11 +968,12 @@ void CommandProcessor::tick(uint32_t now_ms, ReplyFn replyFn, void* ctx)
             reportEncoders(replyFn, ctx);
             if (_color) {
                 uint16_t sr, sg, sb, sc;
-                _color->readRGBC(sr, sg, sb, sc);
-                char sbuf[48];
-                snprintf(sbuf, sizeof(sbuf), "CS%+d%+d%+d%+d",
-                         (int)sr, (int)sg, (int)sb, (int)sc);
-                replyFn(sbuf, ctx);
+                if (_color->pollRGBC(sr, sg, sb, sc)) {
+                    char sbuf[48];
+                    snprintf(sbuf, sizeof(sbuf), "CS%+d%+d%+d%+d",
+                             (int)sr, (int)sg, (int)sb, (int)sc);
+                    replyFn(sbuf, ctx);
+                }
             }
             if (_line) {
                 uint16_t lo[4] = {0, 0, 0, 0};

@@ -43,6 +43,28 @@ bool ColorSensor::begin()
     return true;
 }
 
+bool ColorSensor::pollRGBC(uint16_t& r, uint16_t& g, uint16_t& b, uint16_t& c)
+{
+    if (!_inited) return false;
+    if (_isAlt) {
+        // Alt chip: check if data ready by reading clear channel; non-zero = ready.
+        uint16_t probe = readReg16(ADDR_ALT, 0xA6);
+        if (probe == 0) return false;
+        c = probe;
+        r = readReg16(ADDR_ALT, 0xA0);
+        g = readReg16(ADDR_ALT, 0xA2);
+        b = readReg16(ADDR_ALT, 0xA4);
+    } else {
+        // APDS9960: check AVALID bit without blocking.
+        if ((readReg8(ADDR_APDS, 0x93) & 0x01) == 0) return false;
+        c = readReg16(ADDR_APDS, 0x94);
+        r = readReg16(ADDR_APDS, 0x96);
+        g = readReg16(ADDR_APDS, 0x98);
+        b = readReg16(ADDR_APDS, 0x9A);
+    }
+    return true;
+}
+
 bool ColorSensor::readRGBC(uint16_t& r, uint16_t& g, uint16_t& b, uint16_t& c)
 {
     if (!_inited) return false;
