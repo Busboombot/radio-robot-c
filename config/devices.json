@@ -1,0 +1,22 @@
+{
+  "99063602000528204f02a3519fdba0c7000000006e052820": {
+    "announcement": "DEVICE:RADIOBRIDGE:relay:gozop:4267970133",
+    "common_name": "relay",
+    "device_name": "gozop",
+    "enum": 1,
+    "port": "/dev/cu.usbmodem21421302",
+    "role": "RADIOBRIDGE",
+    "serial": "4267970133",
+    "uid": "99063602000528204f02a3519fdba0c7000000006e052820"
+  },
+  "9906360200052820f92f913d5f4e8412000000006e052820": {
+    "announcement": "DEVICE:RADIORELAY:relay:zetog:cd6f4895",
+    "common_name": "relay",
+    "device_name": "zetog",
+    "enum": 2,
+    "port": "/dev/cu.usbmodem2142202",
+    "role": "RADIORELAY",
+    "serial": "cd6f4895",
+    "uid": "9906360200052820f92f913d5f4e8412000000006e052820"
+  }
+}

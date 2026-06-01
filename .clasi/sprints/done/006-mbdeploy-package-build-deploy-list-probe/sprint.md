@@ -1,7 +1,7 @@
 ---
 id: '006'
-title: "mbdeploy Package — Build, Deploy, List, Probe"
-status: planning-docs
+title: "mbdeploy Package \u2014 Build, Deploy, List, Probe"
+status: done
 branch: sprint/006-mbdeploy-package-build-deploy-list-probe
 use-cases:
 - SUC-001
