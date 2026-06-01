@@ -54,19 +54,44 @@ From the repository root:
     uv sync
 ```
 
-UV commands used in this project:
+This installs Python modules used by the build and test tooling:
+
+- `pyserial` — reads each device's `DEVICE:` type to avoid flashing the relay
+
+## mbdeploy setup
+
+`mbdeploy` is the standalone deploy package in the `mbdeploy/` directory.
+Install it once with pipx so it is available on `$PATH` in its own venv:
 
 ```
-    uv add requests python-dotenv
-    uv sync
-    uv run python3 build.py
-    uv run python3 scripts/build_and_deploy.py --clean
+    pipx install --editable ./mbdeploy
 ```
 
-This installs Python modules used by deploy scripts:
+Or use the justfile recipe:
 
-- `requests`
-- `python-dotenv`
+```
+    just mbd-install
+```
+
+### mbdeploy subcommands
+
+```
+    mbdeploy build               # compile MICROBIT.hex via build.py
+    mbdeploy build --clean       # clean build
+    mbdeploy list                # list connected micro:bit devices (UID, port, name)
+    mbdeploy probe               # write/update config/devices.json with connected devices
+    mbdeploy deploy              # auto-detect the robot and flash MICROBIT.hex
+    mbdeploy deploy 1            # flash the device with enum 1 (see 'mbdeploy list')
+    mbdeploy deploy --build 1    # build first, then flash device 1
+```
+
+### Target selectors
+
+A target can be specified as any of:
+- **Enum** — `1`, `2`, etc. (position in `mbdeploy list` output)
+- **5-char device name** — e.g. `ZUVUB` (the micro:bit's board name)
+- **Serial path** — e.g. `/dev/tty.usbmodem…`
+- **Full UID** — the 48-hex-char pyOCD unique ID from `mbdeploy list`
 
 ## Just recipes
 
@@ -75,10 +100,13 @@ The repository includes a `justfile` to run common setup/build/deploy workflows.
 ```
     just --list
     just uv-sync
-    just build
-    just build-clean
-    just deploy -- --usb-mount /Volumes/MICROBIT
-    just build-deploy -- --clean
+    just mbd-install        # install/reinstall mbdeploy via pipx
+    just build              # compile MICROBIT.hex
+    just build-clean        # clean compile
+    just list               # list connected micro:bit devices
+    just probe              # write/update config/devices.json
+    just deploy             # auto-detect the robot and flash MICROBIT.hex
+    just build-deploy       # build then deploy
 ```
 
 ## Yotta
@@ -104,33 +132,6 @@ To omit the final output stage (for CI, for example) run without the `--output` 
 - In the root of this repository type `uv run python3 build.py`
 - The hex file will be built `MICROBIT.hex` and placed in the root folder.
 
-## Build + deploy scripts
-
-The project includes Python scripts in `scripts/`:
-
-- `scripts/build.py`: wrapper around repository `build.py`
-- `scripts/deploy.py`: deploys hex to console (`CONSOLE_URL` + `CONSOLE_KEY`) or local USB mount
-- `scripts/build_and_deploy.py`: runs build then deploy
-
-Examples:
-
-```
-    uv run python3 scripts/build.py --clean
-    uv run python3 scripts/deploy.py
-    uv run python3 scripts/build_and_deploy.py --clean
-```
-
-Console deploy with explicit arguments:
-
-```
-    uv run python3 scripts/build_and_deploy.py --console-url https://your-console.example --console-key YOUR_KEY
-```
-
-USB deploy uses `/Volumes/MICROBIT` by default. Override with:
-
-```
-    uv run python3 scripts/deploy.py --usb-mount /Volumes/YOUR_DEVICE
-```
 
 # Developing
 You will find a simple main.cpp in the `source` folder which you can edit. CODAL will also compile any other C/C++ header files our source files with the extension `.h .c .cpp` it finds in the source folder.

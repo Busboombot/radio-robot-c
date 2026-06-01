@@ -26,11 +26,17 @@ build:
 build-clean:
     uv run python3 build.py --clean
 
-scripts-build:
-    uv run python3 scripts/build.py
+mbd-install:
+    pipx install --editable ./mbdeploy
+
+list:
+    mbdeploy list
+
+probe:
+    mbdeploy probe
 
 deploy *args='':
-    uv run python3 scripts/deploy.py {{args}}
+    mbdeploy deploy {{args}}
 
 build-deploy *args='':
-    uv run python3 scripts/build_and_deploy.py {{args}}
+    mbdeploy build && mbdeploy deploy {{args}}
