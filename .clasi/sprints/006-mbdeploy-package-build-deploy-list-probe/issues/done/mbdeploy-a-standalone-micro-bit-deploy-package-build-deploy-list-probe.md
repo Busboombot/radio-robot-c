@@ -1,8 +1,11 @@
 ---
-status: in-progress
+status: done
 sprint: '006'
 tickets:
-- 006-001
+- '001'
+- '002'
+- '003'
+- '004'
 ---
 
 # `mbdeploy`: a standalone micro:bit deploy package (build / deploy / list / probe)
