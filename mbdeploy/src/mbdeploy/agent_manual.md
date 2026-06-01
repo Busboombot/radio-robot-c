@@ -119,7 +119,8 @@ Common non-zero cases for `deploy`:
 - Resolved device is a relay and `--force-relay` was not given.
 - Resolved device is not currently connected (not in the live probe list).
 - The build step (`--build` / `--clean`) failed.
-- `pyocd flash` or `pyocd reset` returned non-zero.
+- `pyocd flash` failed *and* the automatic mass-erase recovery also failed
+  (see §6.5), or `pyocd reset` returned non-zero.
 
 Error messages are written to **stderr**; normal output goes to stdout.
 
@@ -180,7 +181,28 @@ mbdeploy deploy gutov --clean
 
 `--clean` implies a build, then flashes.
 
-### 6.5 Flash a relay on purpose
+### 6.5 Locked / protected devices (automatic recovery)
+
+If a board's nRF52833 is in a locked or protected state (APPROTECT set, or a
+protected SoftDevice region at address `0x0`), the flash algorithm rejects
+every erase and `deploy` would otherwise fail with something like
+`flash erase sector failure (... result code 0x67)`.
+
+`deploy` handles this automatically: when the initial `pyocd flash` fails, it
+runs a CTRL-AP **mass erase** (`pyocd erase --mass`, i.e. `ERASEALL`) — the
+only operation that clears APPROTECT — and then retries the flash once. You
+don't need to intervene. If the mass erase itself fails, `deploy` aborts with
+a non-zero exit code rather than retrying blindly.
+
+To recover a board manually (e.g. outside `deploy`):
+
+```bash
+pyocd erase -t nrf52833 -u <uid> --mass
+pyocd flash -t nrf52833 -u <uid> MICROBIT.hex
+pyocd reset -t nrf52833 -u <uid>
+```
+
+### 6.6 Flash a relay on purpose
 
 Relays are guarded. Override deliberately:
 
@@ -188,13 +210,13 @@ Relays are guarded. Override deliberately:
 mbdeploy deploy bridge1 --force-relay
 ```
 
-### 6.6 Flash a custom hex / non-default MCU
+### 6.7 Flash a custom hex / non-default MCU
 
 ```bash
 mbdeploy deploy 2 --hex build/MICROBIT.hex --target-mcu nrf52833
 ```
 
-### 6.7 Use a non-default registry location
+### 6.8 Use a non-default registry location
 
 ```bash
 mbdeploy probe  --config /path/to/devices.json

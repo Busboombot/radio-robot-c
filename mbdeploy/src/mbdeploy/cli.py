@@ -188,7 +188,7 @@ def _cmd_deploy(args: argparse.Namespace) -> int:
             print(f"Error: build failed (exit {rc}).", file=sys.stderr)
             return rc
 
-    # --- flash ---
+    # --- flash (with mass-erase recovery for locked parts) ---
     flash_cmd = [
         *_PYOCD, "flash",
         "-t", target_mcu,
@@ -197,7 +197,33 @@ def _cmd_deploy(args: argparse.Namespace) -> int:
     ]
     rc = subprocess.run(flash_cmd).returncode
     if rc != 0:
-        return rc
+        # A locked/protected nRF (APPROTECT set, or a protected SoftDevice
+        # region at 0x0) rejects every flash-algorithm erase, so the flash
+        # fails before it can program. Neither sector nor chip erase clears
+        # that — only a CTRL-AP mass erase (ERASEALL), which also resets
+        # APPROTECT. Recover by mass-erasing, then retry the flash once.
+        print(
+            "flash failed — attempting CTRL-AP mass erase to recover a "
+            "locked device, then retrying.",
+            file=sys.stderr,
+        )
+        erase_cmd = [
+            *_PYOCD, "erase",
+            "-t", target_mcu,
+            "--uid", uid,
+            "--mass",
+        ]
+        erase_rc = subprocess.run(erase_cmd).returncode
+        if erase_rc != 0:
+            print(f"Error: mass erase failed (exit {erase_rc}).", file=sys.stderr)
+            return erase_rc
+        rc = subprocess.run(flash_cmd).returncode
+        if rc != 0:
+            print(
+                f"Error: flash still failed after mass erase (exit {rc}).",
+                file=sys.stderr,
+            )
+            return rc
 
     reset_cmd = [
         *_PYOCD, "reset",

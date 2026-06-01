@@ -275,3 +275,92 @@ class TestDeviceNotConnected:
         captured = capsys.readouterr()
         assert "device not connected" in captured.err.lower()
         assert _DEVICE_UID in captured.err
+
+
+# ---------------------------------------------------------------------------
+# deploy — mass-erase recovery for locked devices
+# ---------------------------------------------------------------------------
+
+class TestMassEraseRecovery:
+    """A locked nRF makes the first flash fail; deploy must mass-erase and retry."""
+
+    def _connect_one_device(self, monkeypatch, tmp_path):
+        config = tmp_path / "devices.json"
+        registry = {_DEVICE_UID: _DEVICE_ENTRY.copy()}
+        monkeypatch.setattr(devices_mod, "load_devices", lambda _path: registry)
+        monkeypatch.setattr(
+            devices_mod, "flashable_probes",
+            lambda: [{"uid": _DEVICE_UID, "description": "dev"}],
+        )
+        return config
+
+    def test_flash_retries_after_mass_erase(self, monkeypatch, tmp_path):
+        """First flash fails, mass erase succeeds, second flash + reset succeed."""
+        config = self._connect_one_device(monkeypatch, tmp_path)
+
+        calls: list[list[str]] = []
+        state = {"flash": 0}
+
+        def fake_run(cmd, **kw):
+            calls.append(cmd)
+            if "flash" in cmd:
+                state["flash"] += 1
+                rc = 1 if state["flash"] == 1 else 0   # first flash fails
+            else:
+                rc = 0                                  # erase / reset succeed
+            return type("R", (), {"returncode": rc})()
+
+        import subprocess
+        monkeypatch.setattr(subprocess, "run", fake_run)
+
+        args = _make_args(target=_DEVICE_UID, config=str(config))
+        rc = _cmd_deploy(args)
+
+        assert rc == 0
+        assert state["flash"] == 2                      # flashed twice
+        assert any("erase" in c and "--mass" in c for c in calls)
+
+    def test_mass_erase_failure_aborts_without_retry(self, monkeypatch, tmp_path, capsys):
+        """If the mass erase itself fails, deploy aborts and does not re-flash."""
+        config = self._connect_one_device(monkeypatch, tmp_path)
+
+        state = {"flash": 0}
+
+        def fake_run(cmd, **kw):
+            if "flash" in cmd:
+                state["flash"] += 1
+                rc = 1
+            elif "erase" in cmd:
+                rc = 5
+            else:
+                rc = 0
+            return type("R", (), {"returncode": rc})()
+
+        import subprocess
+        monkeypatch.setattr(subprocess, "run", fake_run)
+
+        args = _make_args(target=_DEVICE_UID, config=str(config))
+        rc = _cmd_deploy(args)
+
+        assert rc == 5
+        assert state["flash"] == 1                      # no retry after erase failure
+        assert "mass erase failed" in capsys.readouterr().err.lower()
+
+    def test_successful_flash_skips_mass_erase(self, monkeypatch, tmp_path):
+        """The normal path never mass-erases when the first flash succeeds."""
+        config = self._connect_one_device(monkeypatch, tmp_path)
+
+        calls: list[list[str]] = []
+
+        def fake_run(cmd, **kw):
+            calls.append(cmd)
+            return type("R", (), {"returncode": 0})()
+
+        import subprocess
+        monkeypatch.setattr(subprocess, "run", fake_run)
+
+        args = _make_args(target=_DEVICE_UID, config=str(config))
+        rc = _cmd_deploy(args)
+
+        assert rc == 0
+        assert not any("erase" in c for c in calls)
