@@ -1,7 +1,7 @@
 ---
 id: '004'
-title: "Cutover — Remove scripts, Update justfile and pyproject"
-status: open
+title: "Cutover \u2014 Remove scripts, Update justfile and pyproject"
+status: done
 use-cases:
 - SUC-006
 depends-on:
