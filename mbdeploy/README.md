@@ -25,3 +25,13 @@ pipx install --editable --force ./mbdeploy
 | `probe`    | Probe a device and report its state. |
 
 Run `mbdeploy --help` or `mbdeploy <subcommand> --help` for full usage.
+
+## Top-level flags
+
+| Flag        | Description |
+|-------------|-------------|
+| `--version` | Print the installed mbdeploy version and exit. |
+| `--agent`   | Print the detailed agent manual (usage, recipes, device model) and exit. |
+
+`mbdeploy --agent` prints a complete manual aimed at AI coding agents and
+power users driving the tool non-interactively.

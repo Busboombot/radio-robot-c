@@ -5,7 +5,10 @@ from __future__ import annotations
 import argparse
 import subprocess
 import sys
+from importlib import resources
 from pathlib import Path
+
+from mbdeploy import __version__
 
 
 # ---------------------------------------------------------------------------
@@ -15,6 +18,33 @@ from pathlib import Path
 _DEFAULT_CONFIG = Path("config") / "devices.json"
 _DEFAULT_HEX = "MICROBIT.hex"
 _DEFAULT_MCU = "nrf52833"
+
+_AGENT_MANUAL = "agent_manual.md"
+
+
+# ---------------------------------------------------------------------------
+# Agent manual
+# ---------------------------------------------------------------------------
+
+def _read_agent_manual() -> str:
+    """Return the bundled agent manual markdown shipped inside the package."""
+    return resources.files("mbdeploy").joinpath(_AGENT_MANUAL).read_text(
+        encoding="utf-8"
+    )
+
+
+class _AgentManualAction(argparse.Action):
+    """Print the full agent manual and exit, before any subcommand is required."""
+
+    def __init__(self, option_strings, dest, **kwargs):
+        kwargs.setdefault("nargs", 0)
+        kwargs.setdefault("default", argparse.SUPPRESS)
+        super().__init__(option_strings, dest, **kwargs)
+
+    def __call__(self, parser, namespace, values, option_string=None):
+        manual = _read_agent_manual()
+        sys.stdout.write(manual if manual.endswith("\n") else manual + "\n")
+        parser.exit()
 
 
 # ---------------------------------------------------------------------------
@@ -179,6 +209,17 @@ def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="mbdeploy",
         description="Build and deploy micro:bit firmware to one or more devices.",
+    )
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=f"mbdeploy {__version__}",
+        help="Print the mbdeploy version and exit.",
+    )
+    parser.add_argument(
+        "--agent",
+        action=_AgentManualAction,
+        help="Print the detailed agent manual (usage, recipes) and exit.",
     )
     subparsers = parser.add_subparsers(dest="subcommand", metavar="<subcommand>")
     subparsers.required = True
