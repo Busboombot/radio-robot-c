@@ -58,15 +58,17 @@ Robot::Robot()
 }
 
 void Robot::run() {
-    bool isRelayed;
     while (true) {
+        // Direct serial commands — reply over serial.
         while (_serial.readLine(_buf, sizeof(_buf))) {
-            if (!_announcer.handle(_buf)) {
+            if (!_announcer.handle(_buf, serialReply, &_serial)) {
                 _cmd.process(_buf, serialReply, &_serial);
             }
         }
-        while (_radio.poll(_buf, sizeof(_buf), isRelayed)) {
-            if (!_announcer.handle(_buf)) {
+        // Commands via the RadioRelay (RAW250) — reply over the radio, which the
+        // relay forwards back to the host serial port.
+        while (_radio.poll(_buf, sizeof(_buf))) {
+            if (!_announcer.handle(_buf, radioReply, &_radio)) {
                 _cmd.process(_buf, radioReply, &_radio);
             }
         }

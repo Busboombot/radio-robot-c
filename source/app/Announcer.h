@@ -2,6 +2,7 @@
 #include "MicroBit.h"
 #include "SerialPort.h"
 #include "Radio.h"
+#include "Protocol.h"
 
 /**
  * Announcer — builds and emits the DEVICE: announcement string.
@@ -18,12 +19,14 @@ class Announcer {
 public:
     Announcer(MicroBit& uBit, SerialPort& serial, Radio& radio);
 
-    // Emit the DEVICE: announcement over serial.
+    // Emit the DEVICE: announcement over serial (boot banner).
     void announce();
 
-    // If line == "HELLO", re-emit announcement and return true.
-    // Otherwise return false (caller processes the line normally).
-    bool handle(const char* line);
+    // If line == "HELLO", re-emit the announcement via replyFn (so a HELLO
+    // arriving over the radio relay is answered over the radio, and a serial
+    // HELLO over serial) and return true. Otherwise return false (caller
+    // processes the line normally).
+    bool handle(const char* line, ReplyFn replyFn, void* ctx);
 
 private:
     SerialPort& _serial;

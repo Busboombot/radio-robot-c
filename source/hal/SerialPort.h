@@ -23,10 +23,10 @@ public:
     bool readLine(char* buf, uint16_t len);
 
     void send(const char* msg);
-    void sendf(const char* fmt, ...);  // snprintf into 128-byte stack buffer
+    void sendf(const char* fmt, ...);  // snprintf into 256-byte stack buffer
 
 private:
     NRF52Serial& _serial;
-    char     _rxBuf[128];
+    char     _rxBuf[256];   // holds up to a 250-byte line (RAW250 message size)
     uint16_t _rxLen;
 };

@@ -18,9 +18,9 @@ void Announcer::announce() {
     _serial.send(_announcement);
 }
 
-bool Announcer::handle(const char* line) {
+bool Announcer::handle(const char* line, ReplyFn replyFn, void* ctx) {
     if (strcmp(line, "HELLO") == 0) {
-        announce();
+        replyFn(_announcement, ctx);
         return true;
     }
     return false;

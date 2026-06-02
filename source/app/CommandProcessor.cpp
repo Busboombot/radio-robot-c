@@ -2,8 +2,9 @@
 // C++ port of command.ts::handleCommand() and command.ts::tick().
 //
 // All speeds in mm/s, all distances in mm. Integer protocol, no floats on wire.
-// Commands use sign-prefixed numbers as delimiters (no spaces) to fit within
-// the 19-character radio relay limit.
+// Commands use sign-prefixed numbers as delimiters (no spaces). The legacy
+// MakeCode relay capped lines at 19 chars; the RAW250 RadioRelay raises this to
+// 250-byte messages, so command lines may be up to 250 bytes (see process()).
 
 #include "CommandProcessor.h"
 #include "OtosSensor.h"
@@ -211,10 +212,10 @@ void CommandProcessor::reportOdo(ReplyFn replyFn, void* ctx)
 
 void CommandProcessor::process(const char* line, ReplyFn replyFn, void* ctx)
 {
-    // Copy to local uppercase buffer (128 bytes max, NUL-terminated)
-    char buf[128];
+    // Copy to local uppercase buffer (250-byte RAW250 message max, NUL-terminated)
+    char buf[256];
     int  len = 0;
-    for (const char* p = line; *p != '\0' && len < 127; ++p) {
+    for (const char* p = line; *p != '\0' && len < 255; ++p) {
         char ch = *p;
         // Skip leading/trailing whitespace during copy
         if ((unsigned char)ch < 0x21 && len == 0) continue;  // skip leading whitespace

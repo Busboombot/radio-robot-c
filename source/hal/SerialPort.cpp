@@ -37,7 +37,7 @@ void SerialPort::send(const char* msg) {
 }
 
 void SerialPort::sendf(const char* fmt, ...) {
-    char tmp[128];
+    char tmp[256];
     va_list args;
     va_start(args, fmt);
     vsnprintf(tmp, sizeof(tmp), fmt, args);

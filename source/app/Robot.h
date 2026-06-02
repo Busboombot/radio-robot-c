@@ -57,5 +57,5 @@ private:
     Odometry         _odo;
     CommandProcessor _cmd;
 
-    char _buf[128];  // shared tick-loop scratch buffer
+    char _buf[256];  // shared tick-loop scratch buffer (holds a 250-byte RAW250 message)
 };
