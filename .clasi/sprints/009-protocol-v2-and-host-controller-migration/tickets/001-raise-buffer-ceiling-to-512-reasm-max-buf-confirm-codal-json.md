@@ -1,8 +1,10 @@
 ---
 id: '001'
 title: Raise buffer ceiling to 512 (REASM_MAX, _buf, confirm codal.json)
-status: open
-use-cases: [SUC-001, SUC-003]
+status: done
+use-cases:
+- SUC-001
+- SUC-003
 depends-on: []
 issue: protocol-v2-raw250-hard-break.md
 completes_issue: false
@@ -28,15 +30,15 @@ This is the prerequisite for all v2 parser work and must land first.
 
 ## Acceptance Criteria
 
-- [ ] `Radio::REASM_MAX` changed from 256 to 512 in `source/hal/Radio.h`; both
+- [x] `Radio::REASM_MAX` changed from 256 to 512 in `source/hal/Radio.h`; both
       `_reasm[]` and `_msg[]` arrays reflect the new constant.
-- [ ] Main-loop receive buffer raised to 512 (find the actual declaration —
+- [x] Main-loop receive buffer raised to 512 (find the actual declaration —
       likely a stack-local in `main.cpp` passed to `radio.poll()` / `serial.readLine()`).
-- [ ] `codal.json` contains `"MICROBIT_RADIO_MAX_PACKET_SIZE": 250`; update only
+- [x] `codal.json` contains `"MICROBIT_RADIO_MAX_PACKET_SIZE": 250`; update only
       if incorrect.
-- [ ] Firmware builds cleanly after these changes.
+- [x] Firmware builds cleanly after these changes.
 - [ ] [BENCH] After ticket 002 lands: `ECHO` of a 200-byte payload round-trips
-      intact over the relay, confirming reassembly at the new ceiling.
+      intact over the relay, confirming reassembly at the new ceiling. (DEFERRED — bench test at sprint end)
 
 ## Implementation Plan
 

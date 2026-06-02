@@ -55,7 +55,7 @@ private:
     static constexpr int FRAME_HEADER = 3;
     static constexpr int MAX_FRAME    = MICROBIT_RADIO_MAX_PACKET_SIZE; // 250
     static constexpr int MTU          = MAX_FRAME - FRAME_HEADER;       // 247
-    static constexpr int REASM_MAX    = 256;   // robot messages are <= 250 bytes
+    static constexpr int REASM_MAX    = 512;   // v2 GET dump can reach ~290 bytes
 
     // Reassembly accumulator (ISR-owned).
     char _reasm[REASM_MAX];

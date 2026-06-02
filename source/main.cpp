@@ -50,7 +50,7 @@ int main() {
     ReplyFn activeFn  = serialReply;
     void*   activeCtx = &serial;
 
-    char buf[256];
+    char buf[512];
 
     while (true) {
         // Drain serial — commands arrive directly from a USB/UART host.

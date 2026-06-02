@@ -87,10 +87,10 @@ int CommandProcessor::clampMinSpeed(int mms, int minSpeedMms)
 
 void CommandProcessor::process(const char* line, ReplyFn replyFn, void* ctx)
 {
-    // Copy to local uppercase buffer (250-byte RAW250 message max, NUL-terminated)
-    char buf[256];
+    // Copy to local uppercase buffer (v2 messages up to 512 bytes, NUL-terminated)
+    char buf[512];
     int  len = 0;
-    for (const char* p = line; *p != '\0' && len < 255; ++p) {
+    for (const char* p = line; *p != '\0' && len < 511; ++p) {
         char ch = *p;
         if ((unsigned char)ch < 0x21 && len == 0) continue;  // skip leading whitespace
         buf[len++] = (char)toupper((unsigned char)ch);
