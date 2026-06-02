@@ -29,9 +29,9 @@ static void radioReply(const char* msg, void* ctx) {
 // Reply-sink routing (fixes the async-completion channel bug):
 //   activeFn / activeCtx are updated to whichever channel (serial or radio)
 //   delivered the most recent command.  robot.tick() is then called with
-//   that active sink, so async completions (T+DONE, D+DONE, G+DONE,
-//   SAFETY_STOP) and encoder streaming are returned over the SAME channel
-//   the originating command arrived on — not hardwired to serial.
+//   that active sink, so async completions (EVT done, EVT safety_stop)
+//   and TLM streaming are returned over the SAME channel the originating
+//   command arrived on — not hardwired to serial.
 // ---------------------------------------------------------------------------
 
 int main() {

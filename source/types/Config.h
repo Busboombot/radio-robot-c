@@ -1,6 +1,16 @@
 #pragma once
 #include <stdint.h>
 
+// ---------------------------------------------------------------------------
+// Telemetry field bitmask constants (used in RobotConfig::tlmFields)
+// ---------------------------------------------------------------------------
+constexpr uint8_t TLM_FIELD_ENC   = (1u << 0);  // enc=l,r
+constexpr uint8_t TLM_FIELD_POSE  = (1u << 1);  // pose=x,y,h
+constexpr uint8_t TLM_FIELD_VEL   = (1u << 2);  // vel=vl,vr  (deferred Sprint 010)
+constexpr uint8_t TLM_FIELD_LINE  = (1u << 3);  // line=4ch
+constexpr uint8_t TLM_FIELD_COLOR = (1u << 4);  // color=4ch
+constexpr uint8_t TLM_FIELD_ALL   = 0xFFu;      // all fields (default)
+
 struct RobotConfig {
     // Motor forward-direction signs: +1 = CW is forward, -1 = CCW is forward.
     // fwdSignL: left wheel (M2), default +1.
@@ -61,10 +71,17 @@ struct RobotConfig {
     int32_t minSpeedMms;
     int32_t tickMs;
     int32_t sTimeoutMs;
-    int32_t encReportEvery;
 
     // Telemetry streaming period in ms (0 = off). Set via STREAM command.
     int32_t tlmPeriodMs;
+
+    // Telemetry field-subscription bitmask. Set via STREAM fields=...
+    // Bit 0 = enc, Bit 1 = pose, Bit 2 = vel, Bit 3 = line, Bit 4 = color.
+    // 0xFF = all fields (default).
+    uint8_t tlmFields;
+
+    // One-shot SNAP pending flag. Set by SNAP command; cleared after one TLM frame.
+    bool tlmSnapPending;
 };
 
 inline RobotConfig defaultRobotConfig() {
@@ -94,8 +111,9 @@ inline RobotConfig defaultRobotConfig() {
     p.minSpeedMms     = 50;
     p.tickMs          = 20;
     p.sTimeoutMs      = 200;
-    p.encReportEvery  = 2;
     p.tlmPeriodMs     = 0;
+    p.tlmFields       = 0xFF;
+    p.tlmSnapPending  = false;
     return p;
 }
 

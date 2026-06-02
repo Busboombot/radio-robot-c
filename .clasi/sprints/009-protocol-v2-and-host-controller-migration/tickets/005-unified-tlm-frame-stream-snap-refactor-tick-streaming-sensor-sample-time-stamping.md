@@ -1,9 +1,13 @@
 ---
-id: "005"
-title: "Unified TLM frame + STREAM/SNAP (refactor tick() streaming, sensor-sample-time stamping)"
-status: open
-use-cases: [SUC-004]
-depends-on: ["002", "004"]
+id: '005'
+title: Unified TLM frame + STREAM/SNAP (refactor tick() streaming, sensor-sample-time
+  stamping)
+status: done
+use-cases:
+- SUC-004
+depends-on:
+- '002'
+- '004'
 issue: protocol-v2-raw250-hard-break.md
 completes_issue: false
 ---
@@ -57,15 +61,15 @@ present by default when streaming is on.
 
 ## Acceptance Criteria
 
-- [ ] `STREAM 40` → robot emits one `TLM` line per 40 ms.
-- [ ] Each `TLM` frame has `t=<ms>` that advances monotonically.
-- [ ] `t=` is captured at sensor-read time, not at snprintf time (no send-latency bias).
-- [ ] `SNAP` → one immediate `TLM` frame, then `OK snap`.
-- [ ] `STREAM 0` → telemetry stops.
-- [ ] `STREAM fields=enc,pose` → subsequent frames contain only `enc=` and `pose=` fields.
-- [ ] `mode=` field reflects current drive state correctly.
-- [ ] `DriveController` no longer emits `ENC`, `SO`, `CS`, `LS` lines.
-- [ ] `encReportEvery` field removed from `RobotConfig`.
+- [x] `STREAM 40` → robot emits one `TLM` line per 40 ms.
+- [x] Each `TLM` frame has `t=<ms>` that advances monotonically.
+- [x] `t=` is captured at sensor-read time, not at snprintf time (no send-latency bias).
+- [x] `SNAP` → one immediate `TLM` frame, then `OK snap`.
+- [x] `STREAM 0` → telemetry stops.
+- [x] `STREAM fields=enc,pose` → subsequent frames contain only `enc=` and `pose=` fields.
+- [x] `mode=` field reflects current drive state correctly.
+- [x] `DriveController` no longer emits `ENC`, `SO`, `CS`, `LS` lines.
+- [x] `encReportEvery` field removed from `RobotConfig`.
 - [ ] [BENCH] Frames arrive at ~40 ms cadence on hardware; `t=` values advance by ~40 each frame.
 
 ## Implementation Plan

@@ -635,6 +635,92 @@ void CommandProcessor::process(const char* line, ReplyFn replyFn, void* ctx)
         return;
     }
 
+    // ── STREAM ───────────────────────────────────────────────────────────────
+    // STREAM <ms>              → OK stream period=<ms>  (0 = off)
+    // STREAM fields=enc,pose   → OK stream fields=enc,pose  (subset)
+    if (strcmp(verb, "STREAM") == 0) {
+        // Check for fields= kv pair first.
+        bool hasFields = false;
+        for (int i = 0; i < nkv; ++i) {
+            if (kvs[i].key && strcmp(kvs[i].key, "fields") == 0) {
+                hasFields = true;
+                // Parse comma-separated field names and build bitmask.
+                uint8_t mask = 0;
+                const char* fp = kvs[i].value;
+                // Tokenize the value string on commas.
+                char fbuf[64];
+                int flen = 0;
+                for (const char* c = fp; ; ++c) {
+                    bool end = (*c == '\0' || *c == ',');
+                    if (!end && flen < (int)(sizeof(fbuf) - 1)) {
+                        fbuf[flen++] = *c;
+                    }
+                    if (end) {
+                        fbuf[flen] = '\0';
+                        if (strcmp(fbuf, "enc")   == 0) mask |= TLM_FIELD_ENC;
+                        if (strcmp(fbuf, "pose")  == 0) mask |= TLM_FIELD_POSE;
+                        if (strcmp(fbuf, "vel")   == 0) mask |= TLM_FIELD_VEL;
+                        if (strcmp(fbuf, "line")  == 0) mask |= TLM_FIELD_LINE;
+                        if (strcmp(fbuf, "color") == 0) mask |= TLM_FIELD_COLOR;
+                        flen = 0;
+                        if (*c == '\0') break;
+                    }
+                }
+                _robot.config().tlmFields = mask ? mask : TLM_FIELD_ALL;
+                // Reconstruct the fields string for the response body.
+                char body[80];
+                int bpos = 0;
+                bool needComma = false;
+                const struct { uint8_t bit; const char* name; } kFieldNames[] = {
+                    { TLM_FIELD_ENC,   "enc"   },
+                    { TLM_FIELD_POSE,  "pose"  },
+                    { TLM_FIELD_VEL,   "vel"   },
+                    { TLM_FIELD_LINE,  "line"  },
+                    { TLM_FIELD_COLOR, "color" },
+                };
+                int brem = (int)sizeof(body);
+                int bw = snprintf(body + bpos, (size_t)brem, "fields=");
+                if (bw > 0 && bw < brem) { bpos += bw; brem -= bw; }
+                for (int fi = 0; fi < 5 && brem > 1; ++fi) {
+                    if (_robot.config().tlmFields & kFieldNames[fi].bit) {
+                        if (needComma) { body[bpos++] = ','; --brem; }
+                        bw = snprintf(body + bpos, (size_t)brem, "%s", kFieldNames[fi].name);
+                        if (bw > 0 && bw < brem) { bpos += bw; brem -= bw; }
+                        needComma = true;
+                    }
+                }
+                body[bpos] = '\0';
+                replyOK(rbuf, sizeof(rbuf), "stream", body, corr_id, replyFn, ctx);
+                break;
+            }
+        }
+        if (hasFields) return;
+
+        // No fields= — expect a positional period argument.
+        if (ntok < 2) {
+            replyErr(rbuf, sizeof(rbuf), "badarg", "usage: STREAM <ms>", corr_id,
+                     replyFn, ctx);
+            return;
+        }
+        int32_t ms = (int32_t)atoi(tokens[1]);
+        if (ms < 0) ms = 0;
+        if (ms > 0 && ms < 20) ms = 20;  // clamp to 20 ms minimum
+        _robot.config().tlmPeriodMs = ms;
+        char body[32];
+        snprintf(body, sizeof(body), "period=%d", (int)ms);
+        replyOK(rbuf, sizeof(rbuf), "stream", body, corr_id, replyFn, ctx);
+        return;
+    }
+
+    // ── SNAP ─────────────────────────────────────────────────────────────────
+    // SNAP → (emits one immediate TLM frame on next tick, then OK snap)
+    // The TLM frame is emitted by Robot::tick() when tlmSnapPending is set.
+    if (strcmp(verb, "SNAP") == 0) {
+        _robot.config().tlmSnapPending = true;
+        replyOK(rbuf, sizeof(rbuf), "snap", nullptr, corr_id, replyFn, ctx);
+        return;
+    }
+
     // ── Fallback — unrecognized verb ─────────────────────────────────────────
     replyErr(rbuf, sizeof(rbuf), "unknown", verb, corr_id, replyFn, ctx);
 }

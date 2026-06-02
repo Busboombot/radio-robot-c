@@ -112,6 +112,9 @@ private:
     // in declaration order).
     RobotConfig _config;
 
+    // TLM streaming state — managed by tick(); period/fields/snap set via config().
+    uint32_t _lastTlmMs;    // timestamp of last emitted TLM frame
+
     // Required subsystems (constructed from received references)
     Motor      _motorL;   // M2, left wheel
     Motor      _motorR;   // M1, right wheel
