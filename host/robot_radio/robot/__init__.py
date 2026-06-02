@@ -22,6 +22,7 @@ from robot_radio.robot.protocol import (
 )
 from robot_radio.robot.nezha import Nezha
 from robot_radio.robot.nezha_state import NezhaState
+from robot_radio.robot.clock_sync import ClockSync
 
 
 def __getattr__(name: str):
@@ -45,6 +46,7 @@ __all__ = [
     "parse_cfg",
     "Nezha",
     "NezhaState",
+    "ClockSync",
     "NezhaKinematic",    # lazy
     "Cutebot",           # lazy
     "QBotPro",           # lazy

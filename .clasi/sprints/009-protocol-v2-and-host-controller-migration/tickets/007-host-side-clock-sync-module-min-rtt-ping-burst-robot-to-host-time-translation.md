@@ -1,9 +1,11 @@
 ---
-id: "007"
-title: "Host-side clock-sync module (min-RTT PING burst, robot-to-host time translation)"
-status: open
-use-cases: [SUC-005]
-depends-on: ["008"]
+id: '007'
+title: Host-side clock-sync module (min-RTT PING burst, robot-to-host time translation)
+status: done
+use-cases:
+- SUC-005
+depends-on:
+- 008
 issue: protocol-v2-raw250-hard-break.md
 completes_issue: false
 ---
@@ -55,11 +57,11 @@ class ClockSync:
 
 ## Acceptance Criteria
 
-- [ ] `ClockSync` class exists at `host/robot_radio/robot/clock_sync.py`.
-- [ ] `record_ping(t0, t1, t_robot)` stores samples; `best_offset_ms()` returns the offset from the min-RTT sample.
-- [ ] `to_host_time(t_robot_ms)` returns `t_robot_ms + best_offset_ms()` (float ms).
-- [ ] `stale()` returns True after 60 s with no new pings.
-- [ ] Unit tests (no hardware): simulate 5 PING samples with known RTTs; verify the min-RTT sample is selected and the offset is computed correctly.
+- [x] `ClockSync` class exists at `host/robot_radio/robot/clock_sync.py`.
+- [x] `record_ping(t0, t1, t_robot)` stores samples; `best_offset_ms()` returns the offset from the min-RTT sample.
+- [x] `to_host_time(t_robot_ms)` returns `t_robot_ms + best_offset_ms()` (float ms).
+- [x] `stale()` returns True after 60 s with no new pings.
+- [x] Unit tests (no hardware): simulate 5 PING samples with known RTTs; verify the min-RTT sample is selected and the offset is computed correctly.
 - [ ] [BENCH] After a PING burst over the relay, the host's translation of a known robot event (e.g. `EVT done T` from a 1-second timed drive) aligns with the host clock to within ½ the measured minimum RTT.
 - [ ] Offset stays stable (< 20 ms drift) over a 3-minute run with re-pings every 30 s.
 
