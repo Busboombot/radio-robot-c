@@ -1,13 +1,13 @@
 ---
-id: "004"
-title: "Expose velocity and saturation tunables in SET/GET registry"
-status: open
+id: '004'
+title: Expose velocity and saturation tunables in SET/GET registry
+status: done
 use-cases:
 - SUC-004
 depends-on:
-- "010-003"
-github-issue: ""
-issue: ""
+- 010-003
+github-issue: ''
+issue: ''
 completes_issue: false
 ---
 <!-- CLASI: Before changing code or making plans, review the SE process in CLAUDE.md -->
@@ -24,18 +24,18 @@ be removed from the registry to avoid an ERR on any existing scripts.
 
 ## Acceptance Criteria
 
-- [ ] `kRegistry[]` in `CommandProcessor.cpp` has entries for:
+- [x] `kRegistry[]` in `CommandProcessor.cpp` has entries for:
   - `vel.kP` → `velKp` (CFG_FLOAT)
   - `vel.kI` → `velKi` (CFG_FLOAT)
   - `vel.kFF` → `velKff` (CFG_FLOAT)
   - `minWheelMms` → `minWheelMms` (CFG_FLOAT)
   - `vWheelMax` → `vWheelMax` (CFG_FLOAT)
   - `steerHeadroom` → `steerHeadroom` (CFG_FLOAT)
-- [ ] `lapsToMmScale` entry is absent from `kRegistry[]` (already deleted by
+- [x] `lapsToMmScale` entry is absent from `kRegistry[]` (already deleted by
   Ticket 001; verify here that no stale reference remains).
-- [ ] `SET vel.kP=0.4` round-trips: `GET vel.kP` returns `CFG vel.kP=0.400`.
-- [ ] `SET vWheelMax=350` round-trips: `GET vWheelMax` returns `CFG vWheelMax=350`.
-- [ ] All six new keys are present in the output of `GET ALL` (or equivalent
+- [x] `SET vel.kP=0.4` round-trips: `GET vel.kP` returns `CFG vel.kP=0.400`.
+- [x] `SET vWheelMax=350` round-trips: `GET vWheelMax` returns `CFG vWheelMax=350`.
+- [x] All six new keys are present in the output of `GET ALL` (or equivalent
   full-config dump command if it exists).
 
 ## Implementation Plan
