@@ -18,6 +18,8 @@ public:
     // Returns false on I2C error. out may be nullptr (probe use).
     bool readValues(uint16_t out[4]) const;
 
+    // FIXME should consider some calibration, where the user moves the robot arround to get the min and max values for each sensor, and then we can do some scaling to get a more linear response, and also to make it more robust to different lighting conditions. We could also do some smoothing or filtering of the readings to reduce noise.
+
 private:
     MicroBitI2C& _i2c;
     static constexpr uint8_t ADDR = 0x1A;

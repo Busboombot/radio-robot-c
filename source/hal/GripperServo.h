@@ -7,7 +7,7 @@
  *
  * Wraps MicroBitPin::setServoValue() to provide a clamped 0..180 degree interface.
  */
-class GripperServo {
+class GripperServo { // FIXME just call it 'Servo', and make it configurable for 180 or 360 degree servos. 
 public:
     explicit GripperServo(MicroBitPin& pin);
 
