@@ -687,16 +687,3 @@ void CommandProcessor::process(const char* line, ReplyFn replyFn, void* ctx)
     replyFn(errbuf, ctx);
 }
 
-// ---------------------------------------------------------------------------
-// tick — delegates to DriveController
-// ---------------------------------------------------------------------------
-
-void CommandProcessor::tick(uint32_t now_ms, ReplyFn replyFn, void* ctx)
-{
-    if (!_robot) return;
-    _robot->driveController().tick(now_ms, replyFn, ctx);
-    // NOTE (transitional): Color/line sensor streaming during drive ticks
-    // was previously emitted here alongside encoder reports. That coupling
-    // will be resolved in ticket 005 when sensor streaming is rearchitected.
-    // Drive completions (T+DONE, D+DONE, G+DONE, SAFETY_STOP) are preserved.
-}

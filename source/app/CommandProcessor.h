@@ -30,10 +30,6 @@ public:
     // Calls replyFn(msg, ctx) for each response line.
     void process(const char* line, ReplyFn replyFn, void* ctx);
 
-    // Tick — delegates to Robot::driveController().tick().
-    // now_ms: current system time in ms (from uBit.systemTime()).
-    void tick(uint32_t now_ms, ReplyFn replyFn, void* ctx);
-
 private:
     Robot* _robot;
 

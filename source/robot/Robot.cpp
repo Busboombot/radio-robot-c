@@ -1,13 +1,5 @@
 #include "Robot.h"
 
-static void serialReply(const char* msg, void* ctx) {
-    static_cast<SerialPort*>(ctx)->send(msg);
-}
-
-static void radioReply(const char* msg, void* ctx) {
-    static_cast<Radio*>(ctx)->send(msg);
-}
-
 Robot::Robot(MicroBitI2C&    i2c,
              NRF52Serial&    serial,
              MicroBitRadio&  radio,
@@ -31,8 +23,7 @@ Robot::Robot(MicroBitI2C&    i2c,
       _portio(io),
       _mc(_motor, _config),
       _odo(),
-      _dc(_mc, _odo, _config),
-      _cmd()
+      _dc(_mc, _odo, _config)
 {
     // uBit.init() was called by main.cpp before constructing Robot.
     // All CODAL peripherals are ready; begin subsystem initialisation now.
@@ -50,9 +41,6 @@ Robot::Robot(MicroBitI2C&    i2c,
 
     // Emit initial announcement so the host can detect the device.
     _announcer.announce();
-
-    // Wire Robot back-pointer into the command processor.
-    _cmd.setRobot(this);
 }
 
 // ---------------------------------------------------------------------------
@@ -87,22 +75,13 @@ void Robot::goTo(float tx, float ty, float speedMms)
 }
 
 // ---------------------------------------------------------------------------
+// tick — advance all subsystems; no while loop inside.
+// fn/ctx must be the active reply sink (set by the main loop to whichever
+// channel delivered the most recent command), so async completions
+// (T+DONE, D+DONE, G+DONE, SAFETY_STOP) return to the originating channel.
+// ---------------------------------------------------------------------------
 
-void Robot::run() {
-    while (true) {
-        // Direct serial commands — reply over serial.
-        while (_serial.readLine(_buf, sizeof(_buf))) {
-            if (!_announcer.handle(_buf, serialReply, &_serial)) {
-                _cmd.process(_buf, serialReply, &_serial);
-            }
-        }
-        // Commands via the RadioRelay (RAW250) — reply over the radio, which the
-        // relay forwards back to the host serial port.
-        while (_radio.poll(_buf, sizeof(_buf))) {
-            if (!_announcer.handle(_buf, radioReply, &_radio)) {
-                _cmd.process(_buf, radioReply, &_radio);
-            }
-        }
-        _cmd.tick(_uBit.systemTime(), serialReply, &_serial);
-    }
+void Robot::tick(uint32_t now_ms, ReplyFn fn, void* ctx)
+{
+    _dc.tick(now_ms, fn, ctx);
 }
