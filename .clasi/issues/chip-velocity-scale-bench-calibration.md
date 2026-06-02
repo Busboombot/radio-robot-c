@@ -30,6 +30,23 @@ internally by `MotorController` but not surfaced to the host.
    `defaultRobotConfig()`.
 3. Re-verify on the stand that chip velocity tracks encoder-derived velocity.
 
+## Related: other sprint-008 HAL methods not reachable via serial
+
+The same gap blocked the bench ACs of two other sprint-008 tickets — their new
+HAL methods aren't wired to host commands, so they could not be exercised on the
+stand. Fold these into this work (add the serial commands, then bench-verify):
+
+- **Ticket 004** — `readVersion()` (0x88), `timedMove()` (0x70), `moveToAngle()`
+  (0x5D), `resetHome()` (0x1D), `setGlobalSpeed()` (0x77): no serial commands.
+  Bench ACs ("`readVersion()` returns a plausible version; no I2C lockup") unmet.
+- **Ticket 006** — `captureCalibMin()`/`captureCalibMax()`/`readNormalized()`/
+  `setSmoothingAlpha()`: no serial commands. Bench AC (white/black calibrate →
+  normalized output) unmet. (`readValues` raw read IS exposed via `LS` and works.)
+
+Sprint 008's **core** bench gate passed (drive both directions + encoders track,
+line/color/OTOS/servo/odometry) on a clean build, 2026-06-02. These items are the
+unexposed-method remainder.
+
 ## Notes
 
 - Not urgent: the control loop has a safe encoder-delta fallback and an
