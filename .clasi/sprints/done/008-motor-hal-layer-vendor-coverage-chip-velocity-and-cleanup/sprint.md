@@ -1,7 +1,7 @@
 ---
 id: 008
 title: 'Motor/HAL Layer: Vendor Coverage, Chip Velocity and Cleanup'
-status: planning-docs
+status: done
 branch: sprint/008-motor-hal-layer-vendor-coverage-chip-velocity-and-cleanup
 use-cases: []
 issues:
