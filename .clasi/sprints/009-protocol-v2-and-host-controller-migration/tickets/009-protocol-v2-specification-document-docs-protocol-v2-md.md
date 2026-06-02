@@ -1,9 +1,16 @@
 ---
-id: "009"
-title: "Protocol v2 specification document (docs/protocol-v2.md)"
-status: open
-use-cases: [SUC-008]
-depends-on: ["003", "004", "005", "006", "007", "008"]
+id: 009
+title: Protocol v2 specification document (docs/protocol-v2.md)
+status: done
+use-cases:
+- SUC-008
+depends-on:
+- '003'
+- '004'
+- '005'
+- '006'
+- '007'
+- 008
 issue: protocol-v2-raw250-hard-break.md
 completes_issue: true
 ---
@@ -53,11 +60,11 @@ for every command. No implementation notes (those stay in code comments).
 
 ## Acceptance Criteria
 
-- [ ] `docs/protocol-v2.md` exists and covers all 13 sections above.
-- [ ] Every command implemented in tickets 003–006 appears in the document.
-- [ ] Named-key table in §7 matches the registry implemented in ticket 004.
-- [ ] No legacy commands (K*, ENC, SO, SSE, SSO, SSC, SSL, HELLO, DEVICE:, X) appear as commands (they may appear in a "removed from v1" note).
-- [ ] `docs/overview.md` is updated: remove the paragraph "The Python host must connect … No protocol changes are permitted." (that statement is now false).
+- [x] `docs/protocol-v2.md` exists and covers all 13 sections above.
+- [x] Every command implemented in tickets 003–006 appears in the document.
+- [x] Named-key table in §7 matches the registry implemented in ticket 004.
+- [x] No legacy commands (K*, ENC, SO, SSE, SSO, SSC, SSL, HELLO, DEVICE:, X) appear as commands (they may appear in a "removed from v1" note).
+- [x] `docs/overview.md` is updated: remove the paragraph "The Python host must connect … No protocol changes are permitted." (that statement is now false).
 
 ## Implementation Plan
 
