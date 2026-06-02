@@ -29,9 +29,9 @@ static void radioReply(const char* msg, void* ctx) {
 // Reply-sink routing (fixes the async-completion channel bug):
 //   activeFn / activeCtx are updated to whichever channel (serial or radio)
 //   delivered the most recent command.  robot.tick() is then called with
-//   that active sink, so async completions (T+DONE, D+DONE, G+DONE,
-//   SAFETY_STOP) and encoder streaming are returned over the SAME channel
-//   the originating command arrived on — not hardwired to serial.
+//   that active sink, so async completions (EVT done, EVT safety_stop)
+//   and TLM streaming are returned over the SAME channel the originating
+//   command arrived on — not hardwired to serial.
 // ---------------------------------------------------------------------------
 
 int main() {
@@ -50,15 +50,14 @@ int main() {
     ReplyFn activeFn  = serialReply;
     void*   activeCtx = &serial;
 
-    char buf[256];
+    char buf[512];
 
     while (true) {
         // Drain serial — commands arrive directly from a USB/UART host.
         while (serial.readLine(buf, sizeof(buf))) {
             activeFn  = serialReply;
             activeCtx = &serial;
-            if (!robot.announcer().handle(buf, serialReply, &serial))
-                cmd.process(buf, serialReply, &serial);
+            cmd.process(buf, serialReply, &serial);
         }
 
         // Drain radio — commands arrive via the RadioRelay; replies must
@@ -66,8 +65,7 @@ int main() {
         while (radio.poll(buf, sizeof(buf))) {
             activeFn  = radioReply;
             activeCtx = &radio;
-            if (!robot.announcer().handle(buf, radioReply, &radio))
-                cmd.process(buf, radioReply, &radio);
+            cmd.process(buf, radioReply, &radio);
         }
 
         // Advance drive state machines; completions go to the active sink.

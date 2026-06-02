@@ -309,7 +309,7 @@ wheels = [
 
 [[package]]
 name = "mbdeploy"
-version = "0.20260601.7"
+version = "0.20260601.8"
 source = { editable = "mbdeploy" }
 dependencies = [
     { name = "pyocd" },
@@ -331,7 +331,7 @@ provides-extras = ["dev"]
 
 [[package]]
 name = "microbit-v2-samples-tools"
-version = "0.20260601.5"
+version = "0.20260602.10"
 source = { virtual = "." }
 dependencies = [
     { name = "pyserial" },

@@ -1,12 +1,21 @@
 #pragma once
 #include <stdint.h>
 
-constexpr const char* PROTO_CMD_HELLO    = "HELLO";
+// ---------------------------------------------------------------------------
+// Protocol v2 response tag constants
+// ---------------------------------------------------------------------------
+constexpr const char* PROTO_TAG_OK  = "OK";
+constexpr const char* PROTO_TAG_ERR = "ERR";
+constexpr const char* PROTO_TAG_EVT = "EVT";
+constexpr const char* PROTO_TAG_TLM = "TLM";
+constexpr const char* PROTO_TAG_CFG = "CFG";
+constexpr const char* PROTO_TAG_ID  = "ID";
 
-constexpr const char* PROTO_REPLY_DEVICE = "DEVICE:";
-constexpr const char* PROTO_REPLY_LOG    = "LOG:";
-constexpr const char* PROTO_REPLY_OK     = "OK";
-constexpr const char* PROTO_REPLY_ERR    = "ERR:";
+// ---------------------------------------------------------------------------
+// Protocol version and firmware version string
+// ---------------------------------------------------------------------------
+constexpr int         PROTO_VERSION    = 2;
+constexpr const char* FIRMWARE_VERSION = "0.20260602.6";
 
 using ReplyFn = void(*)(const char* msg, void* ctx);
 

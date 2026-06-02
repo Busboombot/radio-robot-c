@@ -1,11 +1,19 @@
 ---
-id: "009"
-title: "Protocol v2 and Host Controller Migration"
-status: roadmap
+id: 009
+title: Protocol v2 and Host Controller Migration
+status: done
 branch: sprint/009-protocol-v2-and-host-controller-migration
-use-cases: []
+use-cases:
+- SUC-001
+- SUC-002
+- SUC-003
+- SUC-004
+- SUC-005
+- SUC-006
+- SUC-007
+- SUC-008
 issues:
-  - protocol-v2-raw250-hard-break.md
+- protocol-v2-raw250-hard-break.md
 ---
 <!-- CLASI: Before changing code or making plans, review the SE process in CLAUDE.md -->
 
@@ -69,5 +77,18 @@ speak v2 from the start.
 
 | # | Title | Depends On |
 |---|-------|------------|
+| 001 | Raise buffer ceiling to 512 (REASM_MAX, _buf, confirm codal.json) | — |
+| 002 | Parser core v2: tokenizer, verb-only uppercasing, #id correlation, OK/ERR/EVT taxonomy, hard-remove legacy | 001 |
+| 003 | PING, ECHO, ID, VER, HELP commands | 002 |
+| 004 | SET/GET named-key config registry (replaces K* commands) | 002 |
+| 005 | Unified TLM frame + STREAM/SNAP (refactor tick() streaming, sensor-sample-time stamping) | 002, 004 |
+| 006 | Motion verbs v2: S, T, D, G, STOP, GRIP de-overload, ZERO umbrella | 002 |
+| 008 | Host controller migration: copy robot_radio into repo, rewrite protocol layer for v2 | 003, 004, 005, 006 |
+| 007 | Host-side clock-sync module (min-RTT PING burst, robot-to-host time translation) | 008 |
+| 009 | Protocol v2 specification document (docs/protocol-v2.md) | 003, 004, 005, 006, 007, 008 |
 
-Tickets execute serially in the order listed. (Populated in detail mode.)
+Tickets execute serially in the order listed. Tickets 003, 004, and 006 may be
+parallelized (all depend only on 002). Ticket 005 requires 004 first. Ticket 008
+(host migration) requires all firmware commands to be in place. Ticket 007
+(clock-sync) requires the host package from 008. Ticket 009 (spec doc) closes
+the sprint.

@@ -10,6 +10,7 @@
 #include <cstdio>
 #include <cmath>
 #include <cstdlib>
+#include <cstring>
 
 // ---------------------------------------------------------------------------
 // Constructor
@@ -22,8 +23,7 @@ DriveController::DriveController(MotorController& mc, Odometry& odo, const Robot
     , _mode(DriveMode::IDLE)
     , _driveFn(nullptr)
     , _driveCtx(nullptr)
-    , _sensorFn(nullptr)
-    , _sensorCtx(nullptr)
+    , _corrId{}
     , _lastSMs(0)
     , _tgtL(0.0f)
     , _tgtR(0.0f)
@@ -40,18 +40,11 @@ DriveController::DriveController(MotorController& mc, Odometry& odo, const Robot
     , _gArcRightMm(0.0f)
     , _gArcStartL(0.0f)
     , _gArcStartR(0.0f)
-    , _encTickCount(0)
     , _lastTickMs(0)
     , _currentTimeMs(0)
     , _prevOdoEncL(0)
     , _prevOdoEncR(0)
 {
-}
-
-void DriveController::setSensorReporter(SensorReportFn fn, void* sensorCtx)
-{
-    _sensorFn  = fn;
-    _sensorCtx = sensorCtx;
 }
 
 // ---------------------------------------------------------------------------
@@ -73,7 +66,7 @@ void DriveController::beginStream(float leftMms, float rightMms, uint32_t now_ms
 
 void DriveController::beginTimed(float leftMms, float rightMms,
                                   uint32_t durationMs, uint32_t now_ms,
-                                  ReplyFn fn, void* ctx)
+                                  ReplyFn fn, void* ctx, const char* corr_id)
 {
     _mc.startDriveClean(leftMms, rightMms);
     _mc.setTarget(leftMms, rightMms);
@@ -83,12 +76,18 @@ void DriveController::beginTimed(float leftMms, float rightMms,
     _mode     = DriveMode::TIMED;
     _driveFn  = fn;
     _driveCtx = ctx;
+    if (corr_id && corr_id[0] != '\0') {
+        strncpy(_corrId, corr_id, sizeof(_corrId) - 1);
+        _corrId[sizeof(_corrId) - 1] = '\0';
+    } else {
+        _corrId[0] = '\0';
+    }
     (void)now_ms;
 }
 
 void DriveController::beginDistance(float leftMms, float rightMms,
                                      int32_t targetMm, uint32_t now_ms,
-                                     ReplyFn fn, void* ctx)
+                                     ReplyFn fn, void* ctx, const char* corr_id)
 {
     _mc.startDriveClean(leftMms, rightMms);
     _mc.setTarget(leftMms, rightMms);
@@ -101,11 +100,17 @@ void DriveController::beginDistance(float leftMms, float rightMms,
     _mode       = DriveMode::DISTANCE;
     _driveFn    = fn;
     _driveCtx   = ctx;
+    if (corr_id && corr_id[0] != '\0') {
+        strncpy(_corrId, corr_id, sizeof(_corrId) - 1);
+        _corrId[sizeof(_corrId) - 1] = '\0';
+    } else {
+        _corrId[0] = '\0';
+    }
     (void)now_ms;
 }
 
 void DriveController::beginGoTo(float tx, float ty, float speedMms, uint32_t now_ms,
-                                 ReplyFn fn, void* ctx)
+                                 ReplyFn fn, void* ctx, const char* corr_id)
 {
     _gTargetX = tx;
     _gTargetY = ty;
@@ -151,6 +156,12 @@ void DriveController::beginGoTo(float tx, float ty, float speedMms, uint32_t now
     _mode     = DriveMode::GO_TO;
     _driveFn  = fn;
     _driveCtx = ctx;
+    if (corr_id && corr_id[0] != '\0') {
+        strncpy(_corrId, corr_id, sizeof(_corrId) - 1);
+        _corrId[sizeof(_corrId) - 1] = '\0';
+    } else {
+        _corrId[0] = '\0';
+    }
     (void)now_ms;
 }
 
@@ -194,19 +205,31 @@ void DriveController::tick(uint32_t now_ms, ReplyFn fn, void* ctx)
     ReplyFn  dfn = _driveFn  ? _driveFn  : fn;
     void*    dct = _driveFn  ? _driveCtx : ctx;
 
+    // Helper: build an EVT line, appending " #<id>" when _corrId is set.
+    // Uses a local buffer on the stack; safe because dfn() is called inline.
+    auto emitEvt = [&](const char* base) {
+        if (_corrId[0] != '\0') {
+            char evtBuf[64];
+            snprintf(evtBuf, sizeof(evtBuf), "%s #%s", base, _corrId);
+            dfn(evtBuf, dct);
+        } else {
+            dfn(base, dct);
+        }
+        _corrId[0] = '\0';  // clear after emitting
+    };
+
     // S-mode watchdog
     if (_mode == DriveMode::STREAMING) {
         if ((now_ms - _lastSMs) > (uint32_t)_cfg.sTimeoutMs) {
             fullStop(dfn, dct);
-            dfn("LOG:SAFETY_STOP", dct);
+            emitEvt("EVT safety_stop");
         }
     }
 
     // T-mode: stop when deadline reached
     if (_mode == DriveMode::TIMED && now_ms >= _tEndMs) {
         fullStop(dfn, dct);
-        reportOdo(dfn, dct);
-        dfn("ACK:T+DONE", dct);
+        emitEvt("EVT done T");
     }
 
     // D-mode: stop when average encoder travel >= target, or on timeout
@@ -216,8 +239,7 @@ void DriveController::tick(uint32_t now_ms, ReplyFn fn, void* ctx)
         int32_t traveled = (abs(l - _dEncStartL) + abs(r - _dEncStartR)) / 2;
         if (traveled >= _dTargetMm || now_ms >= _dTimeoutMs) {
             fullStop(dfn, dct);
-            reportOdo(dfn, dct);
-            dfn("ACK:D+DONE", dct);
+            emitEvt("EVT done D");
         }
     }
 
@@ -256,22 +278,8 @@ void DriveController::tick(uint32_t now_ms, ReplyFn fn, void* ctx)
             if (doneL && doneR) {
                 fullStop(dfn, dct);
                 _gPhase = GPhase::IDLE;
-                dfn("G+DONE", dct);
+                emitEvt("EVT done G");
             }
-        }
-    }
-
-    // Streaming encoder + sensor output every encReportEvery ticks (only while driving).
-    // Encoder/sensor streaming goes to the active sink (fn/ctx) — it is continuous
-    // telemetry for whoever is listening, not a per-drive completion.
-    if (_mode != DriveMode::IDLE) {
-        _encTickCount++;
-        if (_encTickCount >= _cfg.encReportEvery) {
-            reportEncoders(fn, ctx);
-            if (_sensorFn) {
-                _sensorFn(fn, ctx, _sensorCtx);
-            }
-            _encTickCount = 0;
         }
     }
 }
@@ -283,30 +291,11 @@ void DriveController::tick(uint32_t now_ms, ReplyFn fn, void* ctx)
 void DriveController::fullStop(ReplyFn fn, void* ctx)
 {
     _mc.stop();
-    _mode         = DriveMode::IDLE;
-    _tgtL         = 0.0f;
-    _tgtR         = 0.0f;
-    _encTickCount = 0;
+    _mode  = DriveMode::IDLE;
+    _tgtL  = 0.0f;
+    _tgtR  = 0.0f;
     (void)fn;
     (void)ctx;
-}
-
-void DriveController::reportEncoders(ReplyFn fn, void* ctx)
-{
-    int32_t l, r;
-    _mc.getEncoderPositions(l, r);
-    char buf[32];
-    snprintf(buf, sizeof(buf), "ENC%+d%+d", (int)l, (int)r);
-    fn(buf, ctx);
-}
-
-void DriveController::reportOdo(ReplyFn fn, void* ctx)
-{
-    int32_t x, y, h;
-    _odo.getPose(x, y, h);
-    char buf[48];
-    snprintf(buf, sizeof(buf), "SO%+d%+d%+d", (int)x, (int)y, (int)h);
-    fn(buf, ctx);
 }
 
 /**

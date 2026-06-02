@@ -11,9 +11,7 @@ The original TypeScript firmware was developed as a functional prototype. This p
 - Is maintainable and testable at the module level
 - Enables advanced motor control algorithms not practical in TypeScript (ratio PID, arc-to-goal navigation)
 - Runs closer to the metal for tighter timing on encoder-based odometry
-- Keeps the Python host stack (`robot_radio/` package) entirely unchanged — full wire protocol compatibility is required
-
-The Python host must connect, issue commands, and receive responses identically to the TypeScript version. No protocol changes are permitted.
+- Ships a protocol v2 wire redesign with the `robot_radio/` Python host package migrated to match
 
 ## Key Technical Differentiators
 
@@ -27,8 +25,8 @@ The Python host must connect, issue commands, and receive responses identically 
 
 ## How Success Is Measured
 
-- The Python host connects over serial at 115200 baud and over micro:bit radio at group 10 without modification.
-- All 30+ commands (drive, stop, encoder, odometry, sensor, servo, port IO, calibration) produce responses matching the TypeScript firmware's wire protocol.
+- The Python host (`robot_radio/`) connects over serial at 115 200 baud and over micro:bit radio at group 10 using the protocol v2 wire format (see `docs/protocol-v2.md`).
+- All command verbs (drive, stop, encoder, odometry, sensor, servo, port IO, config) produce the correct `OK`/`ERR`/`EVT`/`TLM`/`CFG`/`ID` responses defined in the v2 specification.
 - The robot drives a straight 2-meter course with less than 1% encoder divergence between wheels.
-- The G command navigates to a specified XY offset within the done-tolerance (`KGD`) parameter.
-- PurePursuit and Stanley path following complete a defined waypoint route without manual tuning beyond the calibration parameter set.
+- The G command navigates to a specified XY offset within the done-tolerance (`doneTol`) parameter.
+- Clock-sync: a PING burst aligns robot `t=` timestamps with host-monotonic time to within half the minimum RTT.

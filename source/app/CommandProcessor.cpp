@@ -1,11 +1,16 @@
-// CommandProcessor.cpp — wire-protocol parser and dispatcher.
-// All command handlers delegate to Robot public methods or component accessors.
-// No hardware pointers. No config pointers. No drive state.
+// CommandProcessor.cpp — protocol v2 wire-protocol parser and dispatcher.
 //
-// Sprint 007, Ticket 005: thinned to Robot& + process() + static helpers.
+// Sprint 009, Ticket 002: v2 tokenizer, verb-only uppercasing, #id
+// correlation, OK/ERR/EVT/TLM/CFG/ID response taxonomy.
+// Legacy packed parsing (parseSignedArgs, K*, S+/T+/D+, etc.) removed.
+// Announcer removed; HELLO returns ERR unknown.
+//
+// Sprint 009, Ticket 004: SET/GET named-key config registry.
+// Static kRegistry[] maps friendly key names to RobotConfig fields.
 
 #include "CommandProcessor.h"
 #include "Robot.h"
+#include "MicroBitDevice.h"
 #include "OtosSensor.h"
 #include "LineSensor.h"
 #include "ColorSensor.h"
@@ -19,7 +24,66 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cctype>
-#include <cmath>
+
+// ---------------------------------------------------------------------------
+// Config registry — maps friendly key names to RobotConfig field offsets.
+// ---------------------------------------------------------------------------
+
+enum ConfigFieldType {
+    CFG_FLOAT,        // float field, wire format: %.3f
+    CFG_INT,          // int32_t field, wire format: %d
+    CFG_FLOAT_AS_INT  // float field stored as integer magnitude, wire format: %d
+};
+
+struct ConfigEntry {
+    const char*    key;
+    ConfigFieldType type;
+    size_t         offset;  // offsetof(RobotConfig, field)
+};
+
+// Helper macros so the table stays readable.
+#define CFG_F(k, field)  { k, CFG_FLOAT,        offsetof(RobotConfig, field) }
+#define CFG_I(k, field)  { k, CFG_INT,           offsetof(RobotConfig, field) }
+#define CFG_FI(k, field) { k, CFG_FLOAT_AS_INT,  offsetof(RobotConfig, field) }
+
+static const ConfigEntry kRegistry[] = {
+    // Encoder calibration (mm per degree of motor rotation)
+    CFG_F("ml",         mmPerDegL),
+    CFG_F("mr",         mmPerDegR),
+    // Feed-forward and motor scale factors
+    CFG_F("kff",        kFF),
+    CFG_F("klf",        kScaleLF),
+    CFG_F("klb",        kScaleLB),
+    CFG_F("krf",        kScaleRF),
+    CFG_F("krb",        kScaleRB),
+    // Slower-wheel adjustment
+    CFG_F("adjThr",     kAdjThreshold),
+    CFG_F("adjGain",    kAdjGain),
+    // Geometry — stored as float, displayed as integer (mm)
+    CFG_FI("tw",        trackwidthMm),
+    // Ratio PID gains
+    CFG_F("pid.kp",     ratioPidKp),
+    CFG_F("pid.ki",     ratioPidKi),
+    CFG_F("pid.kd",     ratioPidKd),
+    CFG_F("pid.max",    ratioPidMax),
+    // Go-to tolerances — stored as float, displayed as integer (mm)
+    CFG_FI("turnThr",   turnThresholdMm),
+    CFG_FI("doneTol",   doneTolMm),
+    // Command scaling
+    CFG_F("distScale",  distScale),
+    CFG_F("turnScale",  turnScale),
+    // Timing and speed (int32_t fields)
+    CFG_I("minSpeed",   minSpeedMms),
+    CFG_I("sTimeout",   sTimeoutMs),
+    CFG_I("tick",       tickMs),
+    CFG_I("tlmPeriod",  tlmPeriodMs),
+};
+
+#undef CFG_F
+#undef CFG_I
+#undef CFG_FI
+
+static constexpr int kRegistryCount = (int)(sizeof(kRegistry) / sizeof(kRegistry[0]));
 
 // ---------------------------------------------------------------------------
 // Constructor
@@ -34,38 +98,6 @@ CommandProcessor::CommandProcessor(Robot& robot)
 // Static helpers
 // ---------------------------------------------------------------------------
 
-/**
- * Parse sign-prefixed integer arguments from a string.
- * Example: "+200-150"  -> out[0]=200, out[1]=-150, returns 2
- */
-int CommandProcessor::parseSignedArgs(const char* s, int32_t* out, int maxArgs)
-{
-    int    count    = 0;
-    bool   inNum    = false;
-    bool   negative = false;
-    int32_t accum   = 0;
-
-    for (const char* p = s; *p != '\0' && count < maxArgs; ++p) {
-        char ch = *p;
-        if (ch == '+' || ch == '-') {
-            if (inNum) {
-                out[count++] = negative ? -accum : accum;
-            }
-            inNum    = true;
-            negative = (ch == '-');
-            accum    = 0;
-        } else if (ch >= '0' && ch <= '9') {
-            if (inNum) {
-                accum = accum * 10 + (ch - '0');
-            }
-        }
-    }
-    if (inNum && count < maxArgs) {
-        out[count++] = negative ? -accum : accum;
-    }
-    return count;
-}
-
 int CommandProcessor::clampInt(int v, int lo, int hi)
 {
     if (v < lo) return lo;
@@ -73,609 +105,967 @@ int CommandProcessor::clampInt(int v, int lo, int hi)
     return v;
 }
 
-int CommandProcessor::clampMinSpeed(int mms, int minSpeedMms)
+// ---------------------------------------------------------------------------
+// parseTokens
+// ---------------------------------------------------------------------------
+
+int CommandProcessor::parseTokens(const char* line, char* workBuf, int workBufSize,
+                                  char** tokens, int maxTokens,
+                                  char* corr_id, int corrIdSize)
 {
-    if (mms == 0) return 0;
-    if (mms > 0 && mms < minSpeedMms) return minSpeedMms;
-    if (mms < 0 && mms > -minSpeedMms) return -minSpeedMms;
-    return mms;
+    // Copy line into workBuf, trimming leading/trailing whitespace.
+    int srcLen = 0;
+    const char* p = line;
+    while (*p == ' ' || *p == '\t' || *p == '\r' || *p == '\n') ++p;
+
+    for (const char* q = p; *q != '\0' && srcLen < workBufSize - 1; ++q, ++srcLen) {
+        workBuf[srcLen] = *q;
+    }
+    // Trim trailing whitespace.
+    while (srcLen > 0 &&
+           (workBuf[srcLen - 1] == ' ' || workBuf[srcLen - 1] == '\t' ||
+            workBuf[srcLen - 1] == '\r' || workBuf[srcLen - 1] == '\n')) {
+        --srcLen;
+    }
+    workBuf[srcLen] = '\0';
+
+    if (corr_id && corrIdSize > 0) corr_id[0] = '\0';
+
+    if (srcLen == 0) return 0;
+
+    // Tokenize by splitting on whitespace in place.
+    int count = 0;
+    char* cur  = workBuf;
+    char* end  = workBuf + srcLen;
+
+    while (cur < end && count < maxTokens) {
+        // Skip leading whitespace.
+        while (cur < end && (*cur == ' ' || *cur == '\t')) ++cur;
+        if (cur >= end) break;
+
+        tokens[count++] = cur;
+
+        // Advance to next whitespace or end.
+        while (cur < end && *cur != ' ' && *cur != '\t') ++cur;
+        if (cur < end) {
+            *cur = '\0';
+            ++cur;
+        }
+    }
+
+    // Upper-case the verb (tokens[0]).
+    if (count > 0) {
+        for (char* c = tokens[0]; *c != '\0'; ++c) {
+            *c = (char)toupper((unsigned char)*c);
+        }
+    }
+
+    // Check if the last token is a correlation id: '#' followed by digits only.
+    if (count > 0 && corr_id && corrIdSize > 1) {
+        const char* last = tokens[count - 1];
+        if (last[0] == '#') {
+            const char* d = last + 1;
+            bool allDigits = (*d != '\0');  // must have at least one digit
+            while (*d != '\0' && allDigits) {
+                if (*d < '0' || *d > '9') allDigits = false;
+                ++d;
+            }
+            if (allDigits) {
+                // Extract digits into corr_id (without the '#').
+                int len = (int)(d - (last + 1));
+                if (len >= corrIdSize) len = corrIdSize - 1;
+                memcpy(corr_id, last + 1, (size_t)len);
+                corr_id[len] = '\0';
+                --count;  // remove the #id token from the list
+            }
+        }
+    }
+
+    return count;
 }
 
 // ---------------------------------------------------------------------------
-// process — command dispatch
+// parseKV
+// ---------------------------------------------------------------------------
+
+int CommandProcessor::parseKV(char** tokens, int ntokens, KVPair* kvs, int maxKV)
+{
+    int kvCount = 0;
+    // Skip tokens[0] (verb) and start from index 1.
+    for (int i = 1; i < ntokens && kvCount < maxKV; ++i) {
+        char* eq = strchr(tokens[i], '=');
+        if (!eq) continue;  // positional arg, not kv
+
+        KVPair kv;
+        if (eq == tokens[i]) {
+            // '=' at the start: no key.
+            kv.key   = nullptr;
+            kv.value = eq + 1;
+        } else {
+            *eq      = '\0';
+            kv.key   = tokens[i];
+            kv.value = eq + 1;
+        }
+        kvs[kvCount++] = kv;
+    }
+    return kvCount;
+}
+
+// ---------------------------------------------------------------------------
+// Reply builders
+// ---------------------------------------------------------------------------
+
+void CommandProcessor::replyOK(char* buf, int size,
+                               const char* verb, const char* body, const char* id,
+                               ReplyFn fn, void* ctx)
+{
+    if (body && body[0] != '\0') {
+        if (id && id[0] != '\0') {
+            snprintf(buf, (size_t)size, "OK %s %s #%s", verb, body, id);
+        } else {
+            snprintf(buf, (size_t)size, "OK %s %s", verb, body);
+        }
+    } else {
+        if (id && id[0] != '\0') {
+            snprintf(buf, (size_t)size, "OK %s #%s", verb, id);
+        } else {
+            snprintf(buf, (size_t)size, "OK %s", verb);
+        }
+    }
+    fn(buf, ctx);
+}
+
+void CommandProcessor::replyErr(char* buf, int size,
+                                const char* code, const char* detail, const char* id,
+                                ReplyFn fn, void* ctx)
+{
+    if (detail && detail[0] != '\0') {
+        if (id && id[0] != '\0') {
+            snprintf(buf, (size_t)size, "ERR %s %s #%s", code, detail, id);
+        } else {
+            snprintf(buf, (size_t)size, "ERR %s %s", code, detail);
+        }
+    } else {
+        if (id && id[0] != '\0') {
+            snprintf(buf, (size_t)size, "ERR %s #%s", code, id);
+        } else {
+            snprintf(buf, (size_t)size, "ERR %s", code);
+        }
+    }
+    fn(buf, ctx);
+}
+
+void CommandProcessor::replyEvt(char* buf, int size,
+                                const char* name, const char* body,
+                                ReplyFn fn, void* ctx)
+{
+    if (body && body[0] != '\0') {
+        snprintf(buf, (size_t)size, "EVT %s %s", name, body);
+    } else {
+        snprintf(buf, (size_t)size, "EVT %s", name);
+    }
+    fn(buf, ctx);
+}
+
+// ---------------------------------------------------------------------------
+// Registry helpers — append one key=value pair to a string buffer.
+// Returns the number of characters written (not counting the NUL).
+// ---------------------------------------------------------------------------
+
+static int appendKeyValue(char* buf, int remaining, const ConfigEntry& entry,
+                          const RobotConfig& cfg)
+{
+    if (remaining <= 1) return 0;
+
+    const char* base = reinterpret_cast<const char*>(&cfg);
+    int written = 0;
+
+    switch (entry.type) {
+    case CFG_FLOAT: {
+        const float v = *reinterpret_cast<const float*>(base + entry.offset);
+        written = snprintf(buf, (size_t)remaining, "%s=%.3f", entry.key, (double)v);
+        break;
+    }
+    case CFG_INT: {
+        const int32_t v = *reinterpret_cast<const int32_t*>(base + entry.offset);
+        written = snprintf(buf, (size_t)remaining, "%s=%d", entry.key, (int)v);
+        break;
+    }
+    case CFG_FLOAT_AS_INT: {
+        const float v = *reinterpret_cast<const float*>(base + entry.offset);
+        written = snprintf(buf, (size_t)remaining, "%s=%d", entry.key, (int)v);
+        break;
+    }
+    }
+
+    if (written < 0 || written >= remaining) return remaining - 1;
+    return written;
+}
+
+// ---------------------------------------------------------------------------
+// handleGet — build CFG response line from named keys (or all keys).
+// tokens[1..ntok-1] are the requested keys; empty = all keys.
+// ---------------------------------------------------------------------------
+
+static void handleGet(char** tokens, int ntok, const RobotConfig& cfg,
+                      char* rbuf, int rbufSize, const char* corr_id,
+                      ReplyFn replyFn, void* ctx)
+{
+    // Build: "CFG key=val key=val ... [#id]"
+    char line[512];
+    int pos = 0;
+    int rem = (int)sizeof(line);
+
+    // Write the "CFG " prefix.
+    int n = snprintf(line + pos, (size_t)rem, "CFG");
+    if (n > 0 && n < rem) { pos += n; rem -= n; }
+
+    bool anyKey = (ntok <= 1);  // no args → dump all
+
+    if (anyKey) {
+        // Dump all registry entries.
+        for (int i = 0; i < kRegistryCount && rem > 2; ++i) {
+            line[pos++] = ' '; --rem;
+            int w = appendKeyValue(line + pos, rem, kRegistry[i], cfg);
+            pos += w; rem -= w;
+        }
+    } else {
+        // Dump only the requested keys.
+        for (int t = 1; t < ntok && rem > 2; ++t) {
+            const char* reqKey = tokens[t];
+            bool found = false;
+            for (int i = 0; i < kRegistryCount; ++i) {
+                if (strcmp(kRegistry[i].key, reqKey) == 0) {
+                    line[pos++] = ' '; --rem;
+                    int w = appendKeyValue(line + pos, rem, kRegistry[i], cfg);
+                    pos += w; rem -= w;
+                    found = true;
+                    break;
+                }
+            }
+            if (!found) {
+                // Unknown key in GET — reply with ERR for that key but continue.
+                CommandProcessor::replyErr(rbuf, rbufSize,
+                                           "badkey", reqKey, corr_id,
+                                           replyFn, ctx);
+            }
+        }
+    }
+
+    // Append correlation id if present.
+    if (corr_id && corr_id[0] != '\0' && rem > 3) {
+        int w = snprintf(line + pos, (size_t)rem, " #%s", corr_id);
+        if (w > 0 && w < rem) { pos += w; rem -= w; }
+    }
+
+    line[pos] = '\0';
+    replyFn(line, ctx);
+}
+
+// ---------------------------------------------------------------------------
+// handleSet — apply key=value pairs to RobotConfig.
+// Emits "OK set <applied>" and "ERR badkey <key>" per unknown key.
+// Calls updatePidGains() if any PID param was applied.
+// ---------------------------------------------------------------------------
+
+static void handleSet(KVPair* kvs, int nkv, RobotConfig& cfg,
+                      MotorController& mc,
+                      char* rbuf, int rbufSize, const char* corr_id,
+                      ReplyFn replyFn, void* ctx)
+{
+    // Build "OK set <applied keys>" body.
+    char applied[480];
+    int apos = 0;
+    int arem = (int)sizeof(applied);
+
+    bool pidChanged = false;
+
+    for (int i = 0; i < nkv; ++i) {
+        if (!kvs[i].key) continue;  // already rejected by pre-scan
+
+        const char* k = kvs[i].key;
+        const char* v = kvs[i].value;
+
+        // Find in registry.
+        const ConfigEntry* entry = nullptr;
+        for (int r = 0; r < kRegistryCount; ++r) {
+            if (strcmp(kRegistry[r].key, k) == 0) {
+                entry = &kRegistry[r];
+                break;
+            }
+        }
+
+        if (!entry) {
+            // Unknown key — emit ERR and continue processing remaining keys.
+            CommandProcessor::replyErr(rbuf, rbufSize,
+                                       "badkey", k, corr_id, replyFn, ctx);
+            continue;
+        }
+
+        // Write through to RobotConfig.
+        char* base = reinterpret_cast<char*>(&cfg);
+        switch (entry->type) {
+        case CFG_FLOAT: {
+            float fv = (float)atof(v);
+            memcpy(base + entry->offset, &fv, sizeof(float));
+            break;
+        }
+        case CFG_INT: {
+            int32_t iv = (int32_t)atoi(v);
+            memcpy(base + entry->offset, &iv, sizeof(int32_t));
+            break;
+        }
+        case CFG_FLOAT_AS_INT: {
+            float fv = (float)atoi(v);
+            memcpy(base + entry->offset, &fv, sizeof(float));
+            break;
+        }
+        }
+
+        // Track PID changes so we can call updatePidGains() once at the end.
+        if (strcmp(k, "pid.kp") == 0 || strcmp(k, "pid.ki") == 0 ||
+            strcmp(k, "pid.kd") == 0 || strcmp(k, "pid.max") == 0) {
+            pidChanged = true;
+        }
+
+        // Append to applied list.
+        if (apos > 0 && arem > 1) { applied[apos++] = ' '; --arem; }
+        int w = snprintf(applied + apos, (size_t)arem, "%s=%s", k, v);
+        if (w > 0 && w < arem) { apos += w; arem -= w; }
+    }
+
+    // Update PID gains in MotorController if any PID param changed.
+    if (pidChanged) {
+        mc.updatePidGains(cfg.ratioPidKp, cfg.ratioPidKi,
+                          cfg.ratioPidKd, cfg.ratioPidMax);
+    }
+
+    // Emit OK set only if at least one key was applied.
+    if (apos > 0) {
+        applied[apos] = '\0';
+        CommandProcessor::replyOK(rbuf, rbufSize, "set", applied, corr_id,
+                                  replyFn, ctx);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// process — v2 command dispatch
 // ---------------------------------------------------------------------------
 
 void CommandProcessor::process(const char* line, ReplyFn replyFn, void* ctx)
 {
-    // Copy to local uppercase buffer (250-byte RAW250 message max, NUL-terminated)
-    char buf[256];
-    int  len = 0;
-    for (const char* p = line; *p != '\0' && len < 255; ++p) {
-        char ch = *p;
-        if ((unsigned char)ch < 0x21 && len == 0) continue;  // skip leading whitespace
-        buf[len++] = (char)toupper((unsigned char)ch);
+    // Working buffer for tokenization. parseTokens() copies into this.
+    char workBuf[512];
+    char* tokens[MAX_TOKENS];
+    char  corr_id[16];
+
+    int ntok = parseTokens(line, workBuf, sizeof(workBuf),
+                           tokens, MAX_TOKENS,
+                           corr_id, sizeof(corr_id));
+    if (ntok == 0) return;
+
+    const char* verb = tokens[0];
+
+    // Reply buffer used by all handlers.
+    char rbuf[520];
+
+    // ── Check for any bad kv token (key missing) before dispatching ──────────
+    // Scan for kv tokens with missing key; these are always badarg.
+    KVPair kvs[MAX_KV];
+    int    nkv = parseKV(tokens, ntok, kvs, MAX_KV);
+    for (int i = 0; i < nkv; ++i) {
+        if (kvs[i].key == nullptr) {
+            replyErr(rbuf, sizeof(rbuf), "badarg", "missing key", corr_id, replyFn, ctx);
+            return;
+        }
     }
-    while (len > 0 && (unsigned char)buf[len - 1] < 0x21) --len;
-    buf[len] = '\0';
 
-    if (len == 0) return;
+    // ── Dispatch on verb ─────────────────────────────────────────────────────
 
-    RobotConfig&     cfg = _robot.config();
-    MotorController& mc  = _robot.motor();  // used by K* PID setters
+    // ── PING ─────────────────────────────────────────────────────────────────
+    // Reply: OK pong t=<robot_ms>  (clock-sync probe; t MUST be robot clock)
+    if (strcmp(verb, "PING") == 0) {
+        uint32_t t = _robot.systemTime();
+        char body[32];
+        snprintf(body, sizeof(body), "t=%lu", (unsigned long)t);
+        replyOK(rbuf, sizeof(rbuf), "pong", body, corr_id, replyFn, ctx);
+        return;
+    }
 
-    // ── X or STOP — full stop ───────────────────────────────────────────────
-    if ((len == 1 && buf[0] == 'X') ||
-        (len == 4 && memcmp(buf, "STOP", 4) == 0)) {
+    // ── ECHO ─────────────────────────────────────────────────────────────────
+    // Reply: OK echo <payload>  — payload is everything after the verb token,
+    // preserving case and spacing exactly (extracted from raw line, not tokens).
+    if (strcmp(verb, "ECHO") == 0) {
+        // Find the payload by skipping past the verb in the original line.
+        // line is the original (immutable) parameter; workBuf is our copy.
+        // We need to locate the content after "ECHO" in the raw line.
+        const char* p = line;
+        // Skip leading whitespace.
+        while (*p == ' ' || *p == '\t' || *p == '\r' || *p == '\n') ++p;
+        // Skip the verb token (any run of non-whitespace).
+        while (*p != '\0' && *p != ' ' && *p != '\t') ++p;
+        // Skip exactly one whitespace separator (if present).
+        if (*p == ' ' || *p == '\t') ++p;
+        // p now points at the payload (may be empty).
+
+        // If a corr_id was found, we must strip the trailing "#<id>" from
+        // the payload. The parseTokens() pass already removed it from tokens
+        // but the raw line still has it. Strip it now.
+        char payload[512];
+        int plen = 0;
+        const char* q = p;
+        while (*q != '\0' && *q != '\r' && *q != '\n') {
+            payload[plen++] = *q++;
+            if (plen >= (int)(sizeof(payload) - 1)) break;
+        }
+        payload[plen] = '\0';
+
+        // Trim trailing whitespace.
+        while (plen > 0 && (payload[plen-1] == ' ' || payload[plen-1] == '\t')) {
+            payload[--plen] = '\0';
+        }
+
+        // Strip trailing corr_id token ("#<digits>") if present.
+        if (corr_id[0] != '\0') {
+            // The corr_id token is "#" + corr_id digits at the very end.
+            // Look for " #<corr_id>" suffix and remove it.
+            char suffix[20];
+            snprintf(suffix, sizeof(suffix), " #%s", corr_id);
+            int slen = (int)strlen(suffix);
+            if (plen >= slen && strcmp(payload + plen - slen, suffix) == 0) {
+                plen -= slen;
+                payload[plen] = '\0';
+            }
+        }
+
+        replyOK(rbuf, sizeof(rbuf), "echo", payload, corr_id, replyFn, ctx);
+        return;
+    }
+
+    // ── ID ───────────────────────────────────────────────────────────────────
+    // Reply: ID model=Nezha2 name=<name> serial=<serial> fw=<ver> proto=2
+    //        caps=<present subsystems>
+    // Tag is "ID", not "OK" — this uses a custom snprintf path.
+    if (strcmp(verb, "ID") == 0) {
+        // Robot friendly name and serial number from CODAL.
+        // microbit_friendly_name() returns a pointer to a static buffer (5 chars).
+        // microbit_serial_number() returns a uint32_t hardware ID.
+        const char* name   = microbit_friendly_name();
+        uint32_t    serial = microbit_serial_number();
+
+        // Build caps= string from runtime-present subsystems.
+        char caps[64];
+        caps[0] = '\0';
+        bool first = true;
+        auto addCap = [&](const char* cap) {
+            if (!first) {
+                int n = (int)strlen(caps);
+                caps[n] = ','; caps[n+1] = '\0';
+            }
+            // strncat safe: caps is 64 bytes, max total caps length is ~50.
+            int rem = (int)(sizeof(caps) - strlen(caps) - 1);
+            if (rem > 0) strncat(caps, cap, (size_t)rem);
+            first = false;
+        };
+        if (_robot.otos())        addCap("otos");
+        if (_robot.lineSensor())  addCap("line");
+        if (_robot.colorSensor()) addCap("color");
+        if (_robot.servo())       addCap("gripper");
+        // portio is always present.
+        addCap("portio");
+
+        if (corr_id[0] != '\0') {
+            snprintf(rbuf, sizeof(rbuf),
+                     "ID model=Nezha2 name=%s serial=%lu fw=%s proto=%d caps=%s #%s",
+                     name, (unsigned long)serial, FIRMWARE_VERSION, PROTO_VERSION,
+                     caps, corr_id);
+        } else {
+            snprintf(rbuf, sizeof(rbuf),
+                     "ID model=Nezha2 name=%s serial=%lu fw=%s proto=%d caps=%s",
+                     name, (unsigned long)serial, FIRMWARE_VERSION, PROTO_VERSION,
+                     caps);
+        }
+        replyFn(rbuf, ctx);
+        return;
+    }
+
+    // ── VER ──────────────────────────────────────────────────────────────────
+    // Reply: OK ver fw=<ver> proto=2
+    if (strcmp(verb, "VER") == 0) {
+        char body[64];
+        snprintf(body, sizeof(body), "fw=%s proto=%d", FIRMWARE_VERSION, PROTO_VERSION);
+        replyOK(rbuf, sizeof(rbuf), "ver", body, corr_id, replyFn, ctx);
+        return;
+    }
+
+    // ── HELP ─────────────────────────────────────────────────────────────────
+    // Reply: OK help <verb list>
+    if (strcmp(verb, "HELP") == 0) {
+        replyOK(rbuf, sizeof(rbuf), "help",
+                "PING ECHO ID VER HELP SET GET STREAM SNAP S T D G STOP GRIP ZERO OI OZ OR OP OV OL OA P PA",
+                corr_id, replyFn, ctx);
+        return;
+    }
+
+    // ── GET ──────────────────────────────────────────────────────────────────
+    // GET                → CFG <all key=value pairs>
+    // GET ml pid.kp      → CFG ml=0.487 pid.kp=2.0
+    // GET ml #9          → CFG ml=0.487 #9
+    if (strcmp(verb, "GET") == 0) {
+        // Positional args (tokens[1..]) are the requested keys.
+        // parseKV() would consume tokens that contain '='; GET only uses plain
+        // key names, so pass the raw token list directly.
+        handleGet(tokens, ntok, _robot.config(), rbuf, sizeof(rbuf),
+                  corr_id, replyFn, ctx);
+        return;
+    }
+
+    // ── SET ──────────────────────────────────────────────────────────────────
+    // SET ml=0.487 pid.kp=2.0  → OK set ml=0.487 pid.kp=2.0
+    // SET badkey=99             → ERR badkey badkey
+    // SET ml=0.487 bad=1        → OK set ml=0.487   (+ ERR badkey bad)
+    if (strcmp(verb, "SET") == 0) {
+        if (nkv == 0) {
+            replyErr(rbuf, sizeof(rbuf), "badarg", "no key=value pairs", corr_id,
+                     replyFn, ctx);
+            return;
+        }
+        handleSet(kvs, nkv, _robot.config(), _robot.motor(),
+                  rbuf, sizeof(rbuf), corr_id, replyFn, ctx);
+        return;
+    }
+
+    // ── STREAM ───────────────────────────────────────────────────────────────
+    // STREAM <ms>              → OK stream period=<ms>  (0 = off)
+    // STREAM fields=enc,pose   → OK stream fields=enc,pose  (subset)
+    if (strcmp(verb, "STREAM") == 0) {
+        // Check for fields= kv pair first.
+        bool hasFields = false;
+        for (int i = 0; i < nkv; ++i) {
+            if (kvs[i].key && strcmp(kvs[i].key, "fields") == 0) {
+                hasFields = true;
+                // Parse comma-separated field names and build bitmask.
+                uint8_t mask = 0;
+                const char* fp = kvs[i].value;
+                // Tokenize the value string on commas.
+                char fbuf[64];
+                int flen = 0;
+                for (const char* c = fp; ; ++c) {
+                    bool end = (*c == '\0' || *c == ',');
+                    if (!end && flen < (int)(sizeof(fbuf) - 1)) {
+                        fbuf[flen++] = *c;
+                    }
+                    if (end) {
+                        fbuf[flen] = '\0';
+                        if (strcmp(fbuf, "enc")   == 0) mask |= TLM_FIELD_ENC;
+                        if (strcmp(fbuf, "pose")  == 0) mask |= TLM_FIELD_POSE;
+                        if (strcmp(fbuf, "vel")   == 0) mask |= TLM_FIELD_VEL;
+                        if (strcmp(fbuf, "line")  == 0) mask |= TLM_FIELD_LINE;
+                        if (strcmp(fbuf, "color") == 0) mask |= TLM_FIELD_COLOR;
+                        flen = 0;
+                        if (*c == '\0') break;
+                    }
+                }
+                _robot.config().tlmFields = mask ? mask : TLM_FIELD_ALL;
+                // Reconstruct the fields string for the response body.
+                char body[80];
+                int bpos = 0;
+                bool needComma = false;
+                const struct { uint8_t bit; const char* name; } kFieldNames[] = {
+                    { TLM_FIELD_ENC,   "enc"   },
+                    { TLM_FIELD_POSE,  "pose"  },
+                    { TLM_FIELD_VEL,   "vel"   },
+                    { TLM_FIELD_LINE,  "line"  },
+                    { TLM_FIELD_COLOR, "color" },
+                };
+                int brem = (int)sizeof(body);
+                int bw = snprintf(body + bpos, (size_t)brem, "fields=");
+                if (bw > 0 && bw < brem) { bpos += bw; brem -= bw; }
+                for (int fi = 0; fi < 5 && brem > 1; ++fi) {
+                    if (_robot.config().tlmFields & kFieldNames[fi].bit) {
+                        if (needComma) { body[bpos++] = ','; --brem; }
+                        bw = snprintf(body + bpos, (size_t)brem, "%s", kFieldNames[fi].name);
+                        if (bw > 0 && bw < brem) { bpos += bw; brem -= bw; }
+                        needComma = true;
+                    }
+                }
+                body[bpos] = '\0';
+                replyOK(rbuf, sizeof(rbuf), "stream", body, corr_id, replyFn, ctx);
+                break;
+            }
+        }
+        if (hasFields) return;
+
+        // No fields= — expect a positional period argument.
+        if (ntok < 2) {
+            replyErr(rbuf, sizeof(rbuf), "badarg", "usage: STREAM <ms>", corr_id,
+                     replyFn, ctx);
+            return;
+        }
+        int32_t ms = (int32_t)atoi(tokens[1]);
+        if (ms < 0) ms = 0;
+        if (ms > 0 && ms < 20) ms = 20;  // clamp to 20 ms minimum
+        _robot.config().tlmPeriodMs = ms;
+        char body[32];
+        snprintf(body, sizeof(body), "period=%d", (int)ms);
+        replyOK(rbuf, sizeof(rbuf), "stream", body, corr_id, replyFn, ctx);
+        return;
+    }
+
+    // ── SNAP ─────────────────────────────────────────────────────────────────
+    // SNAP → (emits one immediate TLM frame on next tick, then OK snap)
+    // The TLM frame is emitted by Robot::tick() when tlmSnapPending is set.
+    if (strcmp(verb, "SNAP") == 0) {
+        _robot.config().tlmSnapPending = true;
+        replyOK(rbuf, sizeof(rbuf), "snap", nullptr, corr_id, replyFn, ctx);
+        return;
+    }
+
+    // ── S — streaming velocity ────────────────────────────────────────────────
+    // S <l> <r>  → OK drive l=<l> r=<r>
+    // Watchdog reset is implicit: DriveController::beginStream() updates _lastSMs.
+    if (strcmp(verb, "S") == 0) {
+        if (ntok < 3) {
+            replyErr(rbuf, sizeof(rbuf), "badarg", nullptr, corr_id, replyFn, ctx);
+            return;
+        }
+        int l = atoi(tokens[1]);
+        int r = atoi(tokens[2]);
+        // Range check: cap at ±1000 mm/s (hardware limit)
+        if (l < -1000 || l > 1000) {
+            replyErr(rbuf, sizeof(rbuf), "range", "l", corr_id, replyFn, ctx);
+            return;
+        }
+        if (r < -1000 || r > 1000) {
+            replyErr(rbuf, sizeof(rbuf), "range", "r", corr_id, replyFn, ctx);
+            return;
+        }
+        _robot.streamDrive((int32_t)l, (int32_t)r, replyFn, ctx);
+        char body[32];
+        snprintf(body, sizeof(body), "l=%d r=%d", l, r);
+        replyOK(rbuf, sizeof(rbuf), "drive", body, corr_id, replyFn, ctx);
+        return;
+    }
+
+    // ── T — timed drive ───────────────────────────────────────────────────────
+    // T <l> <r> <ms>  → OK drive l=<l> r=<r> ms=<ms>; later EVT done T
+    if (strcmp(verb, "T") == 0) {
+        if (ntok < 4) {
+            replyErr(rbuf, sizeof(rbuf), "badarg", nullptr, corr_id, replyFn, ctx);
+            return;
+        }
+        int l  = atoi(tokens[1]);
+        int r  = atoi(tokens[2]);
+        int ms = atoi(tokens[3]);
+        if (l < -1000 || l > 1000) {
+            replyErr(rbuf, sizeof(rbuf), "range", "l", corr_id, replyFn, ctx);
+            return;
+        }
+        if (r < -1000 || r > 1000) {
+            replyErr(rbuf, sizeof(rbuf), "range", "r", corr_id, replyFn, ctx);
+            return;
+        }
+        if (ms < 1 || ms > 30000) {
+            replyErr(rbuf, sizeof(rbuf), "range", "ms", corr_id, replyFn, ctx);
+            return;
+        }
+        _robot.timedDrive((int32_t)l, (int32_t)r, (uint32_t)ms, replyFn, ctx, corr_id);
+        char body[48];
+        snprintf(body, sizeof(body), "l=%d r=%d ms=%d", l, r, ms);
+        replyOK(rbuf, sizeof(rbuf), "drive", body, corr_id, replyFn, ctx);
+        return;
+    }
+
+    // ── D — distance drive ────────────────────────────────────────────────────
+    // D <l> <r> <mm>  → OK drive l=<l> r=<r> mm=<mm>; later EVT done D
+    if (strcmp(verb, "D") == 0) {
+        if (ntok < 4) {
+            replyErr(rbuf, sizeof(rbuf), "badarg", nullptr, corr_id, replyFn, ctx);
+            return;
+        }
+        int l  = atoi(tokens[1]);
+        int r  = atoi(tokens[2]);
+        int mm = atoi(tokens[3]);
+        if (l < -1000 || l > 1000) {
+            replyErr(rbuf, sizeof(rbuf), "range", "l", corr_id, replyFn, ctx);
+            return;
+        }
+        if (r < -1000 || r > 1000) {
+            replyErr(rbuf, sizeof(rbuf), "range", "r", corr_id, replyFn, ctx);
+            return;
+        }
+        if (mm < 1 || mm > 10000) {
+            replyErr(rbuf, sizeof(rbuf), "range", "mm", corr_id, replyFn, ctx);
+            return;
+        }
+        _robot.distanceDrive((int32_t)l, (int32_t)r, (int32_t)mm, replyFn, ctx, corr_id);
+        char body[48];
+        snprintf(body, sizeof(body), "l=%d r=%d mm=%d", l, r, mm);
+        replyOK(rbuf, sizeof(rbuf), "drive", body, corr_id, replyFn, ctx);
+        return;
+    }
+
+    // ── G — go-to XY ─────────────────────────────────────────────────────────
+    // G <x> <y> <speed>  → OK goto x=<x> y=<y> speed=<speed>; later EVT done G
+    if (strcmp(verb, "G") == 0) {
+        if (ntok < 4) {
+            replyErr(rbuf, sizeof(rbuf), "badarg", nullptr, corr_id, replyFn, ctx);
+            return;
+        }
+        int x     = atoi(tokens[1]);
+        int y     = atoi(tokens[2]);
+        int speed = atoi(tokens[3]);
+        if (x < -10000 || x > 10000) {
+            replyErr(rbuf, sizeof(rbuf), "range", "x", corr_id, replyFn, ctx);
+            return;
+        }
+        if (y < -10000 || y > 10000) {
+            replyErr(rbuf, sizeof(rbuf), "range", "y", corr_id, replyFn, ctx);
+            return;
+        }
+        if (speed < 1 || speed > 1000) {
+            replyErr(rbuf, sizeof(rbuf), "range", "speed", corr_id, replyFn, ctx);
+            return;
+        }
+        _robot.goTo((float)x, (float)y, (float)speed, replyFn, ctx, corr_id);
+        char body[64];
+        snprintf(body, sizeof(body), "x=%d y=%d speed=%d", x, y, speed);
+        replyOK(rbuf, sizeof(rbuf), "goto", body, corr_id, replyFn, ctx);
+        return;
+    }
+
+    // ── STOP — stop motors immediately ───────────────────────────────────────
+    // STOP  → OK stop
+    if (strcmp(verb, "STOP") == 0) {
         _robot.stop();
-        replyFn("ACK:X", ctx);
+        replyOK(rbuf, sizeof(rbuf), "stop", nullptr, corr_id, replyFn, ctx);
         return;
     }
 
-    // ── S<L><R> — streaming drive ───────────────────────────────────────────
-    if (buf[0] == 'S' && len > 1 && (buf[1] == '+' || buf[1] == '-')) {
-        int32_t args[2] = {0, 0};
-        int n = parseSignedArgs(buf + 1, args, 2);
-        if (n < 2) {
-            char errbuf[264];
-            snprintf(errbuf, sizeof(errbuf), "ERR:%s", buf);
-            replyFn(errbuf, ctx);
-            return;
-        }
-        int minSpeed = (int)cfg.minSpeedMms;
-        int leftMms  = clampMinSpeed((int)args[0], minSpeed);
-        int rightMms = clampMinSpeed((int)args[1], minSpeed);
-
-        _robot.streamDrive(leftMms, rightMms, replyFn, ctx);
-
-        char reply[48];
-        snprintf(reply, sizeof(reply), "ACK:S %d %d", leftMms, rightMms);
-        replyFn(reply, ctx);
-        return;
-    }
-
-    // ── T<L><R><ms> — timed drive ──────────────────────────────────────────
-    if (buf[0] == 'T' && len > 1) {
-        int32_t args[3] = {0, 0, 0};
-        int n = parseSignedArgs(buf + 1, args, 3);
-        if (n < 3) {
-            char errbuf[264];
-            snprintf(errbuf, sizeof(errbuf), "ERR:%s", buf);
-            replyFn(errbuf, ctx);
-            return;
-        }
-        int leftMms    = (int)args[0];
-        int rightMms   = (int)args[1];
-        int durationMs = clampInt((int)args[2], 1, 5000);
-
-        _robot.timedDrive(leftMms, rightMms, (uint32_t)durationMs, replyFn, ctx);
-
-        char reply[64];
-        snprintf(reply, sizeof(reply), "ACK:T %d %d %d", leftMms, rightMms, durationMs);
-        replyFn(reply, ctx);
-        return;
-    }
-
-    // ── D<L><R><mm> — distance drive ───────────────────────────────────────
-    if (buf[0] == 'D' && len > 1) {
-        int32_t args[3] = {0, 0, 0};
-        int n = parseSignedArgs(buf + 1, args, 3);
-        if (n < 3) {
-            char errbuf[264];
-            snprintf(errbuf, sizeof(errbuf), "ERR:%s", buf);
-            replyFn(errbuf, ctx);
-            return;
-        }
-        int leftMms  = (int)args[0];
-        int rightMms = (int)args[1];
-        int targetMm = abs((int)args[2]);
-        if (targetMm < 1) targetMm = 1;
-
-        _robot.distanceDrive(leftMms, rightMms, targetMm, replyFn, ctx);
-
-        char reply[64];
-        snprintf(reply, sizeof(reply), "ACK:D %d %d %d", leftMms, rightMms, targetMm);
-        replyFn(reply, ctx);
-        return;
-    }
-
-    // ── ENC — query encoder positions ──────────────────────────────────────
-    if (len == 3 && memcmp(buf, "ENC", 3) == 0) {
-        Robot::EncoderReading enc = _robot.getEncoders();
-        char rbuf[32];
-        snprintf(rbuf, sizeof(rbuf), "ENC%+d%+d", (int)enc.leftMm, (int)enc.rightMm);
-        replyFn(rbuf, ctx);
-        return;
-    }
-
-    // ── EZ — zero encoders ─────────────────────────────────────────────────
-    if (len == 2 && memcmp(buf, "EZ", 2) == 0) {
-        _robot.zeroEncoders();
-        replyFn("ACK:EZ", ctx);
-        return;
-    }
-
-    // ── SO — query odometry pose ────────────────────────────────────────────
-    if (len == 2 && memcmp(buf, "SO", 2) == 0) {
-        Robot::Pose pose = _robot.getPose();
-        char rbuf[48];
-        snprintf(rbuf, sizeof(rbuf), "SO%+d%+d%+d",
-                 (int)pose.x_mm, (int)pose.y_mm, (int)pose.h_cdeg);
-        replyFn(rbuf, ctx);
-        return;
-    }
-
-    // ── SZ — zero odometry ─────────────────────────────────────────────────
-    if (len == 2 && memcmp(buf, "SZ", 2) == 0) {
-        _robot.zeroOdometry();
-        replyFn("ACK:SZ", ctx);
-        return;
-    }
-
-    // ── SI<x><y><h> — set odometry pose ────────────────────────────────────
-    if (len > 2 && memcmp(buf, "SI", 2) == 0) {
-        int32_t args[3] = {0, 0, 0};
-        int n = parseSignedArgs(buf + 2, args, 3);
-        if (n < 3) {
-            char errbuf[264];
-            snprintf(errbuf, sizeof(errbuf), "ERR:%s", buf);
-            replyFn(errbuf, ctx);
-            return;
-        }
-        _robot.setPose(args[0], args[1], args[2]);
-        char reply[64];
-        snprintf(reply, sizeof(reply), "ACK:SI %d %d %d",
-                 (int)args[0], (int)args[1], (int)args[2]);
-        replyFn(reply, ctx);
-        return;
-    }
-
-    // ── K — calibration dump or setter ─────────────────────────────────────
-    if (buf[0] == 'K') {
-        if (len == 1) {
-            char kbuf[32];
-            snprintf(kbuf, sizeof(kbuf), "K:KML:%+d", (int)(cfg.mmPerDegL * 1000.0f + 0.5f));
-            replyFn(kbuf, ctx);
-            snprintf(kbuf, sizeof(kbuf), "K:KMR:%+d", (int)(cfg.mmPerDegR * 1000.0f + 0.5f));
-            replyFn(kbuf, ctx);
-            snprintf(kbuf, sizeof(kbuf), "K:KFF:%+d", (int)(cfg.kFF * 1000.0f + 0.5f));
-            replyFn(kbuf, ctx);
-            snprintf(kbuf, sizeof(kbuf), "K:KSM:%+d", (int)cfg.minSpeedMms);
-            replyFn(kbuf, ctx);
-            snprintf(kbuf, sizeof(kbuf), "K:KSS:%+d", (int)cfg.sTimeoutMs);
-            replyFn(kbuf, ctx);
-            snprintf(kbuf, sizeof(kbuf), "K:KTR:%+d", (int)cfg.tickMs);
-            replyFn(kbuf, ctx);
-            snprintf(kbuf, sizeof(kbuf), "K:KER:%+d", (int)cfg.encReportEvery);
-            replyFn(kbuf, ctx);
-            snprintf(kbuf, sizeof(kbuf), "K:KSD:%+d", (int)(cfg.distScale * 100.0f + 0.5f));
-            replyFn(kbuf, ctx);
-            snprintf(kbuf, sizeof(kbuf), "K:KST:%+d", (int)(cfg.turnScale * 100.0f + 0.5f));
-            replyFn(kbuf, ctx);
-            snprintf(kbuf, sizeof(kbuf), "K:KLF:%+d", (int)(cfg.kScaleLF * 1000.0f + 0.5f));
-            replyFn(kbuf, ctx);
-            snprintf(kbuf, sizeof(kbuf), "K:KLB:%+d", (int)(cfg.kScaleLB * 1000.0f + 0.5f));
-            replyFn(kbuf, ctx);
-            snprintf(kbuf, sizeof(kbuf), "K:KRF:%+d", (int)(cfg.kScaleRF * 1000.0f + 0.5f));
-            replyFn(kbuf, ctx);
-            snprintf(kbuf, sizeof(kbuf), "K:KRB:%+d", (int)(cfg.kScaleRB * 1000.0f + 0.5f));
-            replyFn(kbuf, ctx);
-            snprintf(kbuf, sizeof(kbuf), "K:KCP:%+d", (int)(cfg.ratioPidKp * 10.0f + 0.5f));
-            replyFn(kbuf, ctx);
-            snprintf(kbuf, sizeof(kbuf), "K:KCI:%+d", (int)(cfg.ratioPidKi * 1000.0f + 0.5f));
-            replyFn(kbuf, ctx);
-            snprintf(kbuf, sizeof(kbuf), "K:KCD:%+d", (int)(cfg.ratioPidKd * 1000.0f + 0.5f));
-            replyFn(kbuf, ctx);
-            snprintf(kbuf, sizeof(kbuf), "K:KCC:%+d", (int)cfg.ratioPidMax);
-            replyFn(kbuf, ctx);
-            snprintf(kbuf, sizeof(kbuf), "K:KAT:%+d", (int)(cfg.kAdjThreshold * 1000.0f + 0.5f));
-            replyFn(kbuf, ctx);
-            snprintf(kbuf, sizeof(kbuf), "K:KAG:%+d", (int)(cfg.kAdjGain * 1000.0f + 0.5f));
-            replyFn(kbuf, ctx);
-            snprintf(kbuf, sizeof(kbuf), "K:KTW:%+d", (int)(cfg.trackwidthMm));
-            replyFn(kbuf, ctx);
-            snprintf(kbuf, sizeof(kbuf), "K:KGT:%+d", (int)(cfg.turnThresholdMm));
-            replyFn(kbuf, ctx);
-            snprintf(kbuf, sizeof(kbuf), "K:KGD:%+d", (int)(cfg.doneTolMm));
-            replyFn(kbuf, ctx);
-            return;
-        }
-
-        if (len >= 4) {
-            char key[3] = { buf[1], buf[2], '\0' };
-            int32_t args[1] = {0};
-            int n = parseSignedArgs(buf + 3, args, 1);
-            if (n < 1) {
-                char errbuf[264];
-                snprintf(errbuf, sizeof(errbuf), "ERR:%s", buf);
-                replyFn(errbuf, ctx);
+    // ── GRIP — gripper control ────────────────────────────────────────────────
+    // GRIP <deg>  → OK grip deg=<deg>
+    // GRIP        → OK grip deg=<current>
+    if (strcmp(verb, "GRIP") == 0) {
+        int32_t deg;
+        if (ntok >= 2) {
+            deg = (int32_t)atoi(tokens[1]);
+            if (deg < 0 || deg > 180) {
+                replyErr(rbuf, sizeof(rbuf), "range", "deg", corr_id, replyFn, ctx);
                 return;
             }
-            int v = (int)args[0];
-            char reply[48];
-
-            if (memcmp(key, "ML", 2) == 0) {
-                cfg.mmPerDegL = v / 1000.0f;
-                snprintf(reply, sizeof(reply), "ACK:KML %d", (int)(cfg.mmPerDegL * 1000.0f + 0.5f));
-                replyFn(reply, ctx); return;
-            }
-            if (memcmp(key, "MR", 2) == 0) {
-                cfg.mmPerDegR = v / 1000.0f;
-                snprintf(reply, sizeof(reply), "ACK:KMR %d", (int)(cfg.mmPerDegR * 1000.0f + 0.5f));
-                replyFn(reply, ctx); return;
-            }
-            if (memcmp(key, "FF", 2) == 0) {
-                cfg.kFF = v / 1000.0f;
-                snprintf(reply, sizeof(reply), "ACK:KFF %d", (int)(cfg.kFF * 1000.0f + 0.5f));
-                replyFn(reply, ctx); return;
-            }
-            if (memcmp(key, "LF", 2) == 0) {
-                cfg.kScaleLF = v / 1000.0f;
-                snprintf(reply, sizeof(reply), "ACK:KLF %d", (int)(cfg.kScaleLF * 1000.0f + 0.5f));
-                replyFn(reply, ctx); return;
-            }
-            if (memcmp(key, "LB", 2) == 0) {
-                cfg.kScaleLB = v / 1000.0f;
-                snprintf(reply, sizeof(reply), "ACK:KLB %d", (int)(cfg.kScaleLB * 1000.0f + 0.5f));
-                replyFn(reply, ctx); return;
-            }
-            if (memcmp(key, "RF", 2) == 0) {
-                cfg.kScaleRF = v / 1000.0f;
-                snprintf(reply, sizeof(reply), "ACK:KRF %d", (int)(cfg.kScaleRF * 1000.0f + 0.5f));
-                replyFn(reply, ctx); return;
-            }
-            if (memcmp(key, "RB", 2) == 0) {
-                cfg.kScaleRB = v / 1000.0f;
-                snprintf(reply, sizeof(reply), "ACK:KRB %d", (int)(cfg.kScaleRB * 1000.0f + 0.5f));
-                replyFn(reply, ctx); return;
-            }
-            if (memcmp(key, "CP", 2) == 0) {
-                cfg.ratioPidKp = v / 10.0f;
-                mc.updatePidGains(cfg.ratioPidKp, cfg.ratioPidKi, cfg.ratioPidKd, cfg.ratioPidMax);
-                snprintf(reply, sizeof(reply), "ACK:KCP %d", (int)(cfg.ratioPidKp * 10.0f + 0.5f));
-                replyFn(reply, ctx); return;
-            }
-            if (memcmp(key, "CI", 2) == 0) {
-                cfg.ratioPidKi = v / 1000.0f;
-                mc.updatePidGains(cfg.ratioPidKp, cfg.ratioPidKi, cfg.ratioPidKd, cfg.ratioPidMax);
-                snprintf(reply, sizeof(reply), "ACK:KCI %d", (int)(cfg.ratioPidKi * 1000.0f + 0.5f));
-                replyFn(reply, ctx); return;
-            }
-            if (memcmp(key, "CD", 2) == 0) {
-                cfg.ratioPidKd = v / 1000.0f;
-                mc.updatePidGains(cfg.ratioPidKp, cfg.ratioPidKi, cfg.ratioPidKd, cfg.ratioPidMax);
-                snprintf(reply, sizeof(reply), "ACK:KCD %d", (int)(cfg.ratioPidKd * 1000.0f + 0.5f));
-                replyFn(reply, ctx); return;
-            }
-            if (memcmp(key, "CC", 2) == 0) {
-                cfg.ratioPidMax = (float)v;
-                mc.updatePidGains(cfg.ratioPidKp, cfg.ratioPidKi, cfg.ratioPidKd, cfg.ratioPidMax);
-                snprintf(reply, sizeof(reply), "ACK:KCC %d", (int)cfg.ratioPidMax);
-                replyFn(reply, ctx); return;
-            }
-            if (memcmp(key, "AT", 2) == 0) {
-                cfg.kAdjThreshold = v / 1000.0f;
-                snprintf(reply, sizeof(reply), "ACK:KAT %d", (int)(cfg.kAdjThreshold * 1000.0f + 0.5f));
-                replyFn(reply, ctx); return;
-            }
-            if (memcmp(key, "AG", 2) == 0) {
-                cfg.kAdjGain = v / 1000.0f;
-                snprintf(reply, sizeof(reply), "ACK:KAG %d", (int)(cfg.kAdjGain * 1000.0f + 0.5f));
-                replyFn(reply, ctx); return;
-            }
-            if (memcmp(key, "TW", 2) == 0) {
-                cfg.trackwidthMm = (float)v;
-                snprintf(reply, sizeof(reply), "ACK:KTW %d", (int)cfg.trackwidthMm);
-                replyFn(reply, ctx); return;
-            }
-            if (memcmp(key, "GT", 2) == 0) {
-                cfg.turnThresholdMm = (float)v;
-                snprintf(reply, sizeof(reply), "ACK:KGT %d", (int)cfg.turnThresholdMm);
-                replyFn(reply, ctx); return;
-            }
-            if (memcmp(key, "GD", 2) == 0) {
-                cfg.doneTolMm = (float)v;
-                snprintf(reply, sizeof(reply), "ACK:KGD %d", (int)cfg.doneTolMm);
-                replyFn(reply, ctx); return;
-            }
-            if (memcmp(key, "SM", 2) == 0) {
-                cfg.minSpeedMms = v < 0 ? 0 : v;
-                snprintf(reply, sizeof(reply), "ACK:KSM %d", (int)cfg.minSpeedMms);
-                replyFn(reply, ctx); return;
-            }
-            if (memcmp(key, "SS", 2) == 0) {
-                cfg.sTimeoutMs = clampInt(v, 50, 5000);
-                snprintf(reply, sizeof(reply), "ACK:KSS %d", (int)cfg.sTimeoutMs);
-                replyFn(reply, ctx); return;
-            }
-            if (memcmp(key, "TR", 2) == 0) {
-                cfg.tickMs = clampInt(v, 5, 100);
-                snprintf(reply, sizeof(reply), "ACK:KTR %d", (int)cfg.tickMs);
-                replyFn(reply, ctx); return;
-            }
-            if (memcmp(key, "ER", 2) == 0) {
-                cfg.encReportEvery = clampInt(v, 1, 20);
-                snprintf(reply, sizeof(reply), "ACK:KER %d", (int)cfg.encReportEvery);
-                replyFn(reply, ctx); return;
-            }
-            if (memcmp(key, "SD", 2) == 0) {
-                cfg.distScale = v / 100.0f;
-                snprintf(reply, sizeof(reply), "ACK:KSD %d", (int)(cfg.distScale * 100.0f + 0.5f));
-                replyFn(reply, ctx); return;
-            }
-            if (memcmp(key, "ST", 2) == 0) {
-                cfg.turnScale = v / 100.0f;
-                snprintf(reply, sizeof(reply), "ACK:KST %d", (int)(cfg.turnScale * 100.0f + 0.5f));
-                replyFn(reply, ctx); return;
-            }
+            _robot.setGripperAngle(deg);
+        } else {
+            deg = _robot.gripperAngle();
         }
-
-        char errbuf[264];
-        snprintf(errbuf, sizeof(errbuf), "ERR:%s", buf);
-        replyFn(errbuf, ctx);
+        char body[24];
+        snprintf(body, sizeof(body), "deg=%d", (int)deg);
+        replyOK(rbuf, sizeof(rbuf), "grip", body, corr_id, replyFn, ctx);
         return;
     }
 
-    // ── OI — OTOS init only ────────────────────────────────────────────────
-    if (len == 2 && memcmp(buf, "OI", 2) == 0) {
+    // ── ZERO — zero encoders and/or odometry ─────────────────────────────────
+    // ZERO enc         → OK zero enc
+    // ZERO pose        → OK zero pose
+    // ZERO enc pose    → OK zero enc pose
+    if (strcmp(verb, "ZERO") == 0) {
+        if (ntok < 2) {
+            replyErr(rbuf, sizeof(rbuf), "badarg", nullptr, corr_id, replyFn, ctx);
+            return;
+        }
+        bool doEnc  = false;
+        bool doPose = false;
+        for (int i = 1; i < ntok; ++i) {
+            if (strcmp(tokens[i], "enc") == 0)  doEnc  = true;
+            if (strcmp(tokens[i], "pose") == 0) doPose = true;
+        }
+        if (!doEnc && !doPose) {
+            replyErr(rbuf, sizeof(rbuf), "badarg", nullptr, corr_id, replyFn, ctx);
+            return;
+        }
+        if (doEnc)  _robot.zeroEncoders();
+        if (doPose) _robot.zeroOdometry();
+        // Build body: "enc", "pose", or "enc pose"
+        char body[16];
+        if (doEnc && doPose)       snprintf(body, sizeof(body), "enc pose");
+        else if (doEnc)            snprintf(body, sizeof(body), "enc");
+        else                       snprintf(body, sizeof(body), "pose");
+        replyOK(rbuf, sizeof(rbuf), "zero", body, corr_id, replyFn, ctx);
+        return;
+    }
+
+    // ── OI — OTOS init ────────────────────────────────────────────────────────
+    // OI  → OK oi
+    if (strcmp(verb, "OI") == 0) {
         OtosSensor* otos = _robot.otos();
-        if (!otos) { replyFn("ERR:OI", ctx); return; }
-        otos->begin();
+        if (!otos) {
+            replyErr(rbuf, sizeof(rbuf), "nodev", "oi", corr_id, replyFn, ctx);
+            return;
+        }
         otos->init();
-        replyFn("ACK:OI", ctx);
+        replyOK(rbuf, sizeof(rbuf), "oi", nullptr, corr_id, replyFn, ctx);
         return;
     }
 
-    // ── OK — calibrate IMU ─────────────────────────────────────────────────
-    if (buf[0] == 'O' && len >= 2 && buf[1] == 'K') {
+    // ── OZ — OTOS zero (reset tracking) ──────────────────────────────────────
+    // OZ  → OK oz
+    if (strcmp(verb, "OZ") == 0) {
         OtosSensor* otos = _robot.otos();
-        if (!otos) { replyFn("ERR:OK", ctx); return; }
-        int samples = 255;
-        if (len > 2) {
-            int32_t args[1] = {0};
-            int n = parseSignedArgs(buf + 2, args, 1);
-            if (n >= 1) {
-                samples = clampInt((int)args[0], 1, 255);
-            }
+        if (!otos) {
+            replyErr(rbuf, sizeof(rbuf), "nodev", "oz", corr_id, replyFn, ctx);
+            return;
         }
-        otos->calibrateImu((uint8_t)samples);
-        replyFn("ACK:OK", ctx);
+        otos->setPositionRaw(0, 0, 0);
+        replyOK(rbuf, sizeof(rbuf), "oz", nullptr, corr_id, replyFn, ctx);
         return;
     }
 
-    // ── OZ — reset tracking ────────────────────────────────────────────────
-    if (len == 2 && memcmp(buf, "OZ", 2) == 0) {
+    // ── OR — OTOS reset tracking ──────────────────────────────────────────────
+    // OR  → OK or
+    if (strcmp(verb, "OR") == 0) {
         OtosSensor* otos = _robot.otos();
-        if (!otos) { replyFn("ERR:OZ", ctx); return; }
+        if (!otos) {
+            replyErr(rbuf, sizeof(rbuf), "nodev", "or", corr_id, replyFn, ctx);
+            return;
+        }
         otos->resetTracking();
-        replyFn("ACK:OZ", ctx);
+        replyOK(rbuf, sizeof(rbuf), "or", nullptr, corr_id, replyFn, ctx);
         return;
     }
 
-    // ── OR — get velocity ──────────────────────────────────────────────────
-    if (len == 2 && memcmp(buf, "OR", 2) == 0) {
+    // ── OP — OTOS read position ───────────────────────────────────────────────
+    // OP  → OK pos x=<x> y=<y> h=<h>
+    if (strcmp(verb, "OP") == 0) {
         OtosSensor* otos = _robot.otos();
-        if (!otos) { replyFn("ERR:OR", ctx); return; }
-        int16_t vx = 0, vy = 0, vh = 0;
-        otos->getVelocityRaw(vx, vy, vh);
-        int32_t vx_mms  = (int32_t)(vx * 0.153f);
-        int32_t vy_mms  = (int32_t)(vy * 0.153f);
-        int32_t vh_cdps = (int32_t)(vh * 6.1f);
-        vx_mms  = clampInt((int)vx_mms,  -9999,  9999);
-        vy_mms  = clampInt((int)vy_mms,  -9999,  9999);
-        vh_cdps = clampInt((int)vh_cdps, -99999, 99999);
-        char r[48];
-        snprintf(r, sizeof(r), "OR%+d%+d%+d", (int)vx_mms, (int)vy_mms, (int)vh_cdps);
-        replyFn(r, ctx);
-        return;
-    }
-
-    // ── OP — get position ──────────────────────────────────────────────────
-    if (len == 2 && memcmp(buf, "OP", 2) == 0) {
-        OtosSensor* otos = _robot.otos();
-        if (!otos) { replyFn("ERR:OP", ctx); return; }
-        int16_t x = 0, y = 0, h = 0;
-        otos->getPositionRaw(x, y, h);
-        int32_t x_mm   = (int32_t)(x * 0.305f);
-        int32_t y_mm   = (int32_t)(y * 0.305f);
-        int32_t h_cdeg = (int32_t)(h * 0.549f);
-        x_mm   = clampInt((int)x_mm,   -9999,  9999);
-        y_mm   = clampInt((int)y_mm,   -9999,  9999);
-        h_cdeg = clampInt((int)h_cdeg, -18000, 18000);
-        char r[48];
-        snprintf(r, sizeof(r), "OP%+d%+d%+d", (int)x_mm, (int)y_mm, (int)h_cdeg);
-        replyFn(r, ctx);
-        return;
-    }
-
-    // ── OV — set position ──────────────────────────────────────────────────
-    if (len > 2 && buf[0] == 'O' && buf[1] == 'V') {
-        OtosSensor* otos = _robot.otos();
-        if (!otos) { replyFn("ERR:OV", ctx); return; }
-        int32_t args[3] = {0, 0, 0};
-        int n = parseSignedArgs(buf + 2, args, 3);
-        if (n < 3) {
-            char errbuf[264];
-            snprintf(errbuf, sizeof(errbuf), "ERR:%s", buf);
-            replyFn(errbuf, ctx);
+        if (!otos) {
+            replyErr(rbuf, sizeof(rbuf), "nodev", "op", corr_id, replyFn, ctx);
             return;
         }
-        int16_t xr = (int16_t)(args[0] / 0.305f);
-        int16_t yr = (int16_t)(args[1] / 0.305f);
-        int16_t hr = (int16_t)(args[2] / 0.549f);
-        otos->setPositionRaw(xr, yr, hr);
-        replyFn("ACK:OV", ctx);
+        int16_t ox = 0, oy = 0, oh = 0;
+        otos->getPositionRaw(ox, oy, oh);
+        char body[48];
+        snprintf(body, sizeof(body), "x=%d y=%d h=%d", (int)ox, (int)oy, (int)oh);
+        replyOK(rbuf, sizeof(rbuf), "pos", body, corr_id, replyFn, ctx);
         return;
     }
 
-    // ── OL — linear scalar get/set ─────────────────────────────────────────
-    if (len >= 2 && buf[0] == 'O' && buf[1] == 'L') {
+    // ── OV — OTOS set position ────────────────────────────────────────────────
+    // OV <x> <y> <h>  → OK setpos x=<x> y=<y> h=<h>
+    if (strcmp(verb, "OV") == 0) {
         OtosSensor* otos = _robot.otos();
-        if (!otos) { char e[264]; snprintf(e, sizeof(e), "ERR:%s", buf); replyFn(e, ctx); return; }
-        if (len == 2) {
-            char r[16];
-            snprintf(r, sizeof(r), "OL%+d", (int)otos->getLinearScalar());
-            replyFn(r, ctx);
-        } else {
-            int32_t args[1] = {0};
-            int n = parseSignedArgs(buf + 2, args, 1);
-            if (n < 1) {
-                char e[264]; snprintf(e, sizeof(e), "ERR:%s", buf); replyFn(e, ctx); return;
-            }
-            int v = clampInt((int)args[0], -128, 127);
-            otos->setLinearScalar((int8_t)v);
-            char r[32];
-            snprintf(r, sizeof(r), "ACK:OL %d", v);
-            replyFn(r, ctx);
-        }
-        return;
-    }
-
-    // ── OA — angular scalar get/set ────────────────────────────────────────
-    if (len >= 2 && buf[0] == 'O' && buf[1] == 'A') {
-        OtosSensor* otos = _robot.otos();
-        if (!otos) { char e[264]; snprintf(e, sizeof(e), "ERR:%s", buf); replyFn(e, ctx); return; }
-        if (len == 2) {
-            char r[16];
-            snprintf(r, sizeof(r), "OA%+d", (int)otos->getAngularScalar());
-            replyFn(r, ctx);
-        } else {
-            int32_t args[1] = {0};
-            int n = parseSignedArgs(buf + 2, args, 1);
-            if (n < 1) {
-                char e[264]; snprintf(e, sizeof(e), "ERR:%s", buf); replyFn(e, ctx); return;
-            }
-            int v = clampInt((int)args[0], -128, 127);
-            otos->setAngularScalar((int8_t)v);
-            char r[32];
-            snprintf(r, sizeof(r), "ACK:OA %d", v);
-            replyFn(r, ctx);
-        }
-        return;
-    }
-
-    // ── O — OTOS init + calibrate shortcut ────────────────────────────────
-    if (len == 1 && buf[0] == 'O') {
-        OtosSensor* otos = _robot.otos();
-        if (!otos) { replyFn("ERR:O", ctx); return; }
-        otos->begin();
-        otos->init();
-        otos->calibrateImu(255);
-        replyFn("ACK:O", ctx);
-        return;
-    }
-
-    // ── LS — line sensor ───────────────────────────────────────────────────
-    if (len == 2 && memcmp(buf, "LS", 2) == 0) {
-        LineSensor* line = _robot.lineSensor();
-        if (!line) { replyFn("ERR:LS", ctx); return; }
-        uint16_t out[4] = {0, 0, 0, 0};
-        line->readValues(out);
-        char r[48];
-        snprintf(r, sizeof(r), "LS%+d%+d%+d%+d",
-                 (int)out[0], (int)out[1], (int)out[2], (int)out[3]);
-        replyFn(r, ctx);
-        return;
-    }
-
-    // ── CS — color sensor ──────────────────────────────────────────────────
-    if (len == 2 && memcmp(buf, "CS", 2) == 0) {
-        ColorSensor* color = _robot.colorSensor();
-        if (!color) { replyFn("ERR:CS", ctx); return; }
-        uint16_t cr = 0, cg = 0, cb = 0, cc = 0;
-        color->readRGBC(cr, cg, cb, cc);
-        char rbuf[48];
-        snprintf(rbuf, sizeof(rbuf), "CS%+d%+d%+d%+d",
-                 (int)cr, (int)cg, (int)cb, (int)cc);
-        replyFn(rbuf, ctx);
-        return;
-    }
-
-    // ── G — go-to XY or gripper ─────────────────────────────────────────────
-    if (buf[0] == 'G' && (len == 1 || buf[1] == '+' || buf[1] == '-')) {
-        int32_t args[3] = {0, 0, 0};
-        int n = (len > 1) ? parseSignedArgs(buf + 1, args, 3) : 0;
-
-        if (n == 3) {
-            float tx    = (float)args[0];
-            float ty    = (float)args[1];
-            float speed = fabsf((float)args[2]);
-            if (speed < 1.0f) speed = 1.0f;
-
-            _robot.goTo(tx, ty, speed, replyFn, ctx);
-
-            char reply[48];
-            snprintf(reply, sizeof(reply), "ACK:G %d %d %d",
-                     (int)tx, (int)ty, (int)speed);
-            replyFn(reply, ctx);
+        if (!otos) {
+            replyErr(rbuf, sizeof(rbuf), "nodev", "ov", corr_id, replyFn, ctx);
             return;
         }
-
-        // Single-arg or bare G: gripper query/set
-        if (n == 1 || n == 0) {
-            Servo* servo = _robot.servo();
-            if (n == 0) {
-                // G with no args — query current angle
-                if (!servo) { replyFn("ERR:G", ctx); return; }
-                char r[16];
-                snprintf(r, sizeof(r), "G%+d", (int)_robot.gripperAngle());
-                replyFn(r, ctx);
-            } else {
-                // G+<deg> — set gripper angle
-                if (!servo) { replyFn("ERR:G", ctx); return; }
-                int deg = clampInt((int)args[0], 0, 180);
-                _robot.setGripperAngle(deg);
-                char r[24];
-                snprintf(r, sizeof(r), "ACK:G %d", deg);
-                replyFn(r, ctx);
-            }
+        if (ntok < 4) {
+            replyErr(rbuf, sizeof(rbuf), "badarg", nullptr, corr_id, replyFn, ctx);
             return;
         }
-
-        char errbuf[264];
-        snprintf(errbuf, sizeof(errbuf), "ERR:%s", buf);
-        replyFn(errbuf, ctx);
+        int16_t ox = (int16_t)atoi(tokens[1]);
+        int16_t oy = (int16_t)atoi(tokens[2]);
+        int16_t oh = (int16_t)atoi(tokens[3]);
+        otos->setPositionRaw(ox, oy, oh);
+        char body[48];
+        snprintf(body, sizeof(body), "x=%d y=%d h=%d", (int)ox, (int)oy, (int)oh);
+        replyOK(rbuf, sizeof(rbuf), "setpos", body, corr_id, replyFn, ctx);
         return;
     }
 
-    // ── PA — analog port read ──────────────────────────────────────────────
-    if (len >= 3 && buf[0] == 'P' && buf[1] == 'A' &&
-        (buf[2] == '+' || buf[2] == '-')) {
-        PortIO& portio = _robot.portIO();
-        int32_t args[1] = {0};
-        int n = parseSignedArgs(buf + 2, args, 1);
-        if (n < 1) {
-            char e[264]; snprintf(e, sizeof(e), "ERR:%s", buf); replyFn(e, ctx); return;
+    // ── OL — OTOS linear scalar ───────────────────────────────────────────────
+    // OL        → OK linear scalar=<val>
+    // OL <val>  → OK linear scalar=<val>
+    if (strcmp(verb, "OL") == 0) {
+        OtosSensor* otos = _robot.otos();
+        if (!otos) {
+            replyErr(rbuf, sizeof(rbuf), "nodev", "ol", corr_id, replyFn, ctx);
+            return;
         }
-        int val = portio.readAnalog((uint8_t)args[0]);
-        char r[32];
-        snprintf(r, sizeof(r), "PA%+d%+d", (int)args[0], val);
-        replyFn(r, ctx);
+        if (ntok >= 2) {
+            int8_t val = (int8_t)atoi(tokens[1]);
+            otos->setLinearScalar(val);
+        }
+        int8_t val = otos->getLinearScalar();
+        char body[24];
+        snprintf(body, sizeof(body), "scalar=%d", (int)val);
+        replyOK(rbuf, sizeof(rbuf), "linear", body, corr_id, replyFn, ctx);
         return;
     }
 
-    // ── P — digital port I/O ──────────────────────────────────────────────
-    if (buf[0] == 'P' && len > 1 && (buf[1] == '+' || buf[1] == '-')) {
-        PortIO& portio = _robot.portIO();
-        int32_t args[2] = {0, 0};
-        int n = parseSignedArgs(buf + 1, args, 2);
-        if (n < 1) {
-            char e[264]; snprintf(e, sizeof(e), "ERR:%s", buf); replyFn(e, ctx); return;
+    // ── OA — OTOS angular scalar ──────────────────────────────────────────────
+    // OA        → OK angular scalar=<val>
+    // OA <val>  → OK angular scalar=<val>
+    if (strcmp(verb, "OA") == 0) {
+        OtosSensor* otos = _robot.otos();
+        if (!otos) {
+            replyErr(rbuf, sizeof(rbuf), "nodev", "oa", corr_id, replyFn, ctx);
+            return;
         }
-        char r[32];
-        if (n >= 2) {
-            portio.setDigital((uint8_t)args[0], args[1] != 0);
-            snprintf(r, sizeof(r), "ACK:P %d %d", (int)args[0], args[1] != 0 ? 1 : 0);
+        if (ntok >= 2) {
+            int8_t val = (int8_t)atoi(tokens[1]);
+            otos->setAngularScalar(val);
+        }
+        int8_t val = otos->getAngularScalar();
+        char body[24];
+        snprintf(body, sizeof(body), "scalar=%d", (int)val);
+        replyOK(rbuf, sizeof(rbuf), "angular", body, corr_id, replyFn, ctx);
+        return;
+    }
+
+    // ── P — digital port read/write ───────────────────────────────────────────
+    // P <port>        → OK port p=<port> v=<val>  (read)
+    // P <port> <val>  → OK port p=<port> v=<val>  (write)
+    if (strcmp(verb, "P") == 0) {
+        if (ntok < 2) {
+            replyErr(rbuf, sizeof(rbuf), "badarg", nullptr, corr_id, replyFn, ctx);
+            return;
+        }
+        int port = atoi(tokens[1]);
+        if (port < 1 || port > 4) {
+            replyErr(rbuf, sizeof(rbuf), "range", "port", corr_id, replyFn, ctx);
+            return;
+        }
+        int val;
+        if (ntok >= 3) {
+            val = atoi(tokens[2]);
+            _robot.portIO().setDigital((uint8_t)port, val != 0);
         } else {
-            int val = portio.readDigital((uint8_t)args[0]);
-            snprintf(r, sizeof(r), "P%+d%+d", (int)args[0], val);
+            val = _robot.portIO().readDigital((uint8_t)port);
         }
-        replyFn(r, ctx);
+        char body[24];
+        snprintf(body, sizeof(body), "p=%d v=%d", port, val);
+        replyOK(rbuf, sizeof(rbuf), "port", body, corr_id, replyFn, ctx);
         return;
     }
 
-    // ── Default — unrecognized command ─────────────────────────────────────
-    char errbuf[264];
-    snprintf(errbuf, sizeof(errbuf), "ERR:%s", buf);
-    replyFn(errbuf, ctx);
+    // ── PA — analog port read/write ───────────────────────────────────────────
+    // PA <port>        → OK aport p=<port> v=<val>  (read)
+    // PA <port> <val>  → OK aport p=<port> v=<val>  (write)
+    if (strcmp(verb, "PA") == 0) {
+        if (ntok < 2) {
+            replyErr(rbuf, sizeof(rbuf), "badarg", nullptr, corr_id, replyFn, ctx);
+            return;
+        }
+        int port = atoi(tokens[1]);
+        if (port < 1 || port > 4) {
+            replyErr(rbuf, sizeof(rbuf), "range", "port", corr_id, replyFn, ctx);
+            return;
+        }
+        int val;
+        if (ntok >= 3) {
+            val = atoi(tokens[2]);
+            if (val < 0 || val > 1023) {
+                replyErr(rbuf, sizeof(rbuf), "range", "val", corr_id, replyFn, ctx);
+                return;
+            }
+            _robot.portIO().setAnalog((uint8_t)port, (uint16_t)val);
+        } else {
+            val = _robot.portIO().readAnalog((uint8_t)port);
+        }
+        char body[24];
+        snprintf(body, sizeof(body), "p=%d v=%d", port, val);
+        replyOK(rbuf, sizeof(rbuf), "aport", body, corr_id, replyFn, ctx);
+        return;
+    }
+
+    // ── Fallback — unrecognized verb ─────────────────────────────────────────
+    replyErr(rbuf, sizeof(rbuf), "unknown", verb, corr_id, replyFn, ctx);
 }
-
