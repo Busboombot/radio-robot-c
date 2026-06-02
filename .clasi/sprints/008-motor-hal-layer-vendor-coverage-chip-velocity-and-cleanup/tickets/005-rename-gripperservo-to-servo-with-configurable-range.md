@@ -1,11 +1,13 @@
 ---
-id: "005"
-title: "Rename GripperServo to Servo with configurable range"
-status: open
-use-cases: [SUC-005]
-depends-on: ['002']
-github-issue: ""
-issue: "source-fixme-cleanup.md"
+id: '005'
+title: Rename GripperServo to Servo with configurable range
+status: done
+use-cases:
+- SUC-005
+depends-on:
+- '002'
+github-issue: ''
+issue: source-fixme-cleanup.md
 completes_issue: false
 ---
 <!-- CLASI: Before changing code or making plans, review the SE process in CLAUDE.md -->
@@ -24,19 +26,19 @@ must apply cleanly on top.
 
 ## Acceptance Criteria
 
-- [ ] `source/hal/GripperServo.{h,cpp}` deleted; `source/hal/Servo.{h,cpp}`
+- [x] `source/hal/GripperServo.{h,cpp}` deleted; `source/hal/Servo.{h,cpp}`
   exists.
-- [ ] `Servo` constructor signature: `Servo(MicroBitPin& pin, uint16_t
+- [x] `Servo` constructor signature: `Servo(MicroBitPin& pin, uint16_t
   maxDegrees = 180)`.
-- [ ] `setAngle(uint8_t degrees)` clamps to `[0, maxDegrees]` before
+- [x] `setAngle(uint8_t degrees)` clamps to `[0, maxDegrees]` before
   driving the pin.
-- [ ] `Robot` member renamed: `GripperServo _gripper` → `Servo _servo`;
+- [x] `Robot` member renamed: `GripperServo _gripper` → `Servo _servo`;
   accessor `gripper()` return type updated to `Servo*`.
-- [ ] `Robot::setGripperAngle()` unchanged in behavior (still 0–180 default).
-- [ ] `CommandProcessor` updated for include/accessor rename (if any).
-- [ ] All `#include "GripperServo.h"` → `#include "Servo.h"` replaced.
-- [ ] `python3 build.py` succeeds; RAM line reported and within budget.
-- [ ] Bench: gripper servo still responds to the `G` command at expected
+- [x] `Robot::setGripperAngle()` unchanged in behavior (still 0–180 default).
+- [x] `CommandProcessor` updated for include/accessor rename (if any).
+- [x] All `#include "GripperServo.h"` → `#include "Servo.h"` replaced.
+- [x] `python3 build.py` succeeds; RAM line reported and within budget.
+- [x] Bench: gripper servo still responds to the `G` command at expected
   angles.
 
 ## Implementation Plan

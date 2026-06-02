@@ -5,7 +5,7 @@
 #include "OtosSensor.h"
 #include "LineSensor.h"
 #include "ColorSensor.h"
-#include "GripperServo.h"
+#include "Servo.h"
 #include "PortIO.h"
 #include "SerialPort.h"
 #include "Radio.h"
@@ -98,7 +98,7 @@ public:
     OtosSensor*      otos()            { return _otosPresent  ? &_otos  : nullptr; }
     LineSensor*      lineSensor()      { return _linePresent  ? &_line  : nullptr; }
     ColorSensor*     colorSensor()     { return _colorPresent ? &_color : nullptr; }
-    GripperServo*    gripper()         { return _gripperPresent ? &_gripper : nullptr; }
+    Servo*           servo()            { return _gripperPresent ? &_servo   : nullptr; }
     PortIO&          portIO()          { return _portio; }
 
 private:
@@ -131,7 +131,7 @@ private:
     bool         _linePresent;
     ColorSensor  _color;
     bool         _colorPresent;
-    GripperServo _gripper;
+    Servo        _servo;
     bool         _gripperPresent;
     PortIO       _portio;
 

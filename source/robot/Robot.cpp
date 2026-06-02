@@ -23,7 +23,7 @@ Robot::Robot(MicroBitI2C&    i2c,
       _linePresent(false),
       _color(i2c),
       _colorPresent(false),
-      _gripper(io.P1),
+      _servo(io.P1),
       _gripperPresent(false),
       _portio(io),
       _mc(_motorL, _motorR, _config),
@@ -93,7 +93,7 @@ void Robot::setGripperAngle(int32_t deg)
 {
     if (_gripperPresent) {
         uint8_t clamped = (deg < 0) ? 0 : (deg > 180) ? 180 : (uint8_t)deg;
-        _gripper.setAngle(clamped);
+        _servo.setAngle(clamped);
     }
     _currentGripperAngle = (deg < 0) ? 0 : (deg > 180) ? 180 : deg;
 }

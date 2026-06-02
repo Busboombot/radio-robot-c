@@ -20,7 +20,7 @@ No heap allocation occurs in any layer during normal operation.
 ├─────────────────────────────────────────────────────┤
 │  HAL Layer          (source/hal/)                   │
 │  Motor · OtosSensor · LineSensor · ColorSensor      │
-│  GripperServo · PortIO · SerialPort · Radio         │
+│  Servo · PortIO · SerialPort · Radio                │
 ├─────────────────────────────────────────────────────┤
 │  Types              (source/types/)                 │
 │  Config.h · Protocol.h                              │
@@ -78,7 +78,7 @@ Thin wrappers over CODAL hardware. Each class receives its hardware reference at
 
 **`ColorSensor`** — APDS9960-style 16-bit RGBC sensor at 0x39 or 0x43.
 
-**`GripperServo`** — Servo output on P1, 0–180°.
+**`Servo`** — Servo output on P1. Constructor takes `maxDegrees` (default 180) for configurable range; supports both standard 180° and continuous-rotation 360° servos.
 
 **`PortIO`** — J1–J4 digital and analog GPIO, port-to-pin mapping table.
 
@@ -218,7 +218,7 @@ graph TD
         OtosSensor
         LineSensor
         ColorSensor
-        GripperServo
+        Servo["Servo\n0..maxDegrees"]
         PortIO
         SerialPort
         Radio
@@ -248,7 +248,7 @@ graph TD
     Robot -.->|optional| OtosSensor
     Robot -.->|optional| LineSensor
     Robot -.->|optional| ColorSensor
-    Robot -.->|optional| GripperServo
+    Robot -.->|optional| Servo
     Robot --> PortIO
 
     %% CommandProcessor calls Robot public interface only
