@@ -17,24 +17,37 @@
 /**
  * Robot — top-level object that owns all firmware subsystems.
  *
- * MicroBit uBit MUST be the first member declared. C++ initializes members
- * in declaration order; placing uBit first ensures the CODAL singleton is
- * fully constructed before any driver references uBit.i2c, uBit.serial, etc.
+ * MicroBit uBit now lives in main.cpp as a file-scope static. Robot
+ * receives references to the CODAL peripherals it needs so that hardware
+ * ownership is explicit and Robot is a pure abstraction layer.
  *
- * Usage:
- *   static Robot robot;   // constructed at program start
- *   robot.run();          // enters the tick loop; never returns
+ * Construction order is preserved: main.cpp calls uBit.init() before
+ * constructing Robot, so all CODAL peripherals are fully initialised
+ * when the subsystem constructors run.
+ *
+ * Usage (main.cpp):
+ *   static MicroBit uBit;
+ *   uBit.init();
+ *   static Robot robot(uBit.i2c, uBit.serial, uBit.radio, uBit.io,
+ *                      uBit.messageBus, uBit);
+ *   robot.run();
  */
 class Robot {
 public:
-    Robot();     // Constructs and initializes all subsystems; calls uBit.init()
+    Robot(MicroBitI2C&    i2c,
+          NRF52Serial&    serial,
+          MicroBitRadio&  radio,
+          MicroBitIO&     io,
+          MessageBus&     messageBus,
+          MicroBit&       uBit);
+
     void run();  // Never returns; enters tick loop
 
 private:
-    // MUST be first — CODAL singleton; all other members reference its fields.
-    MicroBit uBit;
+    // Reference to the CODAL singleton — used for systemTime() in run().
+    MicroBit& _uBit;
 
-    // Required subsystems (constructed from uBit references)
+    // Required subsystems (constructed from received references)
     NezhaV2    _motor;
     SerialPort _serial;
     Radio      _radio;

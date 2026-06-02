@@ -8,30 +8,33 @@ static void radioReply(const char* msg, void* ctx) {
     static_cast<Radio*>(ctx)->send(msg);
 }
 
-Robot::Robot()
-    : uBit(),
-      _motor(uBit.i2c),
-      _serial(uBit.serial),
-      _radio(uBit.radio, uBit.messageBus),
+Robot::Robot(MicroBitI2C&    i2c,
+             NRF52Serial&    serial,
+             MicroBitRadio&  radio,
+             MicroBitIO&     io,
+             MessageBus&     messageBus,
+             MicroBit&       uBit)
+    : _uBit(uBit),
+      _motor(i2c),
+      _serial(serial),
+      _radio(radio, messageBus),
       _announcer(uBit, _serial, _radio),
       _config(defaultRobotConfig()),
-      _otos(uBit.i2c),
+      _otos(i2c),
       _otosPresent(false),
-      _line(uBit.i2c),
+      _line(i2c),
       _linePresent(false),
-      _color(uBit.i2c),
+      _color(i2c),
       _colorPresent(false),
-      _gripper(uBit.io.P1),
+      _gripper(io.P1),
       _gripperPresent(false),
-      _portio(uBit.io),
+      _portio(io),
       _mc(_motor, _config),
       _odo(),
       _cmd()
 {
-    // uBit.init() MUST be called before any subsystem initialization.
-    // Member initialization above only stores references — actual I2C
-    // communication begins below after the CODAL runtime is ready.
-    uBit.init();
+    // uBit.init() was called by main.cpp before constructing Robot.
+    // All CODAL peripherals are ready; begin subsystem initialisation now.
 
     _serial.begin();
     _radio.begin();
@@ -72,6 +75,6 @@ void Robot::run() {
                 _cmd.process(_buf, radioReply, &_radio);
             }
         }
-        _cmd.tick(uBit.systemTime(), serialReply, &_serial);
+        _cmd.tick(_uBit.systemTime(), serialReply, &_serial);
     }
 }
