@@ -30,7 +30,7 @@ CommandProcessor::CommandProcessor()
     , _color(nullptr)
     , _gripper(nullptr)
     , _portio(nullptr)
-    , _cal(nullptr)
+    , _config(nullptr)
     , _mode(DriveMode::IDLE)
     , _lastSMs(0)
     , _tgtL(0.0f)
@@ -55,15 +55,6 @@ CommandProcessor::CommandProcessor()
     , _prevOdoEncR(0)
     , _currentGripperAngle(0)
 {
-    params.mmPerDegL      = 0.487f;
-    params.mmPerDegR      = 0.481f;
-    params.distScale      = 0.94f;
-    params.turnScale      = 1.07f;
-    params.minSpeedMms    = 50;
-    params.tickMs         = 20;
-    params.sTimeoutMs     = 200;
-    params.encReportEvery = 2;
-    params.trackwidthMm   = 120.0f;
 }
 
 // ---------------------------------------------------------------------------
@@ -89,9 +80,9 @@ void CommandProcessor::init(NezhaV2*         motor,
     _portio  = portio;
 }
 
-void CommandProcessor::setCalib(CalibParams* cal)
+void CommandProcessor::setConfig(RobotConfig* config)
 {
-    _cal = cal;
+    _config = config;
 }
 
 // ---------------------------------------------------------------------------
@@ -246,8 +237,9 @@ void CommandProcessor::process(const char* line, ReplyFn replyFn, void* ctx)
             replyFn(errbuf, ctx);
             return;
         }
-        int leftMms  = clampMinSpeed((int)args[0], (int)params.minSpeedMms);
-        int rightMms = clampMinSpeed((int)args[1], (int)params.minSpeedMms);
+        int minSpeed = _config ? (int)_config->minSpeedMms : 50;
+        int leftMms  = clampMinSpeed((int)args[0], minSpeed);
+        int rightMms = clampMinSpeed((int)args[1], minSpeed);
 
         _mc->startDrive((float)leftMms, (float)rightMms);
         _mc->setTarget((float)leftMms, (float)rightMms);
@@ -369,52 +361,50 @@ void CommandProcessor::process(const char* line, ReplyFn replyFn, void* ctx)
         // K alone — dump all params
         if (len == 1) {
             char kbuf[32];
-            snprintf(kbuf, sizeof(kbuf), "K:KML:%+d", (int)(params.mmPerDegL * 1000.0f + 0.5f));
-            replyFn(kbuf, ctx);
-            snprintf(kbuf, sizeof(kbuf), "K:KMR:%+d", (int)(params.mmPerDegR * 1000.0f + 0.5f));
-            replyFn(kbuf, ctx);
-            if (_cal) {
-                snprintf(kbuf, sizeof(kbuf), "K:KFF:%+d", (int)(_cal->kFF * 1000.0f + 0.5f));
+            if (_config) {
+                snprintf(kbuf, sizeof(kbuf), "K:KML:%+d", (int)(_config->mmPerDegL * 1000.0f + 0.5f));
                 replyFn(kbuf, ctx);
-            }
-            snprintf(kbuf, sizeof(kbuf), "K:KSM:%+d", (int)params.minSpeedMms);
-            replyFn(kbuf, ctx);
-            snprintf(kbuf, sizeof(kbuf), "K:KSS:%+d", (int)params.sTimeoutMs);
-            replyFn(kbuf, ctx);
-            snprintf(kbuf, sizeof(kbuf), "K:KTR:%+d", (int)params.tickMs);
-            replyFn(kbuf, ctx);
-            snprintf(kbuf, sizeof(kbuf), "K:KER:%+d", (int)params.encReportEvery);
-            replyFn(kbuf, ctx);
-            snprintf(kbuf, sizeof(kbuf), "K:KSD:%+d", (int)(params.distScale * 100.0f + 0.5f));
-            replyFn(kbuf, ctx);
-            snprintf(kbuf, sizeof(kbuf), "K:KST:%+d", (int)(params.turnScale * 100.0f + 0.5f));
-            replyFn(kbuf, ctx);
-            if (_cal) {
-                snprintf(kbuf, sizeof(kbuf), "K:KLF:%+d", (int)(_cal->kScaleLF * 1000.0f + 0.5f));
+                snprintf(kbuf, sizeof(kbuf), "K:KMR:%+d", (int)(_config->mmPerDegR * 1000.0f + 0.5f));
                 replyFn(kbuf, ctx);
-                snprintf(kbuf, sizeof(kbuf), "K:KLB:%+d", (int)(_cal->kScaleLB * 1000.0f + 0.5f));
+                snprintf(kbuf, sizeof(kbuf), "K:KFF:%+d", (int)(_config->kFF * 1000.0f + 0.5f));
                 replyFn(kbuf, ctx);
-                snprintf(kbuf, sizeof(kbuf), "K:KRF:%+d", (int)(_cal->kScaleRF * 1000.0f + 0.5f));
+                snprintf(kbuf, sizeof(kbuf), "K:KSM:%+d", (int)_config->minSpeedMms);
                 replyFn(kbuf, ctx);
-                snprintf(kbuf, sizeof(kbuf), "K:KRB:%+d", (int)(_cal->kScaleRB * 1000.0f + 0.5f));
+                snprintf(kbuf, sizeof(kbuf), "K:KSS:%+d", (int)_config->sTimeoutMs);
                 replyFn(kbuf, ctx);
-                snprintf(kbuf, sizeof(kbuf), "K:KCP:%+d", (int)(_cal->ratioPidKp * 10.0f + 0.5f));
+                snprintf(kbuf, sizeof(kbuf), "K:KTR:%+d", (int)_config->tickMs);
                 replyFn(kbuf, ctx);
-                snprintf(kbuf, sizeof(kbuf), "K:KCI:%+d", (int)(_cal->ratioPidKi * 1000.0f + 0.5f));
+                snprintf(kbuf, sizeof(kbuf), "K:KER:%+d", (int)_config->encReportEvery);
                 replyFn(kbuf, ctx);
-                snprintf(kbuf, sizeof(kbuf), "K:KCD:%+d", (int)(_cal->ratioPidKd * 1000.0f + 0.5f));
+                snprintf(kbuf, sizeof(kbuf), "K:KSD:%+d", (int)(_config->distScale * 100.0f + 0.5f));
                 replyFn(kbuf, ctx);
-                snprintf(kbuf, sizeof(kbuf), "K:KCC:%+d", (int)(_cal->ratioPidMax));
+                snprintf(kbuf, sizeof(kbuf), "K:KST:%+d", (int)(_config->turnScale * 100.0f + 0.5f));
                 replyFn(kbuf, ctx);
-                snprintf(kbuf, sizeof(kbuf), "K:KAT:%+d", (int)(_cal->kAdjThreshold * 1000.0f + 0.5f));
+                snprintf(kbuf, sizeof(kbuf), "K:KLF:%+d", (int)(_config->kScaleLF * 1000.0f + 0.5f));
                 replyFn(kbuf, ctx);
-                snprintf(kbuf, sizeof(kbuf), "K:KAG:%+d", (int)(_cal->kAdjGain * 1000.0f + 0.5f));
+                snprintf(kbuf, sizeof(kbuf), "K:KLB:%+d", (int)(_config->kScaleLB * 1000.0f + 0.5f));
                 replyFn(kbuf, ctx);
-                snprintf(kbuf, sizeof(kbuf), "K:KTW:%+d", (int)(_cal->trackwidthMm));
+                snprintf(kbuf, sizeof(kbuf), "K:KRF:%+d", (int)(_config->kScaleRF * 1000.0f + 0.5f));
                 replyFn(kbuf, ctx);
-                snprintf(kbuf, sizeof(kbuf), "K:KGT:%+d", (int)(_cal->turnThresholdMm));
+                snprintf(kbuf, sizeof(kbuf), "K:KRB:%+d", (int)(_config->kScaleRB * 1000.0f + 0.5f));
                 replyFn(kbuf, ctx);
-                snprintf(kbuf, sizeof(kbuf), "K:KGD:%+d", (int)(_cal->doneTolMm));
+                snprintf(kbuf, sizeof(kbuf), "K:KCP:%+d", (int)(_config->ratioPidKp * 10.0f + 0.5f));
+                replyFn(kbuf, ctx);
+                snprintf(kbuf, sizeof(kbuf), "K:KCI:%+d", (int)(_config->ratioPidKi * 1000.0f + 0.5f));
+                replyFn(kbuf, ctx);
+                snprintf(kbuf, sizeof(kbuf), "K:KCD:%+d", (int)(_config->ratioPidKd * 1000.0f + 0.5f));
+                replyFn(kbuf, ctx);
+                snprintf(kbuf, sizeof(kbuf), "K:KCC:%+d", (int)_config->ratioPidMax);
+                replyFn(kbuf, ctx);
+                snprintf(kbuf, sizeof(kbuf), "K:KAT:%+d", (int)(_config->kAdjThreshold * 1000.0f + 0.5f));
+                replyFn(kbuf, ctx);
+                snprintf(kbuf, sizeof(kbuf), "K:KAG:%+d", (int)(_config->kAdjGain * 1000.0f + 0.5f));
+                replyFn(kbuf, ctx);
+                snprintf(kbuf, sizeof(kbuf), "K:KTW:%+d", (int)(_config->trackwidthMm));
+                replyFn(kbuf, ctx);
+                snprintf(kbuf, sizeof(kbuf), "K:KGT:%+d", (int)(_config->turnThresholdMm));
+                replyFn(kbuf, ctx);
+                snprintf(kbuf, sizeof(kbuf), "K:KGD:%+d", (int)(_config->doneTolMm));
                 replyFn(kbuf, ctx);
             }
             return;
@@ -436,129 +426,131 @@ void CommandProcessor::process(const char* line, ReplyFn replyFn, void* ctx)
             char reply[48];
 
             if (memcmp(key, "ML", 2) == 0) {
-                params.mmPerDegL = v / 1000.0f;
-                snprintf(reply, sizeof(reply), "ACK:KML %d", (int)(params.mmPerDegL * 1000.0f + 0.5f));
+                if (_config) _config->mmPerDegL = v / 1000.0f;
+                float val = _config ? _config->mmPerDegL : 0.0f;
+                snprintf(reply, sizeof(reply), "ACK:KML %d", (int)(val * 1000.0f + 0.5f));
                 replyFn(reply, ctx);
                 return;
             }
             if (memcmp(key, "MR", 2) == 0) {
-                params.mmPerDegR = v / 1000.0f;
-                snprintf(reply, sizeof(reply), "ACK:KMR %d", (int)(params.mmPerDegR * 1000.0f + 0.5f));
+                if (_config) _config->mmPerDegR = v / 1000.0f;
+                float val = _config ? _config->mmPerDegR : 0.0f;
+                snprintf(reply, sizeof(reply), "ACK:KMR %d", (int)(val * 1000.0f + 0.5f));
                 replyFn(reply, ctx);
                 return;
             }
-            if (_cal) {
+            if (_config) {
                 if (memcmp(key, "FF", 2) == 0) {
-                    _cal->kFF = v / 1000.0f;
-                    snprintf(reply, sizeof(reply), "ACK:KFF %d", (int)(_cal->kFF * 1000.0f + 0.5f));
+                    _config->kFF = v / 1000.0f;
+                    snprintf(reply, sizeof(reply), "ACK:KFF %d", (int)(_config->kFF * 1000.0f + 0.5f));
                     replyFn(reply, ctx);
                     return;
                 }
                 if (memcmp(key, "LF", 2) == 0) {
-                    _cal->kScaleLF = v / 1000.0f;
-                    snprintf(reply, sizeof(reply), "ACK:KLF %d", (int)(_cal->kScaleLF * 1000.0f + 0.5f));
+                    _config->kScaleLF = v / 1000.0f;
+                    snprintf(reply, sizeof(reply), "ACK:KLF %d", (int)(_config->kScaleLF * 1000.0f + 0.5f));
                     replyFn(reply, ctx); return;
                 }
                 if (memcmp(key, "LB", 2) == 0) {
-                    _cal->kScaleLB = v / 1000.0f;
-                    snprintf(reply, sizeof(reply), "ACK:KLB %d", (int)(_cal->kScaleLB * 1000.0f + 0.5f));
+                    _config->kScaleLB = v / 1000.0f;
+                    snprintf(reply, sizeof(reply), "ACK:KLB %d", (int)(_config->kScaleLB * 1000.0f + 0.5f));
                     replyFn(reply, ctx); return;
                 }
                 if (memcmp(key, "RF", 2) == 0) {
-                    _cal->kScaleRF = v / 1000.0f;
-                    snprintf(reply, sizeof(reply), "ACK:KRF %d", (int)(_cal->kScaleRF * 1000.0f + 0.5f));
+                    _config->kScaleRF = v / 1000.0f;
+                    snprintf(reply, sizeof(reply), "ACK:KRF %d", (int)(_config->kScaleRF * 1000.0f + 0.5f));
                     replyFn(reply, ctx); return;
                 }
                 if (memcmp(key, "RB", 2) == 0) {
-                    _cal->kScaleRB = v / 1000.0f;
-                    snprintf(reply, sizeof(reply), "ACK:KRB %d", (int)(_cal->kScaleRB * 1000.0f + 0.5f));
+                    _config->kScaleRB = v / 1000.0f;
+                    snprintf(reply, sizeof(reply), "ACK:KRB %d", (int)(_config->kScaleRB * 1000.0f + 0.5f));
                     replyFn(reply, ctx); return;
                 }
                 if (memcmp(key, "CP", 2) == 0) {
-                    _cal->ratioPidKp = v / 10.0f;
-                    if (_mc) _mc->updatePidGains(_cal->ratioPidKp, _cal->ratioPidKi, _cal->ratioPidKd, _cal->ratioPidMax);
-                    snprintf(reply, sizeof(reply), "ACK:KCP %d", (int)(_cal->ratioPidKp * 10.0f + 0.5f));
+                    _config->ratioPidKp = v / 10.0f;
+                    if (_mc) _mc->updatePidGains(_config->ratioPidKp, _config->ratioPidKi, _config->ratioPidKd, _config->ratioPidMax);
+                    snprintf(reply, sizeof(reply), "ACK:KCP %d", (int)(_config->ratioPidKp * 10.0f + 0.5f));
                     replyFn(reply, ctx); return;
                 }
                 if (memcmp(key, "CI", 2) == 0) {
-                    _cal->ratioPidKi = v / 1000.0f;
-                    if (_mc) _mc->updatePidGains(_cal->ratioPidKp, _cal->ratioPidKi, _cal->ratioPidKd, _cal->ratioPidMax);
-                    snprintf(reply, sizeof(reply), "ACK:KCI %d", (int)(_cal->ratioPidKi * 1000.0f + 0.5f));
+                    _config->ratioPidKi = v / 1000.0f;
+                    if (_mc) _mc->updatePidGains(_config->ratioPidKp, _config->ratioPidKi, _config->ratioPidKd, _config->ratioPidMax);
+                    snprintf(reply, sizeof(reply), "ACK:KCI %d", (int)(_config->ratioPidKi * 1000.0f + 0.5f));
                     replyFn(reply, ctx); return;
                 }
                 if (memcmp(key, "CD", 2) == 0) {
-                    _cal->ratioPidKd = v / 1000.0f;
-                    if (_mc) _mc->updatePidGains(_cal->ratioPidKp, _cal->ratioPidKi, _cal->ratioPidKd, _cal->ratioPidMax);
-                    snprintf(reply, sizeof(reply), "ACK:KCD %d", (int)(_cal->ratioPidKd * 1000.0f + 0.5f));
+                    _config->ratioPidKd = v / 1000.0f;
+                    if (_mc) _mc->updatePidGains(_config->ratioPidKp, _config->ratioPidKi, _config->ratioPidKd, _config->ratioPidMax);
+                    snprintf(reply, sizeof(reply), "ACK:KCD %d", (int)(_config->ratioPidKd * 1000.0f + 0.5f));
                     replyFn(reply, ctx); return;
                 }
                 if (memcmp(key, "CC", 2) == 0) {
-                    _cal->ratioPidMax = (float)v;
-                    if (_mc) _mc->updatePidGains(_cal->ratioPidKp, _cal->ratioPidKi, _cal->ratioPidKd, _cal->ratioPidMax);
-                    snprintf(reply, sizeof(reply), "ACK:KCC %d", (int)_cal->ratioPidMax);
+                    _config->ratioPidMax = (float)v;
+                    if (_mc) _mc->updatePidGains(_config->ratioPidKp, _config->ratioPidKi, _config->ratioPidKd, _config->ratioPidMax);
+                    snprintf(reply, sizeof(reply), "ACK:KCC %d", (int)_config->ratioPidMax);
                     replyFn(reply, ctx); return;
                 }
                 if (memcmp(key, "AT", 2) == 0) {
-                    _cal->kAdjThreshold = v / 1000.0f;
-                    snprintf(reply, sizeof(reply), "ACK:KAT %d", (int)(_cal->kAdjThreshold * 1000.0f + 0.5f));
+                    _config->kAdjThreshold = v / 1000.0f;
+                    snprintf(reply, sizeof(reply), "ACK:KAT %d", (int)(_config->kAdjThreshold * 1000.0f + 0.5f));
                     replyFn(reply, ctx); return;
                 }
                 if (memcmp(key, "AG", 2) == 0) {
-                    _cal->kAdjGain = v / 1000.0f;
-                    snprintf(reply, sizeof(reply), "ACK:KAG %d", (int)(_cal->kAdjGain * 1000.0f + 0.5f));
+                    _config->kAdjGain = v / 1000.0f;
+                    snprintf(reply, sizeof(reply), "ACK:KAG %d", (int)(_config->kAdjGain * 1000.0f + 0.5f));
                     replyFn(reply, ctx); return;
                 }
                 if (memcmp(key, "TW", 2) == 0) {
-                    _cal->trackwidthMm = (float)v;
-                    snprintf(reply, sizeof(reply), "ACK:KTW %d", (int)_cal->trackwidthMm);
+                    _config->trackwidthMm = (float)v;
+                    snprintf(reply, sizeof(reply), "ACK:KTW %d", (int)_config->trackwidthMm);
                     replyFn(reply, ctx); return;
                 }
                 if (memcmp(key, "GT", 2) == 0) {
-                    _cal->turnThresholdMm = (float)v;
-                    snprintf(reply, sizeof(reply), "ACK:KGT %d", (int)_cal->turnThresholdMm);
+                    _config->turnThresholdMm = (float)v;
+                    snprintf(reply, sizeof(reply), "ACK:KGT %d", (int)_config->turnThresholdMm);
                     replyFn(reply, ctx); return;
                 }
                 if (memcmp(key, "GD", 2) == 0) {
-                    _cal->doneTolMm = (float)v;
-                    snprintf(reply, sizeof(reply), "ACK:KGD %d", (int)_cal->doneTolMm);
+                    _config->doneTolMm = (float)v;
+                    snprintf(reply, sizeof(reply), "ACK:KGD %d", (int)_config->doneTolMm);
                     replyFn(reply, ctx); return;
                 }
-            }
-            if (memcmp(key, "SM", 2) == 0) {
-                params.minSpeedMms = v < 0 ? 0 : v;
-                snprintf(reply, sizeof(reply), "ACK:KSM %d", (int)params.minSpeedMms);
-                replyFn(reply, ctx);
-                return;
-            }
-            if (memcmp(key, "SS", 2) == 0) {
-                params.sTimeoutMs = clampInt(v, 50, 5000);
-                snprintf(reply, sizeof(reply), "ACK:KSS %d", (int)params.sTimeoutMs);
-                replyFn(reply, ctx);
-                return;
-            }
-            if (memcmp(key, "TR", 2) == 0) {
-                params.tickMs = clampInt(v, 5, 100);
-                snprintf(reply, sizeof(reply), "ACK:KTR %d", (int)params.tickMs);
-                replyFn(reply, ctx);
-                return;
-            }
-            if (memcmp(key, "ER", 2) == 0) {
-                params.encReportEvery = clampInt(v, 1, 20);
-                snprintf(reply, sizeof(reply), "ACK:KER %d", (int)params.encReportEvery);
-                replyFn(reply, ctx);
-                return;
-            }
-            if (memcmp(key, "SD", 2) == 0) {
-                params.distScale = v / 100.0f;
-                snprintf(reply, sizeof(reply), "ACK:KSD %d", (int)(params.distScale * 100.0f + 0.5f));
-                replyFn(reply, ctx);
-                return;
-            }
-            if (memcmp(key, "ST", 2) == 0) {
-                params.turnScale = v / 100.0f;
-                snprintf(reply, sizeof(reply), "ACK:KST %d", (int)(params.turnScale * 100.0f + 0.5f));
-                replyFn(reply, ctx);
-                return;
+                if (memcmp(key, "SM", 2) == 0) {
+                    _config->minSpeedMms = v < 0 ? 0 : v;
+                    snprintf(reply, sizeof(reply), "ACK:KSM %d", (int)_config->minSpeedMms);
+                    replyFn(reply, ctx);
+                    return;
+                }
+                if (memcmp(key, "SS", 2) == 0) {
+                    _config->sTimeoutMs = clampInt(v, 50, 5000);
+                    snprintf(reply, sizeof(reply), "ACK:KSS %d", (int)_config->sTimeoutMs);
+                    replyFn(reply, ctx);
+                    return;
+                }
+                if (memcmp(key, "TR", 2) == 0) {
+                    _config->tickMs = clampInt(v, 5, 100);
+                    snprintf(reply, sizeof(reply), "ACK:KTR %d", (int)_config->tickMs);
+                    replyFn(reply, ctx);
+                    return;
+                }
+                if (memcmp(key, "ER", 2) == 0) {
+                    _config->encReportEvery = clampInt(v, 1, 20);
+                    snprintf(reply, sizeof(reply), "ACK:KER %d", (int)_config->encReportEvery);
+                    replyFn(reply, ctx);
+                    return;
+                }
+                if (memcmp(key, "SD", 2) == 0) {
+                    _config->distScale = v / 100.0f;
+                    snprintf(reply, sizeof(reply), "ACK:KSD %d", (int)(_config->distScale * 100.0f + 0.5f));
+                    replyFn(reply, ctx);
+                    return;
+                }
+                if (memcmp(key, "ST", 2) == 0) {
+                    _config->turnScale = v / 100.0f;
+                    snprintf(reply, sizeof(reply), "ACK:KST %d", (int)(_config->turnScale * 100.0f + 0.5f));
+                    replyFn(reply, ctx);
+                    return;
+                }
             }
         }
 
@@ -750,8 +742,8 @@ void CommandProcessor::process(const char* line, ReplyFn replyFn, void* ctx)
             _gSpeed   = speed;
 
             float angleRad = atan2f(ty, tx);
-            float kgt = _cal ? _cal->turnThresholdMm : 50.0f;  // degrees threshold
-            float angleDeg = angleRad * 57.2957795f;            // radians to degrees
+            float kgt = _config ? _config->turnThresholdMm : 50.0f;  // degrees threshold
+            float angleDeg = angleRad * 57.2957795f;                   // radians to degrees
 
             if (fabsf(angleDeg) > kgt) {
                 // Pre-rotate phase: rotate in place to face target
@@ -761,7 +753,7 @@ void CommandProcessor::process(const char* line, ReplyFn replyFn, void* ctx)
                 _tgtL = -turnSign * speed;
                 _tgtR =  turnSign * speed;
                 // Compute how far to turn: arc length = (trackwidth/2) * |angleRad|
-                float tw = _cal ? _cal->trackwidthMm : 120.0f;
+                float tw = _config ? _config->trackwidthMm : 120.0f;
                 _gArcLeftMm  = -turnSign * (tw / 2.0f) * fabsf(angleRad);
                 _gArcRightMm =  turnSign * (tw / 2.0f) * fabsf(angleRad);
                 int32_t el, er;
@@ -772,7 +764,7 @@ void CommandProcessor::process(const char* line, ReplyFn replyFn, void* ctx)
                 _mode = DriveMode::GO_TO;
             } else {
                 // Arc phase directly (shallow angle)
-                float tw = _cal ? _cal->trackwidthMm : 120.0f;
+                float tw = _config ? _config->trackwidthMm : 120.0f;
                 computeArc(tx, ty, tw, _gArcLeftMm, _gArcRightMm);
                 // Scale arc distances to speed ratio
                 float maxArc = fmaxf(fabsf(_gArcLeftMm), fabsf(_gArcRightMm));
@@ -872,7 +864,8 @@ void CommandProcessor::process(const char* line, ReplyFn replyFn, void* ctx)
 void CommandProcessor::tick(uint32_t now_ms, ReplyFn replyFn, void* ctx)
 {
     // Throttle to tickMs cadence
-    if ((now_ms - _lastTickMs) < (uint32_t)params.tickMs) return;
+    int32_t tickMs = _config ? _config->tickMs : 20;
+    if ((now_ms - _lastTickMs) < (uint32_t)tickMs) return;
 
     float dt_s    = (float)(now_ms - _lastTickMs) / 1000.0f;
     _lastTickMs   = now_ms;
@@ -889,12 +882,14 @@ void CommandProcessor::tick(uint32_t now_ms, ReplyFn replyFn, void* ctx)
         float dR = (float)(encR - _prevOdoEncR);
         _prevOdoEncL = encL;
         _prevOdoEncR = encR;
-        _odo->update(dL, dR, params.trackwidthMm);
+        float tw = _config ? _config->trackwidthMm : 120.0f;
+        _odo->update(dL, dR, tw);
     }
 
     // S-mode watchdog
     if (_mode == DriveMode::STREAMING) {
-        if ((now_ms - _lastSMs) > (uint32_t)params.sTimeoutMs) {
+        int32_t sTimeout = _config ? _config->sTimeoutMs : 200;
+        if ((now_ms - _lastSMs) > (uint32_t)sTimeout) {
             fullStop(replyFn, ctx);
             replyFn("LOG:SAFETY_STOP", ctx);
         }
@@ -923,7 +918,7 @@ void CommandProcessor::tick(uint32_t now_ms, ReplyFn replyFn, void* ctx)
     if (_mode == DriveMode::GO_TO) {
         int32_t el, er;
         _mc->getEncoderPositions(el, er);
-        float kgd = _cal ? _cal->doneTolMm : 5.0f;
+        float kgd = _config ? _config->doneTolMm : 5.0f;
 
         if (_gPhase == GPhase::PRE_ROTATE) {
             // Check if pre-rotation is complete
@@ -935,7 +930,7 @@ void CommandProcessor::tick(uint32_t now_ms, ReplyFn replyFn, void* ctx)
             bool doneR = dR >= targetR - kgd;
             if (doneL && doneR) {
                 // Advance to arc phase
-                float tw = _cal ? _cal->trackwidthMm : 120.0f;
+                float tw = _config ? _config->trackwidthMm : 120.0f;
                 computeArc(_gTargetX, _gTargetY, tw, _gArcLeftMm, _gArcRightMm);
                 float maxArc = fmaxf(fabsf(_gArcLeftMm), fabsf(_gArcRightMm));
                 float leftSpd  = (maxArc > 0.001f) ? (_gSpeed * _gArcLeftMm  / maxArc) : _gSpeed;
@@ -964,8 +959,9 @@ void CommandProcessor::tick(uint32_t now_ms, ReplyFn replyFn, void* ctx)
 
     // Streaming encoder output every encReportEvery ticks
     if (_mode != DriveMode::IDLE) {
+        int32_t encReportEvery = _config ? _config->encReportEvery : 2;
         _encTickCount++;
-        if (_encTickCount >= params.encReportEvery) {
+        if (_encTickCount >= encReportEvery) {
             reportEncoders(replyFn, ctx);
             if (_color) {
                 uint16_t sr, sg, sb, sc;

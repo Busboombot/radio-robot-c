@@ -14,7 +14,7 @@ Robot::Robot()
       _serial(uBit.serial),
       _radio(uBit.radio, uBit.messageBus),
       _announcer(uBit, _serial, _radio),
-      _cal(defaultCalibParams()),
+      _config(defaultRobotConfig()),
       _otos(uBit.i2c),
       _otosPresent(false),
       _line(uBit.i2c),
@@ -24,7 +24,7 @@ Robot::Robot()
       _gripper(uBit.io.P1),
       _gripperPresent(false),
       _portio(uBit.io),
-      _mc(_motor, _cal),
+      _mc(_motor, _config),
       _odo(),
       _cmd()
 {
@@ -54,7 +54,7 @@ Robot::Robot()
               _colorPresent ? &_color : nullptr,
               _gripperPresent ? &_gripper : nullptr,
               &_portio);
-    _cmd.setCalib(&_cal);
+    _cmd.setConfig(&_config);
 }
 
 void Robot::run() {

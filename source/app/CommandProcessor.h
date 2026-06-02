@@ -32,19 +32,6 @@ class CommandProcessor {
 public:
     CommandProcessor();
 
-    // Public calibration params — updated by K-commands.
-    struct Params {
-        float   mmPerDegL;       // encoder mm/degree, left wheel (default 0.487)
-        float   mmPerDegR;       // encoder mm/degree, right wheel (default 0.481)
-        float   distScale;       // distance command scale factor (default 0.94)
-        float   turnScale;       // turn command scale factor (default 1.07)
-        int32_t minSpeedMms;     // minimum non-zero speed snap (default 50)
-        int32_t tickMs;          // tick cadence ms (default 20)
-        int32_t sTimeoutMs;      // S-mode watchdog timeout ms (default 200)
-        int32_t encReportEvery;  // streaming encoder/odo report interval in ticks (default 2)
-        float   trackwidthMm;    // wheel trackwidth mm (default 120)
-    } params;
-
     // Inject hardware pointers. mc and odo must not be null. Others may be null.
     void init(NezhaV2*         motor,
               MotorController* mc,
@@ -55,8 +42,8 @@ public:
               GripperServo*    gripper,
               PortIO*          portio);
 
-    // Set live calibration params pointer (call after init, from Robot.cpp).
-    void setCalib(CalibParams* cal);
+    // Set unified config pointer (call after init, from Robot.cpp).
+    void setConfig(RobotConfig* config);
 
     // Parse and dispatch one command line. line must be NUL-terminated.
     // Calls replyFn(msg, ctx) for each response line.
@@ -77,7 +64,7 @@ private:
     ColorSensor*     _color;
     GripperServo*    _gripper;
     PortIO*          _portio;
-    CalibParams*     _cal;
+    RobotConfig*     _config;
 
     // Drive mode state
     DriveMode _mode;

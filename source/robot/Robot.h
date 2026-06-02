@@ -39,7 +39,7 @@ private:
     SerialPort _serial;
     Radio      _radio;
     Announcer  _announcer;
-    CalibParams _cal;
+    RobotConfig _config;
 
     // Optional subsystems (_*Present tracks hardware availability)
     OtosSensor   _otos;
