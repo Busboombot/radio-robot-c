@@ -1,11 +1,13 @@
 ---
-id: "006"
-title: "LineSensor per-channel calibration and normalization"
-status: open
-use-cases: [SUC-006]
-depends-on: ['002']
-github-issue: ""
-issue: "source-fixme-cleanup.md"
+id: '006'
+title: LineSensor per-channel calibration and normalization
+status: done
+use-cases:
+- SUC-006
+depends-on:
+- '002'
+github-issue: ''
+issue: source-fixme-cleanup.md
 completes_issue: true
 ---
 <!-- CLASI: Before changing code or making plans, review the SE process in CLAUDE.md -->
@@ -30,18 +32,18 @@ adds 4 floats = 16 bytes. Total: ~32 bytes. If RAM is tight after tickets
 
 ## Acceptance Criteria
 
-- [ ] `LineSensor` stores `uint16_t _calMin[4]` and `_calMax[4]`
+- [x] `LineSensor` stores `uint16_t _calMin[4]` and `_calMax[4]`
   (initialized to 0/255).
-- [ ] `captureCalibMin()` snapshots current raw readings into `_calMin`.
-- [ ] `captureCalibMax()` snapshots current raw readings into `_calMax`.
-- [ ] `readNormalized(uint16_t out[4])` returns 0–1000 per channel:
+- [x] `captureCalibMin()` snapshots current raw readings into `_calMin`.
+- [x] `captureCalibMax()` snapshots current raw readings into `_calMax`.
+- [x] `readNormalized(uint16_t out[4])` returns 0–1000 per channel:
   `(raw - min) * 1000 / (max - min)`, clamped to [0, 1000].
-- [ ] Existing `readValues(uint16_t out[4])` unchanged (raw reads still
+- [x] Existing `readValues(uint16_t out[4])` unchanged (raw reads still
   available).
-- [ ] `float _alpha` EMA smoothing coefficient (0.0 = no smoothing);
+- [x] `float _alpha` EMA smoothing coefficient (0.0 = no smoothing);
   configurable via `setSmoothingAlpha(float alpha)`. Applied in
   `readNormalized` only. (Defer if RAM is over budget.)
-- [ ] `python3 build.py` succeeds; RAM line reported. If RAM exceeds budget,
+- [x] `python3 build.py` succeeds; RAM line reported. If RAM exceeds budget,
   omit EMA (remove `_alpha` and `setSmoothingAlpha`) and note the deferral.
 - [ ] Bench: place robot over white surface → `captureCalibMin()`; place
   over black → `captureCalibMax()`; confirm `readNormalized()` returns ~0

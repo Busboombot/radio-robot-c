@@ -74,7 +74,11 @@ Thin wrappers over CODAL hardware. Each class receives its hardware reference at
 - `poll(buf, len)` → bool
 - Relay mode: strips `>` prefix inbound, prepends `<` prefix outbound
 
-**`LineSensor`** — 4-channel I2C grayscale sensor at 0x1A.
+**`LineSensor`** — 4-channel I2C grayscale sensor at 0x1A. Supports per-channel
+calibration (`captureCalibMin()` / `captureCalibMax()`) and normalized output
+(`readNormalized(out[4])`) returning 0–1000 per channel (0 = white, 1000 = black).
+Optional EMA smoothing via `setSmoothingAlpha(float)`. Raw reads remain available
+via `readValues()`.
 
 **`ColorSensor`** — APDS9960-style 16-bit RGBC sensor at 0x39 or 0x43.
 
