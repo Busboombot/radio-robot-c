@@ -2,41 +2,36 @@
 #include <stdint.h>
 #include "Protocol.h"
 
-// Forward declarations to avoid circular includes.
-// CommandProcessor is included by Robot.h, so cannot include Robot.h here.
+// Forward declaration — CommandProcessor.cpp includes Robot.h directly.
+// Keeping only a forward decl here avoids including Robot.h's transitive
+// header graph (MicroBit, CODAL, all subsystems) in every file that
+// includes CommandProcessor.h.
 class Robot;
 
 /**
  * CommandProcessor — wire-protocol parser and dispatcher.
  *
- * Tokenizes command lines and calls Robot public methods or component
- * setters. Drive state is owned by DriveController (inside Robot);
- * this class holds no drive state of its own.
+ * Holds only a Robot reference and static parse helpers.
+ * All command handlers call Robot public methods or component accessors.
+ * No hardware pointers. No config pointers. No drive state.
  *
- * Usage (Robot.cpp):
- *   _cmd.setRobot(this);
+ * Usage (main.cpp):
+ *   CommandProcessor cmd(robot);
  *   // in loop:
- *   _cmd.process(lineBuf, replyFn, ctx);
- *   _cmd.tick(now_ms, replyFn, ctx);  // delegates to DriveController
+ *   cmd.process(lineBuf, replyFn, ctx);
  */
 class CommandProcessor {
 public:
-    CommandProcessor();
-
-    // Provide a back-pointer to Robot (called from Robot constructor).
-    void setRobot(Robot* robot);
+    explicit CommandProcessor(Robot& robot);
 
     // Parse and dispatch one command line. line must be NUL-terminated.
     // Calls replyFn(msg, ctx) for each response line.
     void process(const char* line, ReplyFn replyFn, void* ctx);
 
 private:
-    Robot* _robot;
+    Robot& _robot;
 
-    // Gripper state (not drive state — stays here until ticket 005)
-    int32_t _currentGripperAngle;
-
-    // Internal helpers
+    // Static parse helpers
     static int  parseSignedArgs(const char* s, int32_t* out, int maxArgs);
     static int  clampInt(int v, int lo, int hi);
     static int  clampMinSpeed(int mms, int minSpeedMms);

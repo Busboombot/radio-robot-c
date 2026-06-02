@@ -20,6 +20,10 @@ DriveController::DriveController(MotorController& mc, Odometry& odo, const Robot
     , _odo(odo)
     , _cfg(cfg)
     , _mode(DriveMode::IDLE)
+    , _driveFn(nullptr)
+    , _driveCtx(nullptr)
+    , _sensorFn(nullptr)
+    , _sensorCtx(nullptr)
     , _lastSMs(0)
     , _tgtL(0.0f)
     , _tgtR(0.0f)
@@ -44,11 +48,18 @@ DriveController::DriveController(MotorController& mc, Odometry& odo, const Robot
 {
 }
 
+void DriveController::setSensorReporter(SensorReportFn fn, void* sensorCtx)
+{
+    _sensorFn  = fn;
+    _sensorCtx = sensorCtx;
+}
+
 // ---------------------------------------------------------------------------
 // Entry points
 // ---------------------------------------------------------------------------
 
-void DriveController::beginStream(float leftMms, float rightMms, uint32_t now_ms)
+void DriveController::beginStream(float leftMms, float rightMms, uint32_t now_ms,
+                                   ReplyFn fn, void* ctx)
 {
     _mc.startDrive(leftMms, rightMms);
     _mc.setTarget(leftMms, rightMms);
@@ -56,22 +67,28 @@ void DriveController::beginStream(float leftMms, float rightMms, uint32_t now_ms
     _tgtR    = rightMms;
     _mode    = DriveMode::STREAMING;
     _lastSMs = now_ms;
+    _driveFn  = fn;
+    _driveCtx = ctx;
 }
 
 void DriveController::beginTimed(float leftMms, float rightMms,
-                                  uint32_t durationMs, uint32_t now_ms)
+                                  uint32_t durationMs, uint32_t now_ms,
+                                  ReplyFn fn, void* ctx)
 {
     _mc.startDriveClean(leftMms, rightMms);
     _mc.setTarget(leftMms, rightMms);
-    _tgtL   = leftMms;
-    _tgtR   = rightMms;
-    _tEndMs = _lastTickMs + durationMs;
-    _mode   = DriveMode::TIMED;
+    _tgtL     = leftMms;
+    _tgtR     = rightMms;
+    _tEndMs   = _lastTickMs + durationMs;
+    _mode     = DriveMode::TIMED;
+    _driveFn  = fn;
+    _driveCtx = ctx;
     (void)now_ms;
 }
 
 void DriveController::beginDistance(float leftMms, float rightMms,
-                                     int32_t targetMm, uint32_t now_ms)
+                                     int32_t targetMm, uint32_t now_ms,
+                                     ReplyFn fn, void* ctx)
 {
     _mc.startDriveClean(leftMms, rightMms);
     _mc.setTarget(leftMms, rightMms);
@@ -82,10 +99,13 @@ void DriveController::beginDistance(float leftMms, float rightMms,
     _dTargetMm  = targetMm;
     _dTimeoutMs = _lastTickMs + 5000;
     _mode       = DriveMode::DISTANCE;
+    _driveFn    = fn;
+    _driveCtx   = ctx;
     (void)now_ms;
 }
 
-void DriveController::beginGoTo(float tx, float ty, float speedMms, uint32_t now_ms)
+void DriveController::beginGoTo(float tx, float ty, float speedMms, uint32_t now_ms,
+                                 ReplyFn fn, void* ctx)
 {
     _gTargetX = tx;
     _gTargetY = ty;
@@ -128,7 +148,9 @@ void DriveController::beginGoTo(float tx, float ty, float speedMms, uint32_t now
         _gPhase = GPhase::ARC;
     }
 
-    _mode = DriveMode::GO_TO;
+    _mode     = DriveMode::GO_TO;
+    _driveFn  = fn;
+    _driveCtx = ctx;
     (void)now_ms;
 }
 
@@ -165,19 +187,26 @@ void DriveController::tick(uint32_t now_ms, ReplyFn fn, void* ctx)
         _odo.update(dL, dR, _cfg.trackwidthMm);
     }
 
+    // Convenience: drive sink (for async completions) vs active sink (for streaming).
+    // _driveFn/_driveCtx: captured when the drive began — routes completions to
+    // the channel that originated the command.
+    // fn/ctx: the active channel sink — used for streaming telemetry only.
+    ReplyFn  dfn = _driveFn  ? _driveFn  : fn;
+    void*    dct = _driveFn  ? _driveCtx : ctx;
+
     // S-mode watchdog
     if (_mode == DriveMode::STREAMING) {
         if ((now_ms - _lastSMs) > (uint32_t)_cfg.sTimeoutMs) {
-            fullStop(fn, ctx);
-            fn("LOG:SAFETY_STOP", ctx);
+            fullStop(dfn, dct);
+            dfn("LOG:SAFETY_STOP", dct);
         }
     }
 
     // T-mode: stop when deadline reached
     if (_mode == DriveMode::TIMED && now_ms >= _tEndMs) {
-        fullStop(fn, ctx);
-        reportOdo(fn, ctx);
-        fn("ACK:T+DONE", ctx);
+        fullStop(dfn, dct);
+        reportOdo(dfn, dct);
+        dfn("ACK:T+DONE", dct);
     }
 
     // D-mode: stop when average encoder travel >= target, or on timeout
@@ -186,9 +215,9 @@ void DriveController::tick(uint32_t now_ms, ReplyFn fn, void* ctx)
         _mc.getEncoderPositions(l, r);
         int32_t traveled = (abs(l - _dEncStartL) + abs(r - _dEncStartR)) / 2;
         if (traveled >= _dTargetMm || now_ms >= _dTimeoutMs) {
-            fullStop(fn, ctx);
-            reportOdo(fn, ctx);
-            fn("ACK:D+DONE", ctx);
+            fullStop(dfn, dct);
+            reportOdo(dfn, dct);
+            dfn("ACK:D+DONE", dct);
         }
     }
 
@@ -225,18 +254,23 @@ void DriveController::tick(uint32_t now_ms, ReplyFn fn, void* ctx)
             bool doneL = fabsf(dL - _gArcLeftMm)  <= kgd;
             bool doneR = fabsf(dR - _gArcRightMm) <= kgd;
             if (doneL && doneR) {
-                fullStop(fn, ctx);
+                fullStop(dfn, dct);
                 _gPhase = GPhase::IDLE;
-                fn("G+DONE", ctx);
+                dfn("G+DONE", dct);
             }
         }
     }
 
-    // Streaming encoder output every encReportEvery ticks (only while driving)
+    // Streaming encoder + sensor output every encReportEvery ticks (only while driving).
+    // Encoder/sensor streaming goes to the active sink (fn/ctx) — it is continuous
+    // telemetry for whoever is listening, not a per-drive completion.
     if (_mode != DriveMode::IDLE) {
         _encTickCount++;
         if (_encTickCount >= _cfg.encReportEvery) {
             reportEncoders(fn, ctx);
+            if (_sensorFn) {
+                _sensorFn(fn, ctx, _sensorCtx);
+            }
             _encTickCount = 0;
         }
     }

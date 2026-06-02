@@ -1,8 +1,8 @@
 // CommandProcessor.cpp — wire-protocol parser and dispatcher.
-// Drive state is owned by DriveController (inside Robot).
-// This file contains only parsing, dispatch, and non-drive state (gripper).
+// All command handlers delegate to Robot public methods or component accessors.
+// No hardware pointers. No config pointers. No drive state.
 //
-// Sprint 007, Ticket 003: drive fields removed; handlers delegate to Robot.
+// Sprint 007, Ticket 005: thinned to Robot& + process() + static helpers.
 
 #include "CommandProcessor.h"
 #include "Robot.h"
@@ -25,15 +25,9 @@
 // Constructor
 // ---------------------------------------------------------------------------
 
-CommandProcessor::CommandProcessor()
-    : _robot(nullptr)
-    , _currentGripperAngle(0)
+CommandProcessor::CommandProcessor(Robot& robot)
+    : _robot(robot)
 {
-}
-
-void CommandProcessor::setRobot(Robot* robot)
-{
-    _robot = robot;
 }
 
 // ---------------------------------------------------------------------------
@@ -93,8 +87,6 @@ int CommandProcessor::clampMinSpeed(int mms, int minSpeedMms)
 
 void CommandProcessor::process(const char* line, ReplyFn replyFn, void* ctx)
 {
-    if (!_robot) return;
-
     // Copy to local uppercase buffer (250-byte RAW250 message max, NUL-terminated)
     char buf[256];
     int  len = 0;
@@ -108,14 +100,13 @@ void CommandProcessor::process(const char* line, ReplyFn replyFn, void* ctx)
 
     if (len == 0) return;
 
-    RobotConfig& cfg = _robot->config();
-    MotorController& mc  = _robot->motor();
-    Odometry&        odo = _robot->odometry();
+    RobotConfig&     cfg = _robot.config();
+    MotorController& mc  = _robot.motor();  // used by K* PID setters
 
     // ── X or STOP — full stop ───────────────────────────────────────────────
     if ((len == 1 && buf[0] == 'X') ||
         (len == 4 && memcmp(buf, "STOP", 4) == 0)) {
-        _robot->stop();
+        _robot.stop();
         replyFn("ACK:X", ctx);
         return;
     }
@@ -134,7 +125,7 @@ void CommandProcessor::process(const char* line, ReplyFn replyFn, void* ctx)
         int leftMms  = clampMinSpeed((int)args[0], minSpeed);
         int rightMms = clampMinSpeed((int)args[1], minSpeed);
 
-        _robot->streamDrive(leftMms, rightMms);
+        _robot.streamDrive(leftMms, rightMms, replyFn, ctx);
 
         char reply[48];
         snprintf(reply, sizeof(reply), "ACK:S %d %d", leftMms, rightMms);
@@ -156,7 +147,7 @@ void CommandProcessor::process(const char* line, ReplyFn replyFn, void* ctx)
         int rightMms   = (int)args[1];
         int durationMs = clampInt((int)args[2], 1, 5000);
 
-        _robot->timedDrive(leftMms, rightMms, (uint32_t)durationMs);
+        _robot.timedDrive(leftMms, rightMms, (uint32_t)durationMs, replyFn, ctx);
 
         char reply[64];
         snprintf(reply, sizeof(reply), "ACK:T %d %d %d", leftMms, rightMms, durationMs);
@@ -179,7 +170,7 @@ void CommandProcessor::process(const char* line, ReplyFn replyFn, void* ctx)
         int targetMm = abs((int)args[2]);
         if (targetMm < 1) targetMm = 1;
 
-        _robot->distanceDrive(leftMms, rightMms, targetMm);
+        _robot.distanceDrive(leftMms, rightMms, targetMm, replyFn, ctx);
 
         char reply[64];
         snprintf(reply, sizeof(reply), "ACK:D %d %d %d", leftMms, rightMms, targetMm);
@@ -189,34 +180,33 @@ void CommandProcessor::process(const char* line, ReplyFn replyFn, void* ctx)
 
     // ── ENC — query encoder positions ──────────────────────────────────────
     if (len == 3 && memcmp(buf, "ENC", 3) == 0) {
-        int32_t l, r;
-        mc.getEncoderPositions(l, r);
+        Robot::EncoderReading enc = _robot.getEncoders();
         char rbuf[32];
-        snprintf(rbuf, sizeof(rbuf), "ENC%+d%+d", (int)l, (int)r);
+        snprintf(rbuf, sizeof(rbuf), "ENC%+d%+d", (int)enc.leftMm, (int)enc.rightMm);
         replyFn(rbuf, ctx);
         return;
     }
 
     // ── EZ — zero encoders ─────────────────────────────────────────────────
     if (len == 2 && memcmp(buf, "EZ", 2) == 0) {
-        mc.resetEncoderAccumulators();
+        _robot.zeroEncoders();
         replyFn("ACK:EZ", ctx);
         return;
     }
 
     // ── SO — query odometry pose ────────────────────────────────────────────
     if (len == 2 && memcmp(buf, "SO", 2) == 0) {
-        int32_t x, y, h;
-        odo.getPose(x, y, h);
+        Robot::Pose pose = _robot.getPose();
         char rbuf[48];
-        snprintf(rbuf, sizeof(rbuf), "SO%+d%+d%+d", (int)x, (int)y, (int)h);
+        snprintf(rbuf, sizeof(rbuf), "SO%+d%+d%+d",
+                 (int)pose.x_mm, (int)pose.y_mm, (int)pose.h_cdeg);
         replyFn(rbuf, ctx);
         return;
     }
 
     // ── SZ — zero odometry ─────────────────────────────────────────────────
     if (len == 2 && memcmp(buf, "SZ", 2) == 0) {
-        odo.zero();
+        _robot.zeroOdometry();
         replyFn("ACK:SZ", ctx);
         return;
     }
@@ -231,7 +221,7 @@ void CommandProcessor::process(const char* line, ReplyFn replyFn, void* ctx)
             replyFn(errbuf, ctx);
             return;
         }
-        odo.setPose(args[0], args[1], args[2]);
+        _robot.setPose(args[0], args[1], args[2]);
         char reply[64];
         snprintf(reply, sizeof(reply), "ACK:SI %d %d %d",
                  (int)args[0], (int)args[1], (int)args[2]);
@@ -427,7 +417,7 @@ void CommandProcessor::process(const char* line, ReplyFn replyFn, void* ctx)
 
     // ── OI — OTOS init only ────────────────────────────────────────────────
     if (len == 2 && memcmp(buf, "OI", 2) == 0) {
-        OtosSensor* otos = _robot->otos();
+        OtosSensor* otos = _robot.otos();
         if (!otos) { replyFn("ERR:OI", ctx); return; }
         otos->begin();
         otos->init();
@@ -437,7 +427,7 @@ void CommandProcessor::process(const char* line, ReplyFn replyFn, void* ctx)
 
     // ── OK — calibrate IMU ─────────────────────────────────────────────────
     if (buf[0] == 'O' && len >= 2 && buf[1] == 'K') {
-        OtosSensor* otos = _robot->otos();
+        OtosSensor* otos = _robot.otos();
         if (!otos) { replyFn("ERR:OK", ctx); return; }
         int samples = 255;
         if (len > 2) {
@@ -454,7 +444,7 @@ void CommandProcessor::process(const char* line, ReplyFn replyFn, void* ctx)
 
     // ── OZ — reset tracking ────────────────────────────────────────────────
     if (len == 2 && memcmp(buf, "OZ", 2) == 0) {
-        OtosSensor* otos = _robot->otos();
+        OtosSensor* otos = _robot.otos();
         if (!otos) { replyFn("ERR:OZ", ctx); return; }
         otos->resetTracking();
         replyFn("ACK:OZ", ctx);
@@ -463,7 +453,7 @@ void CommandProcessor::process(const char* line, ReplyFn replyFn, void* ctx)
 
     // ── OR — get velocity ──────────────────────────────────────────────────
     if (len == 2 && memcmp(buf, "OR", 2) == 0) {
-        OtosSensor* otos = _robot->otos();
+        OtosSensor* otos = _robot.otos();
         if (!otos) { replyFn("ERR:OR", ctx); return; }
         int16_t vx = 0, vy = 0, vh = 0;
         otos->getVelocityRaw(vx, vy, vh);
@@ -481,7 +471,7 @@ void CommandProcessor::process(const char* line, ReplyFn replyFn, void* ctx)
 
     // ── OP — get position ──────────────────────────────────────────────────
     if (len == 2 && memcmp(buf, "OP", 2) == 0) {
-        OtosSensor* otos = _robot->otos();
+        OtosSensor* otos = _robot.otos();
         if (!otos) { replyFn("ERR:OP", ctx); return; }
         int16_t x = 0, y = 0, h = 0;
         otos->getPositionRaw(x, y, h);
@@ -499,7 +489,7 @@ void CommandProcessor::process(const char* line, ReplyFn replyFn, void* ctx)
 
     // ── OV — set position ──────────────────────────────────────────────────
     if (len > 2 && buf[0] == 'O' && buf[1] == 'V') {
-        OtosSensor* otos = _robot->otos();
+        OtosSensor* otos = _robot.otos();
         if (!otos) { replyFn("ERR:OV", ctx); return; }
         int32_t args[3] = {0, 0, 0};
         int n = parseSignedArgs(buf + 2, args, 3);
@@ -519,7 +509,7 @@ void CommandProcessor::process(const char* line, ReplyFn replyFn, void* ctx)
 
     // ── OL — linear scalar get/set ─────────────────────────────────────────
     if (len >= 2 && buf[0] == 'O' && buf[1] == 'L') {
-        OtosSensor* otos = _robot->otos();
+        OtosSensor* otos = _robot.otos();
         if (!otos) { char e[140]; snprintf(e, sizeof(e), "ERR:%s", buf); replyFn(e, ctx); return; }
         if (len == 2) {
             char r[16];
@@ -542,7 +532,7 @@ void CommandProcessor::process(const char* line, ReplyFn replyFn, void* ctx)
 
     // ── OA — angular scalar get/set ────────────────────────────────────────
     if (len >= 2 && buf[0] == 'O' && buf[1] == 'A') {
-        OtosSensor* otos = _robot->otos();
+        OtosSensor* otos = _robot.otos();
         if (!otos) { char e[140]; snprintf(e, sizeof(e), "ERR:%s", buf); replyFn(e, ctx); return; }
         if (len == 2) {
             char r[16];
@@ -565,7 +555,7 @@ void CommandProcessor::process(const char* line, ReplyFn replyFn, void* ctx)
 
     // ── O — OTOS init + calibrate shortcut ────────────────────────────────
     if (len == 1 && buf[0] == 'O') {
-        OtosSensor* otos = _robot->otos();
+        OtosSensor* otos = _robot.otos();
         if (!otos) { replyFn("ERR:O", ctx); return; }
         otos->begin();
         otos->init();
@@ -576,7 +566,7 @@ void CommandProcessor::process(const char* line, ReplyFn replyFn, void* ctx)
 
     // ── LS — line sensor ───────────────────────────────────────────────────
     if (len == 2 && memcmp(buf, "LS", 2) == 0) {
-        LineSensor* line = _robot->lineSensor();
+        LineSensor* line = _robot.lineSensor();
         if (!line) { replyFn("ERR:LS", ctx); return; }
         uint16_t out[4] = {0, 0, 0, 0};
         line->readValues(out);
@@ -589,7 +579,7 @@ void CommandProcessor::process(const char* line, ReplyFn replyFn, void* ctx)
 
     // ── CS — color sensor ──────────────────────────────────────────────────
     if (len == 2 && memcmp(buf, "CS", 2) == 0) {
-        ColorSensor* color = _robot->colorSensor();
+        ColorSensor* color = _robot.colorSensor();
         if (!color) { replyFn("ERR:CS", ctx); return; }
         uint16_t cr = 0, cg = 0, cb = 0, cc = 0;
         color->readRGBC(cr, cg, cb, cc);
@@ -611,7 +601,7 @@ void CommandProcessor::process(const char* line, ReplyFn replyFn, void* ctx)
             float speed = fabsf((float)args[2]);
             if (speed < 1.0f) speed = 1.0f;
 
-            _robot->goTo(tx, ty, speed);
+            _robot.goTo(tx, ty, speed, replyFn, ctx);
 
             char reply[48];
             snprintf(reply, sizeof(reply), "ACK:G %d %d %d",
@@ -620,18 +610,20 @@ void CommandProcessor::process(const char* line, ReplyFn replyFn, void* ctx)
             return;
         }
 
+        // Single-arg or bare G: gripper query/set
         if (n == 1 || n == 0) {
-            GripperServo* gripper = _robot->gripper();
+            GripperServo* gripper = _robot.gripper();
             if (n == 0) {
+                // G with no args — query current angle
                 if (!gripper) { replyFn("ERR:G", ctx); return; }
                 char r[16];
-                snprintf(r, sizeof(r), "G%+d", (int)_currentGripperAngle);
+                snprintf(r, sizeof(r), "G%+d", (int)_robot.gripperAngle());
                 replyFn(r, ctx);
             } else {
+                // G+<deg> — set gripper angle
                 if (!gripper) { replyFn("ERR:G", ctx); return; }
                 int deg = clampInt((int)args[0], 0, 180);
-                gripper->setAngle((uint8_t)deg);
-                _currentGripperAngle = deg;
+                _robot.setGripperAngle(deg);
                 char r[24];
                 snprintf(r, sizeof(r), "ACK:G %d", deg);
                 replyFn(r, ctx);
@@ -648,7 +640,7 @@ void CommandProcessor::process(const char* line, ReplyFn replyFn, void* ctx)
     // ── PA — analog port read ──────────────────────────────────────────────
     if (len >= 3 && buf[0] == 'P' && buf[1] == 'A' &&
         (buf[2] == '+' || buf[2] == '-')) {
-        PortIO& portio = _robot->portIO();
+        PortIO& portio = _robot.portIO();
         int32_t args[1] = {0};
         int n = parseSignedArgs(buf + 2, args, 1);
         if (n < 1) {
@@ -663,7 +655,7 @@ void CommandProcessor::process(const char* line, ReplyFn replyFn, void* ctx)
 
     // ── P — digital port I/O ──────────────────────────────────────────────
     if (buf[0] == 'P' && len > 1 && (buf[1] == '+' || buf[1] == '-')) {
-        PortIO& portio = _robot->portIO();
+        PortIO& portio = _robot.portIO();
         int32_t args[2] = {0, 0};
         int n = parseSignedArgs(buf + 1, args, 2);
         if (n < 1) {

@@ -34,6 +34,13 @@
  */
 class Robot {
 public:
+    // ---------------------------------------------------------------------------
+    // Query structs — returned by query methods; formatted to wire strings by
+    // CommandProcessor.
+    // ---------------------------------------------------------------------------
+    struct EncoderReading { int32_t leftMm; int32_t rightMm; };
+    struct Pose           { int32_t x_mm; int32_t y_mm; int32_t h_cdeg; };
+
     Robot(MicroBitI2C&    i2c,
           NRF52Serial&    serial,
           MicroBitRadio&  radio,
@@ -43,20 +50,44 @@ public:
 
     // Advance all subsystems by one tick. Call from main loop each iteration.
     // now_ms: current system time (uBit.systemTime()).
-    // fn/ctx: reply sink for completions and telemetry — use the sink that
-    //         corresponds to whichever channel delivered the most recent command,
-    //         so T+DONE / D+DONE / G+DONE / SAFETY_STOP return to that channel.
+    // fn/ctx: reply sink for the active channel (used for streaming telemetry).
+    // Per-drive async completions (T+DONE, D+DONE, G+DONE, SAFETY_STOP) use
+    // the sink that was captured when the drive command began.
     void tick(uint32_t now_ms, ReplyFn fn, void* ctx);
 
+    // ---------------------------------------------------------------------------
     // Drive action methods — delegate to DriveController.
+    // fn/ctx: originating reply sink captured for async completions.
+    // ---------------------------------------------------------------------------
     void stop();
-    void streamDrive(int32_t leftMms, int32_t rightMms);
-    void timedDrive(int32_t leftMms, int32_t rightMms, uint32_t durationMs);
-    void distanceDrive(int32_t leftMms, int32_t rightMms, int32_t targetMm);
-    void goTo(float tx, float ty, float speedMms);
+    void streamDrive(int32_t leftMms, int32_t rightMms, ReplyFn fn, void* ctx);
+    void timedDrive(int32_t leftMms, int32_t rightMms, uint32_t durationMs,
+                    ReplyFn fn, void* ctx);
+    void distanceDrive(int32_t leftMms, int32_t rightMms, int32_t targetMm,
+                       ReplyFn fn, void* ctx);
+    void goTo(float tx, float ty, float speedMms, ReplyFn fn, void* ctx);
 
-    // Component accessors — used by CommandProcessor for K* setters
+    // ---------------------------------------------------------------------------
+    // Non-drive action methods
+    // ---------------------------------------------------------------------------
+    void setGripperAngle(int32_t deg);
+    void zeroEncoders();
+    void setPose(int32_t x_mm, int32_t y_mm, int32_t h_cdeg);
+    void zeroOdometry();
+
+    // ---------------------------------------------------------------------------
+    // Query methods — return plain structs; callers format wire strings.
+    // ---------------------------------------------------------------------------
+    EncoderReading getEncoders() const;
+    Pose           getPose()     const;
+
+    // Current gripper angle (set by setGripperAngle / G command)
+    int32_t gripperAngle() const { return _currentGripperAngle; }
+
+    // ---------------------------------------------------------------------------
+    // Component accessors — used by CommandProcessor for K*/O* setters
     // and by main.cpp to obtain the HAL objects needed by reply sinks.
+    // ---------------------------------------------------------------------------
     RobotConfig&     config()          { return _config; }
     SerialPort&      serialPort()      { return _serial; }
     Radio&           radioPort()       { return _radio; }
@@ -71,8 +102,15 @@ public:
     PortIO&          portIO()          { return _portio; }
 
 private:
+    // Sensor streaming callback registered with DriveController
+    static void sensorReport(ReplyFn fn, void* ctx, void* sensorCtx);
+
+
     // Reference to the CODAL singleton — used by drive action helpers for systemTime().
     MicroBit& _uBit;
+
+    // Gripper angle tracking (owned here so CommandProcessor is stateless)
+    int32_t _currentGripperAngle;
 
     // Required subsystems (constructed from received references)
     NezhaV2    _motor;

@@ -1,4 +1,7 @@
 #include "Robot.h"
+#include "LineSensor.h"
+#include "ColorSensor.h"
+#include <cstdio>
 
 Robot::Robot(MicroBitI2C&    i2c,
              NRF52Serial&    serial,
@@ -7,6 +10,7 @@ Robot::Robot(MicroBitI2C&    i2c,
              MessageBus&     messageBus,
              MicroBit&       uBit)
     : _uBit(uBit),
+      _currentGripperAngle(0),
       _motor(i2c),
       _serial(serial),
       _radio(radio, messageBus),
@@ -39,6 +43,10 @@ Robot::Robot(MicroBitI2C&    i2c,
     _colorPresent = _color.begin();
     _gripperPresent = true;  // servo always available on P1
 
+    // Register sensor streaming callback with DriveController so that CS/LS
+    // readings are emitted alongside encoder reports during active drives.
+    _dc.setSensorReporter(Robot::sensorReport, this);
+
     // Emit initial announcement so the host can detect the device.
     _announcer.announce();
 }
@@ -54,31 +62,106 @@ void Robot::stop()
     _dc.stop(now_ms, [](const char*, void*){}, nullptr);
 }
 
-void Robot::streamDrive(int32_t leftMms, int32_t rightMms)
+void Robot::streamDrive(int32_t leftMms, int32_t rightMms, ReplyFn fn, void* ctx)
 {
-    _dc.beginStream((float)leftMms, (float)rightMms, _uBit.systemTime());
+    _dc.beginStream((float)leftMms, (float)rightMms, _uBit.systemTime(), fn, ctx);
 }
 
-void Robot::timedDrive(int32_t leftMms, int32_t rightMms, uint32_t durationMs)
+void Robot::timedDrive(int32_t leftMms, int32_t rightMms, uint32_t durationMs,
+                       ReplyFn fn, void* ctx)
 {
-    _dc.beginTimed((float)leftMms, (float)rightMms, durationMs, _uBit.systemTime());
+    _dc.beginTimed((float)leftMms, (float)rightMms, durationMs, _uBit.systemTime(), fn, ctx);
 }
 
-void Robot::distanceDrive(int32_t leftMms, int32_t rightMms, int32_t targetMm)
+void Robot::distanceDrive(int32_t leftMms, int32_t rightMms, int32_t targetMm,
+                          ReplyFn fn, void* ctx)
 {
-    _dc.beginDistance((float)leftMms, (float)rightMms, targetMm, _uBit.systemTime());
+    _dc.beginDistance((float)leftMms, (float)rightMms, targetMm, _uBit.systemTime(), fn, ctx);
 }
 
-void Robot::goTo(float tx, float ty, float speedMms)
+void Robot::goTo(float tx, float ty, float speedMms, ReplyFn fn, void* ctx)
 {
-    _dc.beginGoTo(tx, ty, speedMms, _uBit.systemTime());
+    _dc.beginGoTo(tx, ty, speedMms, _uBit.systemTime(), fn, ctx);
+}
+
+// ---------------------------------------------------------------------------
+// Non-drive action methods
+// ---------------------------------------------------------------------------
+
+void Robot::setGripperAngle(int32_t deg)
+{
+    if (_gripperPresent) {
+        uint8_t clamped = (deg < 0) ? 0 : (deg > 180) ? 180 : (uint8_t)deg;
+        _gripper.setAngle(clamped);
+    }
+    _currentGripperAngle = (deg < 0) ? 0 : (deg > 180) ? 180 : deg;
+}
+
+void Robot::zeroEncoders()
+{
+    _mc.resetEncoderAccumulators();
+}
+
+void Robot::setPose(int32_t x_mm, int32_t y_mm, int32_t h_cdeg)
+{
+    _odo.setPose(x_mm, y_mm, h_cdeg);
+}
+
+void Robot::zeroOdometry()
+{
+    _odo.zero();
+}
+
+// ---------------------------------------------------------------------------
+// Query methods
+// ---------------------------------------------------------------------------
+
+Robot::EncoderReading Robot::getEncoders() const
+{
+    EncoderReading r{};
+    _mc.getEncoderPositions(r.leftMm, r.rightMm);
+    return r;
+}
+
+Robot::Pose Robot::getPose() const
+{
+    Pose p{};
+    _odo.getPose(p.x_mm, p.y_mm, p.h_cdeg);
+    return p;
+}
+
+// ---------------------------------------------------------------------------
+// Sensor streaming callback — invoked by DriveController during drive ticks.
+// Emits CS and LS readings (if sensors present) through the active reply sink.
+// ---------------------------------------------------------------------------
+
+void Robot::sensorReport(ReplyFn fn, void* ctx, void* sensorCtx)
+{
+    Robot* self = static_cast<Robot*>(sensorCtx);
+
+    if (self->_colorPresent) {
+        uint16_t cr = 0, cg = 0, cb = 0, cc = 0;
+        self->_color.readRGBC(cr, cg, cb, cc);
+        char buf[48];
+        snprintf(buf, sizeof(buf), "CS%+d%+d%+d%+d",
+                 (int)cr, (int)cg, (int)cb, (int)cc);
+        fn(buf, ctx);
+    }
+
+    if (self->_linePresent) {
+        uint16_t out[4] = {0, 0, 0, 0};
+        self->_line.readValues(out);
+        char buf[48];
+        snprintf(buf, sizeof(buf), "LS%+d%+d%+d%+d",
+                 (int)out[0], (int)out[1], (int)out[2], (int)out[3]);
+        fn(buf, ctx);
+    }
 }
 
 // ---------------------------------------------------------------------------
 // tick — advance all subsystems; no while loop inside.
-// fn/ctx must be the active reply sink (set by the main loop to whichever
-// channel delivered the most recent command), so async completions
-// (T+DONE, D+DONE, G+DONE, SAFETY_STOP) return to the originating channel.
+// fn/ctx: active reply sink (for streaming telemetry — encoder, CS, LS).
+// Per-drive async completions use the captured per-drive sink.
 // ---------------------------------------------------------------------------
 
 void Robot::tick(uint32_t now_ms, ReplyFn fn, void* ctx)

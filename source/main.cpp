@@ -39,8 +39,7 @@ int main() {
 
     static Robot            robot(uBit.i2c, uBit.serial, uBit.radio,
                                   uBit.io, uBit.messageBus, uBit);
-    static CommandProcessor cmd;
-    cmd.setRobot(&robot);
+    static CommandProcessor cmd(robot);
 
     // Alias the HAL objects out of Robot for the reply-sink ctxs.
     SerialPort& serial = robot.serialPort();
