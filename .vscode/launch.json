@@ -8,14 +8,26 @@
           "type": "cortex-debug",
           "servertype": "pyocd",
           "interface": "swd",
-          "device": "nrf52",
-          "targetId": "nrf52",
+          "device": "nrf52833",
+          "targetId": "nrf52833",
           "svdFile": "libraries/codal-nrf52/nrfx/mdk/nrf52833.svd",
           "preLaunchCommands": [
             "load build/MICROBIT",
             "enable breakpoint",
             "monitor reset"
           ]
+      },
+      {
+          "name": "(attach) micro:bit PyOCD Cortex Debug",
+          "cwd": "${workspaceFolder}",
+          "executable": "build/MICROBIT",
+          "request": "attach",
+          "type": "cortex-debug",
+          "servertype": "pyocd",
+          "interface": "swd",
+          "device": "nrf52833",
+          "targetId": "nrf52833",
+          "svdFile": "libraries/codal-nrf52/nrfx/mdk/nrf52833.svd"
       },
 
       {

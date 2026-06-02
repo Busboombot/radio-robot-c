@@ -144,6 +144,12 @@ There is an example `coda.dev.json` file which enables "developer builds" (clone
 To use it, simply copy the additional json entries into your `codal.json` file, or you can replace the file completely (`mv coda.dev.json codal.json`).
 
 # Debugging
+
+See **[docs/debugging.md](docs/debugging.md)** for the full guide — the `just`
+recipes (`just debug`, `just gdb`, `just commander`, `just erase`), the pyOCD/SWD
+hardware path, agent-oriented (non-interactive) workflows, and recovery from an
+APPROTECT-locked chip.
+
 If you are using Visual Studio Code, there is a working debugging environment already set up for you, allowing you to set breakpoints and observe the micro:bit's memory. To get it working, follow these steps:
 
 1. Install either [OpenOCD](http://openocd.org) or [PyOCD](https://github.com/pyocd/pyOCD).
