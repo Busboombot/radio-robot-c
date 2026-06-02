@@ -1,12 +1,12 @@
 ---
-id: "010"
-title: "Kinematics: Velocity Control and Pose Estimation"
-status: roadmap
+id: '010'
+title: 'Kinematics: Velocity Control and Pose Estimation'
+status: planning-docs
 branch: sprint/010-kinematics-velocity-control-and-pose-estimation
 use-cases: []
 issues:
-  - kinematics-velocity-control-layer.md
-  - kinematics-pose-estimation-fusion.md
+- kinematics-velocity-control-layer.md
+- kinematics-pose-estimation-fusion.md
 ---
 <!-- CLASI: Before changing code or making plans, review the SE process in CLAUDE.md -->
 
@@ -70,5 +70,12 @@ config and scheduler wiring in one review.
 
 | # | Title | Depends On |
 |---|-------|------------|
+| 001 | Fix Motor::readSpeed mm/s conversion and add GET VEL command | — |
+| 002 | Add BodyKinematics module with inverse/forward maps and saturation scaling | — |
+| 003 | Implement VelocityController and replace ratio PID inner loop in MotorController | 001, 002 |
+| 004 | Expose velocity and saturation tunables in SET/GET registry | 003 |
+| 005 | Refactor Odometry to midpoint integration with self-owned encoder state | — |
+| 006 | Add OTOS complementary fusion with outlier gating to Odometry | 005 |
+| 007 | Wire BodyKinematics into DriveController and activate vel= TLM field | 003, 004, 006 |
 
-Tickets execute serially in the order listed. (Populated in detail mode.)
+Tickets execute serially in the order listed.
