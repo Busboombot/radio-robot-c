@@ -9,7 +9,7 @@
 #include "OtosSensor.h"
 #include "LineSensor.h"
 #include "ColorSensor.h"
-#include "GripperServo.h"
+#include "Servo.h"
 #include "PortIO.h"
 #include "MotorController.h"
 #include "Odometry.h"
@@ -612,16 +612,16 @@ void CommandProcessor::process(const char* line, ReplyFn replyFn, void* ctx)
 
         // Single-arg or bare G: gripper query/set
         if (n == 1 || n == 0) {
-            GripperServo* gripper = _robot.gripper();
+            Servo* servo = _robot.servo();
             if (n == 0) {
                 // G with no args — query current angle
-                if (!gripper) { replyFn("ERR:G", ctx); return; }
+                if (!servo) { replyFn("ERR:G", ctx); return; }
                 char r[16];
                 snprintf(r, sizeof(r), "G%+d", (int)_robot.gripperAngle());
                 replyFn(r, ctx);
             } else {
                 // G+<deg> — set gripper angle
-                if (!gripper) { replyFn("ERR:G", ctx); return; }
+                if (!servo) { replyFn("ERR:G", ctx); return; }
                 int deg = clampInt((int)args[0], 0, 180);
                 _robot.setGripperAngle(deg);
                 char r[24];

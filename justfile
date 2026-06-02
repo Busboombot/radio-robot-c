@@ -40,3 +40,25 @@ deploy *args='':
 
 build-deploy *args='':
     mbdeploy build && mbdeploy deploy {{args}}
+
+# Leave running, then attach VS Code "(attach) micro:bit PyOCD" or `just gdb`.
+# Start a pyOCD GDB server for the micro:bit V2 (nRF52833) on :3333.
+debug:
+    pyocd gdbserver -t nrf52833 --persist
+
+# Attach gdb to a running `just debug`, flash, reset, and stop at main().
+gdb:
+    arm-none-eabi-gdb build/MICROBIT \
+        -ex "target remote :3333" \
+        -ex "load" \
+        -ex "monitor reset halt" \
+        -ex "break main" \
+        -ex "continue"
+
+# Interactive pyOCD console — read/write registers, memory, peripherals.
+commander:
+    pyocd commander -t nrf52833
+
+# CTRL-AP mass erase to recover an APPROTECT-locked nRF52, then reflashable.
+erase:
+    pyocd erase -t nrf52833 --mass

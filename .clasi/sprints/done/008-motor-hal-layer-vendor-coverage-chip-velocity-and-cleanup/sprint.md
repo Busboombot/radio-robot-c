@@ -1,13 +1,13 @@
 ---
-id: "008"
-title: "Motor/HAL Layer: Vendor Coverage, Chip Velocity and Cleanup"
-status: roadmap
+id: 008
+title: 'Motor/HAL Layer: Vendor Coverage, Chip Velocity and Cleanup'
+status: done
 branch: sprint/008-motor-hal-layer-vendor-coverage-chip-velocity-and-cleanup
 use-cases: []
 issues:
-  - nezha-chip-velocity-readspeed-0x47.md
-  - nezha-full-vendor-i2c-coverage.md
-  - source-fixme-cleanup.md
+- nezha-chip-velocity-readspeed-0x47.md
+- nezha-full-vendor-i2c-coverage.md
+- source-fixme-cleanup.md
 ---
 <!-- CLASI: Before changing code or making plans, review the SE process in CLAUDE.md -->
 
@@ -72,5 +72,13 @@ methods, so co-scheduling avoids touching the same files twice.
 
 | # | Title | Depends On |
 |---|-------|------------|
+| 001 | Vendor pxt-nezha2 advisory reference into repo | — |
+| 002 | Rename NezhaV2 to Motor and split to one-per-motor | — |
+| 003 | Chip-native wheel velocity via readSpeed (0x47) | 002 |
+| 004 | Wrap remaining vendor I2C commands and add coverage checklist | 002 |
+| 005 | Rename GripperServo to Servo with configurable range | 002 |
+| 006 | LineSensor per-channel calibration and normalization | 002 |
 
-Tickets execute serially in the order listed. (Populated in detail mode.)
+Tickets execute serially in the order listed. 001 and 002 have no
+dependencies and can start immediately (001 first to establish the vendor
+reference). 003–006 all depend on 002 and execute after it completes.

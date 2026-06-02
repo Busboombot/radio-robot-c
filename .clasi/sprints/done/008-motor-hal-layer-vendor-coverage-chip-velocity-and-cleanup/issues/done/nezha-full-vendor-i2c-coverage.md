@@ -1,6 +1,8 @@
 ---
-status: pending
+status: done
 sprint: 008
+tickets:
+- '004'
 ---
 
 # Full Vendor I2C Coverage in the Nezha HAL

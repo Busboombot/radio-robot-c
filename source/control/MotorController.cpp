@@ -1,15 +1,16 @@
 #include "MotorController.h"
 #include <math.h>
 
-MotorController::MotorController(NezhaV2& motor, const RobotConfig& cal)
-    : _motor(motor), _cal(cal),
+MotorController::MotorController(Motor& left, Motor& right, const RobotConfig& cal)
+    : _motorL(left), _motorR(right), _cal(cal),
       _pid(cal.ratioPidKp, cal.ratioPidKi, cal.ratioPidKd, cal.ratioPidMax),
       _cmdEncStartL(0.0f), _cmdEncStartR(0.0f),
       _cmdRatio(1.0f), _fasterIsRight(false),
       _tgtLMms(0.0f), _tgtRMms(0.0f),
       _prevEncL(0), _prevEncR(0),
       _actualVelL(0.0f), _actualVelR(0.0f),
-      _encLMm(0.0f), _encRMm(0.0f)
+      _encLMm(0.0f), _encRMm(0.0f),
+      _usingChipVelL(false), _usingChipVelR(false)
 {
     gains.kFF     = 0.15f;
     gains.kP      = 0.05f;
@@ -20,7 +21,7 @@ MotorController::MotorController(NezhaV2& motor, const RobotConfig& cal)
 
 float MotorController::encoderMm(bool left)
 {
-    return static_cast<float>(_motor.readEncoder(left, _cal));
+    return static_cast<float>(left ? _motorL.readEncoder(_cal) : _motorR.readEncoder(_cal));
 }
 
 void MotorController::setTarget(float leftMms, float rightMms)
@@ -85,7 +86,8 @@ void MotorController::stop()
     _pid.reset();
     _cmdEncStartL = encoderMm(true);
     _cmdEncStartR = encoderMm(false);
-    _motor.setPwm(0, 0);
+    _motorL.setSpeed(0);
+    _motorR.setSpeed(0);
 }
 
 void MotorController::resetIntegrators()
@@ -108,15 +110,40 @@ void MotorController::tick(float dt_s)
     _encLMm = encLMm;
     _encRMm = encRMm;
 
-    // Update velocity for getActualVelocity()
-    _actualVelL = (encLMm - static_cast<float>(_prevEncL)) / dt_s;
-    _actualVelR = (encRMm - static_cast<float>(_prevEncR)) / dt_s;
+    // Encoder-delta velocity (fallback / implausibility reference)
+    float encVelL = (encLMm - static_cast<float>(_prevEncL)) / dt_s;
+    float encVelR = (encRMm - static_cast<float>(_prevEncR)) / dt_s;
     _prevEncL = static_cast<int32_t>(encLMm);
     _prevEncR = static_cast<int32_t>(encRMm);
 
+    // Chip-native velocity (primary source via register 0x47).
+    // Falls back to encoder-delta if:
+    //   (a) I2C read fails (readSpeed returns false), or
+    //   (b) chip reading exceeds 2× the encoder-derived velocity (implausibility gate).
+    float chipVelL = 0.0f, chipVelR = 0.0f;
+    bool chipOkL = _motorL.readSpeed(chipVelL, _cal);
+    bool chipOkR = _motorR.readSpeed(chipVelR, _cal);
+
+    // Implausibility gate: reject chip reading if it is more than 2× encoder velocity.
+    // This guards against I2C noise producing out-of-range readings.
+    if (chipOkL && fabsf(encVelL) > 0.0f &&
+        fabsf(chipVelL) > 2.0f * fabsf(encVelL)) {
+        chipOkL = false;
+    }
+    if (chipOkR && fabsf(encVelR) > 0.0f &&
+        fabsf(chipVelR) > 2.0f * fabsf(encVelR)) {
+        chipOkR = false;
+    }
+
+    _usingChipVelL = chipOkL;
+    _usingChipVelR = chipOkR;
+    _actualVelL = chipOkL ? chipVelL : encVelL;
+    _actualVelR = chipOkR ? chipVelR : encVelR;
+
     // If no drive command active, ensure motors are stopped
     if (_tgtLMms == 0.0f && _tgtRMms == 0.0f) {
-        _motor.setPwm(0, 0);
+        _motorL.setSpeed(0);
+        _motorR.setSpeed(0);
         return;
     }
 
@@ -171,13 +198,20 @@ void MotorController::tick(float dt_s)
         uR = (_tgtRMms >= 0.0f) ?  uSlower : -uSlower;
     }
 
-    _motor.setPwm(static_cast<int8_t>(roundf(uL)), static_cast<int8_t>(roundf(uR)));
+    _motorL.setSpeed(static_cast<int8_t>(roundf(uL)));
+    _motorR.setSpeed(static_cast<int8_t>(roundf(uR)));
 }
 
 void MotorController::getActualVelocity(float& leftMms, float& rightMms) const
 {
     leftMms  = _actualVelL;
     rightMms = _actualVelR;
+}
+
+void MotorController::getVelocitySourceFlags(bool& leftChip, bool& rightChip) const
+{
+    leftChip  = _usingChipVelL;
+    rightChip = _usingChipVelR;
 }
 
 void MotorController::getEncoderPositions(int32_t& leftMm, int32_t& rightMm) const
@@ -188,7 +222,8 @@ void MotorController::getEncoderPositions(int32_t& leftMm, int32_t& rightMm) con
 
 void MotorController::resetEncoderAccumulators()
 {
-    _motor.resetEncoders();
+    _motorL.resetEncoder();
+    _motorR.resetEncoder();
     _prevEncL = 0;
     _prevEncR = 0;
 }

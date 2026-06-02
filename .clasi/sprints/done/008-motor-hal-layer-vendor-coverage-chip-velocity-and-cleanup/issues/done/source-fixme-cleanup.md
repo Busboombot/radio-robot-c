@@ -1,6 +1,8 @@
 ---
-status: pending
+status: done
 sprint: 008
+tickets:
+- '006'
 ---
 
 # Source FIXME Cleanup (omnibus)

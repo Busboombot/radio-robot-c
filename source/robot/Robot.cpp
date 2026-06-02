@@ -11,21 +11,22 @@ Robot::Robot(MicroBitI2C&    i2c,
              MicroBit&       uBit)
     : _uBit(uBit),
       _currentGripperAngle(0),
-      _motor(i2c),
+      _config(defaultRobotConfig()),
+      _motorL(i2c, 2, _config.fwdSignL),   // M2, left wheel
+      _motorR(i2c, 1, _config.fwdSignR),   // M1, right wheel
       _serial(serial),
       _radio(radio, messageBus),
       _announcer(uBit, _serial, _radio),
-      _config(defaultRobotConfig()),
       _otos(i2c),
       _otosPresent(false),
       _line(i2c),
       _linePresent(false),
       _color(i2c),
       _colorPresent(false),
-      _gripper(io.P1),
+      _servo(io.P1),
       _gripperPresent(false),
       _portio(io),
-      _mc(_motor, _config),
+      _mc(_motorL, _motorR, _config),
       _odo(),
       _dc(_mc, _odo, _config)
 {
@@ -92,7 +93,7 @@ void Robot::setGripperAngle(int32_t deg)
 {
     if (_gripperPresent) {
         uint8_t clamped = (deg < 0) ? 0 : (deg > 180) ? 180 : (uint8_t)deg;
-        _gripper.setAngle(clamped);
+        _servo.setAngle(clamped);
     }
     _currentGripperAngle = (deg < 0) ? 0 : (deg > 180) ? 180 : deg;
 }
