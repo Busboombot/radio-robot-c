@@ -1,5 +1,8 @@
 ---
-status: pending
+status: in-progress
+sprint: '007'
+tickets:
+- 007-001
 ---
 
 # Plan: Firmware architecture refactor — ownership, Robot interface, thin CommandProcessor, visible main loop

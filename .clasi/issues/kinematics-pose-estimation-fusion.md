@@ -1,5 +1,6 @@
 ---
 status: pending
+sprint: '010'
 ---
 
 # Kinematics: Pose Estimation (midpoint odometry + OTOS complementary fusion)

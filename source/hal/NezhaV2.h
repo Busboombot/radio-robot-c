@@ -20,7 +20,7 @@
  *   Encoder zero is maintained in software (offset array), matching the
  *   TypeScript resetRelAngleValue() behaviour.
  */
-class NezhaV2 { // FIXME This should be called a Motor, not a Nezha, which is the entire controller. 
+class NezhaV2 {
 public:
     explicit NezhaV2(MicroBitI2C& i2c);
 
@@ -28,26 +28,18 @@ public:
     void    setPwm(int8_t leftPct, int8_t rightPct);
 
     // Read cumulative encoder in mm. leftWheel true = M2 (left), false = M1 (right).
-    int32_t readEncoder(bool leftWheel, const CalibParams& cal) const;
+    int32_t readEncoder(bool leftWheel, const RobotConfig& cfg) const;
 
     // Zero both encoder accumulators (software offset reset, matches chip protocol).
     void    resetEncoders();
 
-    // FIXME also need to fill in other impoartant methods from the vendor extension, like 
-    // an analog for readSpeed()
-
 private:
     MicroBitI2C& _i2c;
-
-    // FIXME This object should be for just one motor, not both, and it should 
-    // include the PID controller for the motor, and the state information for velocity and
-    // position, as well as commanded velocity. It will also need the encoder offset, like the
-    // vendor code uses. 
 
     static constexpr uint8_t ADDR        = 0x10;
     static constexpr uint8_t LEFT_MOTOR  = 2;   // M2
     static constexpr uint8_t RIGHT_MOTOR = 1;   // M1
-    static constexpr int8_t  LEFT_FWD   = +1;  // FIXME this should be a per-motor parameter, not a hardcoded constant, and should be +1 for one motor and -1 for the other, depending on how they are mounted.
+    static constexpr int8_t  LEFT_FWD   = +1;
     static constexpr int8_t  RIGHT_FWD  = -1;
 
     // Direction bytes used by the chip protocol.

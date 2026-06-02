@@ -1,7 +1,7 @@
 #include "MotorController.h"
 #include <math.h>
 
-MotorController::MotorController(NezhaV2& motor, const CalibParams& cal)
+MotorController::MotorController(NezhaV2& motor, const RobotConfig& cal)
     : _motor(motor), _cal(cal),
       _pid(cal.ratioPidKp, cal.ratioPidKi, cal.ratioPidKd, cal.ratioPidMax),
       _cmdEncStartL(0.0f), _cmdEncStartR(0.0f),

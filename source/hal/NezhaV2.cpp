@@ -68,7 +68,7 @@ void NezhaV2::setPwm(int8_t leftPct, int8_t rightPct)
     }
 }
 
-int32_t NezhaV2::readEncoder(bool leftWheel, const CalibParams& cal) const
+int32_t NezhaV2::readEncoder(bool leftWheel, const RobotConfig& cfg) const
 {
     uint8_t motorId = leftWheel ? LEFT_MOTOR : RIGHT_MOTOR;
     int32_t raw     = readEncoderRaw(motorId);   // tenths of degrees
@@ -76,7 +76,7 @@ int32_t NezhaV2::readEncoder(bool leftWheel, const CalibParams& cal) const
     // Mirror TypeScript: (raw / 10.0) * mmPerDeg * fwdSign
     float degF = raw / 10.0f;
     float mmF  = degF
-                 * (leftWheel ? cal.mmPerDegL : cal.mmPerDegR)
+                 * (leftWheel ? cfg.mmPerDegL : cfg.mmPerDegR)
                  * (leftWheel ? (float)LEFT_FWD : (float)RIGHT_FWD);
     return (int32_t)mmF;
 }

@@ -1,7 +1,7 @@
 #include "RatioPidController.h"
 
 RatioPidController::RatioPidController(float kP, float kI, float kD, float iClamp)
-    : _kP(kP), _kI(kI), _kD(kD), _iClamp(iClamp), _prevError(0.0f), _firstCall(true), integral(0.0f) {}
+    : integral(0.0f), _kP(kP), _kI(kI), _kD(kD), _iClamp(iClamp), _prevError(0.0f), _firstCall(true) {}
 
 float RatioPidController::update(float error, float dtS) {
     integral += _kI * error * dtS;

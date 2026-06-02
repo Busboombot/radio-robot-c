@@ -15,7 +15,7 @@
  */
 class MotorController {
 public:
-    explicit MotorController(NezhaV2& motor, const CalibParams& cal);
+    explicit MotorController(NezhaV2& motor, const RobotConfig& cal);
 
     // Gains — public so CommandProcessor can update via K-commands.
     // Defaults: kFF=0.15, kP=0.05, kI=0.20, iClamp=60, kRatio=0.01
@@ -68,7 +68,7 @@ public:
 
 private:
     NezhaV2&           _motor;
-    const CalibParams& _cal;
+    const RobotConfig& _cal;
 
     // Ratio PID state
     RatioPidController _pid;

@@ -1,5 +1,6 @@
 ---
 status: pending
+sprint: 008
 ---
 
 # Full Vendor I2C Coverage in the Nezha HAL

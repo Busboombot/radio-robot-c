@@ -15,7 +15,8 @@ No heap allocation occurs in any layer during normal operation.
 │  Stanley · OtosPoseProvider · DeadReckoning         │
 ├─────────────────────────────────────────────────────┤
 │  Control Layer      (source/control/)               │
-│  MotorController · RatioPidController · Odometry   │
+│  DriveController · MotorController                  │
+│  RatioPidController · Odometry                      │
 ├─────────────────────────────────────────────────────┤
 │  HAL Layer          (source/hal/)                   │
 │  NezhaV2 · OtosSensor · LineSensor · ColorSensor   │
@@ -33,8 +34,11 @@ No heap allocation occurs in any layer during normal operation.
 ### Types (`source/types/`)
 
 **`Config.h`** — Shared plain-old-data structs with no dependencies.
-- `CalibParams` — all runtime-tunable K parameters (mmPerDegL/R, kFF, kScaleLF/LB/RF/RB,
-  ratioPid gains, adj threshold/gain, trackwidth, turn threshold, done tolerance, etc.)
+- `RobotConfig` — single unified config for all runtime-tunable parameters
+  (`mmPerDegL/R`, `kFF`, `kScaleLF/LB/RF/RB`, `ratioPid` gains, adj threshold/gain,
+  `trackwidthMm`, `turnThresholdMm`, `doneTolMm`, timing/speed params).
+  Owned by `Robot`; held as `const RobotConfig&` by subsystems.
+  `defaultRobotConfig()` is the factory function.
 - `MotorGains` — feed-forward and PI gains for MotorController
 - `DriveMode` enum — IDLE | STREAMING | TIMED | DISTANCE | GO_TO
 
@@ -50,7 +54,7 @@ Thin wrappers over CODAL hardware. Each class receives its hardware reference at
 
 **`NezhaV2`** — Nezha V2 motor driver over I2C.
 - `setPwm(leftPct, rightPct)` — raw PWM (-100..100) to M2 (left) and M1 (right)
-- `readEncoder(isLeft)` → mm — applies LEFT_FWD_SIGN/RIGHT_FWD_SIGN so forward is always positive
+- `readEncoder(isLeft, cfg)` → mm — applies LEFT_FWD_SIGN/RIGHT_FWD_SIGN so forward is always positive; uses `RobotConfig.mmPerDegL/R`
 - `resetEncoders()`
 
 **`OtosSensor`** — SparkFun OTOS optical odometry at I2C 0x17.
@@ -64,7 +68,7 @@ Thin wrappers over CODAL hardware. Each class receives its hardware reference at
 
 **`Radio`** — micro:bit radio, group 10, channel 0, power 7.
 - 4-slot ring buffer absorbs burst packets between 20 ms ticks
-- `poll(buf, len, isRelayed&)` → bool
+- `poll(buf, len)` → bool
 - Relay mode: strips `>` prefix inbound, prepends `<` prefix outbound
 
 **`LineSensor`** — 4-channel I2C grayscale sensor at 0x1A.
@@ -85,12 +89,21 @@ Thin wrappers over CODAL hardware. Each class receives its hardware reference at
 - Used only by MotorController; not exposed above the control layer
 
 **`MotorController`** — Cumulative-distance ratio PID drive loop.
+- Holds `const RobotConfig&` — no null-guard paths; config is always present
 - `startDriveClean(leftMms, rightMms)` — T/D/G arc commands; hard reset PID state
 - `startDrive(leftMms, rightMms)` — S command keepalive; re-seeds encoder snapshot to prevent
   startup spike without discarding accumulated ratio history
 - `tick(dt_s)` — reads encoders → cumulative deltas → normalized error → PID correction →
   per-direction FF scale → slower-wheel adjustment → co-clamp → setPwm()
-- Public `CalibParams&` reference — K command handlers write gains directly
+
+**`DriveController`** — Owns and advances the S/T/D/G drive state machines, S-mode watchdog,
+streaming encoder counter, and odometry delta tracking.
+- Migrated from CommandProcessor in Sprint 007
+- Holds per-drive reply-sink capture: async completions (T+DONE, D+DONE, G+DONE,
+  SAFETY_STOP) route back to the channel that originated the command
+- `beginStream()` / `beginTimed()` / `beginDistance()` / `beginGoTo()` — entry points from Robot
+- `tick(now_ms, fn, ctx)` — advances all state machines; called from Robot::tick()
+- `computeArc()` — private static pure geometry helper
 
 **`Odometry`** — Dead-reckoning pose from encoder increments.
 - `update(dL_mm, dR_mm, trackwidth_mm)` — differential-drive heading integration (float)
@@ -132,18 +145,39 @@ copy — no heap, no lifetime dependency on caller's buffer.
 
 **`Announcer`** — Emits `DEVICE:<type>:<name>:<hwName>:<serial>` on startup.
 Intercepts `HELLO` before CommandProcessor and re-emits the announcement (relay rediscovery).
+Constructor takes `MicroBit&`, `SerialPort&`, `Radio&`; receives these from `main.cpp` via `Robot`.
 
-**`CommandProcessor`** — Protocol state machine and command dispatcher.
-- Drive mode state machine: IDLE / STREAMING / TIMED / DISTANCE / GO_TO
-- Command dispatch via fixed `CmdEntry {prefix, handler*}` table (~35 entries, linear scan)
-- S-mode watchdog: 200 ms timeout → fullStop() + emit `LOG:SAFETY_STOP`
-- Streaming reports every `encReportEvery` ticks: ENC, SO, CS, LS
-- Optional peripherals injected via `init()` as nullable pointers (OtosSensor*, LineSensor*, etc.) — robot works without any optional peripheral
-- G go-to command: `computeArc()` pure function + two-phase state machine in tick()
+**`CommandProcessor`** — Pure wire-protocol parser and dispatcher.
+- Single member `Robot& _robot`; no hardware pointers, no config copy, no drive state.
+- `process(line, replyFn, ctx)` — tokenizes command lines and calls Robot public methods or
+  component accessors. No `init()`, no `tick()`, no `setCalib()`/`setConfig()`.
+- K*/O* setters write through `_robot.config()`, `_robot.motor()`, etc.
+- Query commands call `_robot.getEncoders()`, `_robot.getPose()`, etc.
+- Static helpers: `parseSignedArgs()`, `clampInt()`, `clampMinSpeed()`.
 
-**`Robot`** — Top-level composer. Owns all subsystem instances as static members (no heap).
-Controls initialization order (I2C → sensors → motor → command → serial → radio → announcer).
-`run()` loop: drain serial → drain radio → `cmd.tick()` → `uBit.sleep(tickMs)`.
+**`Robot`** — Hardware abstraction layer; owns all subsystem instances (no heap).
+- `MicroBit` is NOT a member. `Robot` receives CODAL peripheral references at construction
+  (`uBit.i2c`, `uBit.serial`, `uBit.radio`, `uBit.io`, `uBit.messageBus`, `uBit`).
+- Owns `RobotConfig` (single source of truth for all tunable parameters).
+- Public action methods: `stop()`, `streamDrive()`, `timedDrive()`, `distanceDrive()`, `goTo()`,
+  `setGripperAngle()`, `zeroEncoders()`, `setPose()`, `zeroOdometry()`.
+- Public query methods: `getEncoders()` → `EncoderReading`, `getPose()` → `Pose`.
+- Component accessors: `config()`, `motor()`, `driveController()`, `odometry()`, `serialPort()`,
+  `radioPort()`, `announcer()`, `otos()`, `lineSensor()`, `colorSensor()`, `gripper()`, `portIO()`.
+- `tick(now_ms, fn, ctx)` — advances DriveController; no while loop inside.
+- `Robot::run()` was removed in Sprint 007; the main loop is now visible in `main.cpp`.
+
+---
+
+### `main.cpp`
+
+**Purpose**: Owns the `MicroBit` hardware singleton and the visible main loop.
+- Declares `static MicroBit uBit;` as file-scope; calls `uBit.init()` before constructing Robot.
+- Constructs `static Robot robot(...)` and `static CommandProcessor cmd(robot)`.
+- Visible loop: drain serial with serial sink → drain radio with radio sink →
+  `robot.tick(uBit.systemTime(), activeFn, activeCtx)` → `uBit.sleep(tickMs)`.
+- Tracks `activeFn`/`activeCtx` — updated each time a command is dispatched so that
+  `robot.tick()` sends async completions (T+DONE, D+DONE, etc.) back to the originating channel.
 
 ---
 
@@ -151,12 +185,12 @@ Controls initialization order (I2C → sensors → motor → command → serial 
 
 ```mermaid
 graph TD
-    main["main.cpp"]
+    main["main.cpp\n(MicroBit owner + visible loop)"]
 
     subgraph app["Application Layer"]
-        Robot
-        CommandProcessor["CommandProcessor\n(35+ commands, drive FSM)"]
-        Announcer
+        Robot["Robot\n(hardware abstraction\naction/query/accessor\n+ tick)"]
+        CP["CommandProcessor\n(parse-and-dispatch only\nRobot& only)"]
+        Ann["Announcer"]
     end
 
     subgraph nav["Navigation Layer"]
@@ -169,6 +203,7 @@ graph TD
     end
 
     subgraph control["Control Layer"]
+        DC["DriveController\n(S/T/D/G FSM\nwatchdog + streaming)"]
         MotorController
         RatioPID["RatioPidController"]
         Odometry
@@ -186,52 +221,49 @@ graph TD
     end
 
     subgraph types["Types"]
-        Config["Config.h\nCalibParams · DriveMode"]
+        Config["Config.h\nRobotConfig · DriveMode"]
         Protocol["Protocol.h\ncommand strings"]
     end
 
-    %% Composition from main
-    main --> Robot
-    Robot --> CommandProcessor
-    Robot --> Announcer
-    Robot --> MotorController
-    Robot --> Odometry
+    %% main owns uBit; constructs Robot and CommandProcessor
+    main -->|"owns uBit; constructs"| Robot
+    main -->|constructs| CP
+    main -->|"loop: tick + activeSink"| Robot
+    main -->|"loop: process"| CP
+
+    %% Robot owns subsystems
+    Robot -->|owns| DC
+    Robot -->|owns| MotorController
+    Robot -->|owns| Odometry
+    Robot -->|owns| Config
+    Robot --> Ann
     Robot --> SerialPort
     Robot --> Radio
     Robot --> NezhaV2
-    Robot --> OtosSensor
-    Robot --> LineSensor
-    Robot --> ColorSensor
-    Robot --> GripperServo
+    Robot -.->|optional| OtosSensor
+    Robot -.->|optional| LineSensor
+    Robot -.->|optional| ColorSensor
+    Robot -.->|optional| GripperServo
     Robot --> PortIO
-    Robot --> PathFollower
-    Robot --> PoseProvider
 
-    %% CommandProcessor uses (injected, not owned)
-    CommandProcessor --> MotorController
-    CommandProcessor --> Odometry
-    CommandProcessor -.->|optional| OtosSensor
-    CommandProcessor -.->|optional| LineSensor
-    CommandProcessor -.->|optional| ColorSensor
-    CommandProcessor -.->|optional| GripperServo
-    CommandProcessor -.->|optional| PortIO
-    CommandProcessor --> PathFollower
+    %% CommandProcessor calls Robot public interface only
+    CP -->|"calls action/query/accessors"| Robot
 
-    %% Control layer
-    MotorController --> NezhaV2
+    %% Control layer dependencies
+    DC -->|drives wheels| MotorController
+    DC -->|reads pose| Odometry
+    DC -->|reads params| Config
+    MotorController -->|wheel PWM| NezhaV2
+    MotorController -->|reads calib| Config
     MotorController --> RatioPID
+
+    %% Nav layer (future sprints)
     OtosPP --> OtosSensor
     DeadReck --> Odometry
-
-    %% Interface implementations
     PurePursuit -->|implements| PathFollower
     Stanley -->|implements| PathFollower
     OtosPP -->|implements| PoseProvider
     DeadReck -->|implements| PoseProvider
-
-    %% Types used everywhere (omitted for clarity except key links)
-    CommandProcessor --> Config
-    MotorController --> Config
 ```
 
 ---
@@ -244,6 +276,9 @@ graph TD
 | All instances static in `Robot` | Controlled init order; no static-init-order fiasco |
 | Virtual dispatch only in nav layer | `MotorController::tick()` is hot; PathFollower::compute() is not |
 | `ReplyFn` = `void(*)(const char*, void*)` | No `std::function`; no heap for closures |
+| `MicroBit` in `main.cpp`, not `Robot` | Idiomatic CODAL pattern; makes hardware deps explicit |
+| `RobotConfig` by const ref, never null | Owned by Robot; no null-cal guard paths anywhere |
+| Per-drive sink capture in DriveController | Async completions route to originating channel |
 | OTOS injected as nullable pointer | Robot works without OTOS; optional peripherals use null-check |
 | PathFollower copies waypoints (MAX=32) | No lifetime dependency on caller buffer; 256 bytes/follower static cost |
 | `uBit.sleep(tickMs)` not busy-wait | Yields fiber so CODAL radio event handler runs between ticks |

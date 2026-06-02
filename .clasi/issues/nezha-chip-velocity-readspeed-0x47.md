@@ -1,5 +1,6 @@
 ---
 status: pending
+sprint: 008
 ---
 
 # Nezha Chip-Native Wheel Velocity via readSpeed (0x47)

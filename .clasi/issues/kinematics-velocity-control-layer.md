@@ -1,5 +1,6 @@
 ---
 status: pending
+sprint: '010'
 ---
 
 # Kinematics: Velocity-Control Layer (per-wheel PID + body kinematics + saturation)

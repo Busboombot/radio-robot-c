@@ -1,5 +1,6 @@
 ---
 status: pending
+sprint: '011'
 ---
 
 # Kinematics: Pose Control (pursuit-arc go-to + accel/decel + turn-in-place gate)

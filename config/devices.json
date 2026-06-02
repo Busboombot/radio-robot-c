@@ -9,6 +9,16 @@
     "serial": "4267970133",
     "uid": "99063602000528204f02a3519fdba0c7000000006e052820"
   },
+  "9906360200052820a8fdb5e413abb276000000006e052820": {
+    "announcement": "DEVICE:ROBOT:tovez:tovez:89f137c0",
+    "common_name": "tovez",
+    "device_name": "tovez",
+    "enum": 3,
+    "port": "/dev/cu.usbmodem21421102",
+    "role": "ROBOT",
+    "serial": "89f137c0",
+    "uid": "9906360200052820a8fdb5e413abb276000000006e052820"
+  },
   "9906360200052820f92f913d5f4e8412000000006e052820": {
     "announcement": "DEVICE:RADIORELAY:relay:zetog:cd6f4895",
     "common_name": "relay",
