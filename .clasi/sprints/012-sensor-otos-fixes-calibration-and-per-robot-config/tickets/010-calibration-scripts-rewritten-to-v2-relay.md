@@ -1,7 +1,7 @@
 ---
 id: '010'
 title: Calibration scripts rewritten to v2 + relay
-status: open
+status: done
 use-cases:
 - SUC-001
 - SUC-003
@@ -11,8 +11,8 @@ depends-on:
 - '003'
 - '004'
 - '005'
-- '008'
-- '009'
+- 008
+- 009
 github-issue: ''
 issue: ''
 completes_issue: false
@@ -82,13 +82,13 @@ Both must be ported to v2 protocol and adapted to use the relay data plane.
 
 ## Acceptance Criteria
 
-- [ ] `host/calibrate_linear.py` exists and is importable (no syntax errors).
-- [ ] `host/calibrate_angular.py` exists and is importable.
-- [ ] `parse_tlm()` in `odom_tracker.py` correctly parses a `TLM t=... pose=x,y,h` line.
-- [ ] `parse_tlm()` unit test passes.
-- [ ] Scripts do not import `parse_so` or reference the dead `SO` stream.
-- [ ] `uv run pytest` passes (no regressions).
-- [ ] `sensors/calibration.py` docstring references v2 TLM.
+- [x] `host/calibrate_linear.py` exists and is importable (no syntax errors).
+- [x] `host/calibrate_angular.py` exists and is importable.
+- [x] `parse_tlm()` in `odom_tracker.py` correctly parses a `TLM t=... pose=x,y,h` line.
+- [x] `parse_tlm()` unit test passes.
+- [x] Scripts do not import `parse_so` or reference the dead `SO` stream.
+- [x] `uv run pytest` passes (no regressions).
+- [x] `sensors/calibration.py` docstring references v2 TLM.
 - [ ] (Bench deferred to T11) Scripts run end-to-end over relay; emit recommended config values; `data/robots/<robot>.json` is updated.
 
 ## Testing

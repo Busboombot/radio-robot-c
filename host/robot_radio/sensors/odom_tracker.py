@@ -1,7 +1,10 @@
-"""Odometry tracker: converts firmware SO readings to world-frame positions.
+"""Odometry tracker: converts firmware readings to world-frame positions.
 
-Anchored once to a camera-derived world pose.  Every call to drain() reads
-available SO lines from the serial connection and updates the path.
+Contains two parsers:
+- ``parse_so()`` — legacy v1 SO stream format (kept for compatibility).
+- ``parse_tlm()`` — v2 TLM ``pose=x,y,h`` format (primary, heading in cdeg).
+
+For new code, use ``parse_tlm()`` which delegates to the v2 protocol module.
 
 Usage:
     tracker = OdomTracker(world_pos_cm, world_yaw_rad)
@@ -14,6 +17,42 @@ Usage:
 from __future__ import annotations
 
 import math
+
+
+def parse_tlm(line: str) -> dict | None:
+    """Parse a v2 TLM line and return a dict with sensor fields, or None.
+
+    Delegates to ``robot_radio.robot.protocol.parse_tlm`` for the actual
+    parsing.  Returns a dict with the available fields from the TLM frame,
+    for example::
+
+        {'pose': (x_mm, y_mm, h_cdeg), 'enc': (left_mm, right_mm), 't': 12345}
+
+    Returns ``None`` if the line is not a recognisable TLM frame.
+
+    Example::
+
+        result = parse_tlm("TLM t=500 pose=350,-12,1780 enc=1024,1019")
+        # {'t': 500, 'pose': (350, -12, 1780), 'enc': (1024, 1019)}
+    """
+    from robot_radio.robot.protocol import parse_tlm as _proto_parse_tlm
+
+    frame = _proto_parse_tlm(line)
+    if frame is None:
+        return None
+
+    out: dict = {}
+    if frame.t is not None:
+        out["t"] = frame.t
+    if frame.pose is not None:
+        out["pose"] = frame.pose
+    if frame.enc is not None:
+        out["enc"] = frame.enc
+    if frame.vel is not None:
+        out["vel"] = frame.vel
+    if frame.mode is not None:
+        out["mode"] = frame.mode
+    return out if out else {}   # empty dict (not None) for bare "TLM" line
 
 
 def parse_so(line) -> tuple | None:
