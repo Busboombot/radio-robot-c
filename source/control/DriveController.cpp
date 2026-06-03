@@ -140,7 +140,6 @@ void DriveController::beginGoTo(float tx, float ty, float speedMms, uint32_t now
     _gTargetXWorld = x + tx * cosf(h_rad) - ty * sinf(h_rad);
     _gTargetYWorld = y + tx * sinf(h_rad) + ty * cosf(h_rad);
     _gSpeed  = speedMms;
-    _gPhase  = GPhase::PURSUE;
     _mode    = DriveMode::GO_TO;
     _driveFn  = fn;
     _driveCtx = ctx;
@@ -150,6 +149,28 @@ void DriveController::beginGoTo(float tx, float ty, float speedMms, uint32_t now
     } else {
         _corrId[0] = '\0';
     }
+
+    // Turn-in-place gate: bearing is computed from the robot-relative input
+    // (tx, ty) at command time — the robot frame IS the input frame here.
+    float bearing = fabsf(atan2f(ty, tx));
+    float gateRad = _cfg.turnInPlaceGate * (3.14159265f / 180.0f);  // degrees → rad
+
+    if (bearing > gateRad) {
+        // Target is beside or behind the robot — pre-rotate in place first.
+        float turnSign = (ty >= 0.0f) ? 1.0f : -1.0f;
+        float rawL = -turnSign * _gSpeed;
+        float rawR =  turnSign * _gSpeed;
+        float sL, sR;
+        BodyKinematics::saturate(rawL, rawR, _cfg.vWheelMax, _cfg.steerHeadroom, sL, sR);
+        _mc.startDriveClean(sL, sR);
+        _mc.setTarget(sL, sR);
+        _gPhase = GPhase::PRE_ROTATE;
+    } else {
+        // Target is roughly ahead — enter pursuit directly.
+        _mc.startDriveClean(_gSpeed, _gSpeed);  // initial setpoint; PURSUE corrects next tick
+        _gPhase = GPhase::PURSUE;
+    }
+
     (void)now_ms;
 }
 
@@ -248,6 +269,29 @@ void DriveController::tick(uint32_t now_ms, ReplyFn fn, void* ctx)
 
     // G-mode: advance go-to state machine
     if (_mode == DriveMode::GO_TO) {
+        if (_gPhase == GPhase::PRE_ROTATE) {
+            // Continuously re-check the robot-frame bearing to the world-frame goal.
+            // Exit to PURSUE when the bearing falls within the gate threshold.
+            float x, y, h_rad;
+            getPoseFloat(x, y, h_rad);
+            float dxW  = _gTargetXWorld - x;
+            float dyW  = _gTargetYWorld - y;
+            // World → robot frame
+            float dx_rf =  dxW * cosf(h_rad) + dyW * sinf(h_rad);
+            float dy_rf = -dxW * sinf(h_rad) + dyW * cosf(h_rad);
+            float bearing = fabsf(atan2f(dy_rf, dx_rf));
+            float gateRad = _cfg.turnInPlaceGate * (3.14159265f / 180.0f);
+
+            if (bearing <= gateRad) {
+                // Bearing is now within threshold — transition to PURSUE.
+                // HOOK for ticket 004: reset _vRamped here so the accel ramp
+                // restarts from zero at the beginning of pursuit.
+                _gPhase = GPhase::PURSUE;
+                // PURSUE tick will set correct wheel speeds on next iteration.
+            }
+            // else: keep spinning (wheel setpoints set at beginGoTo() remain active).
+        }
+
         if (_gPhase == GPhase::PURSUE) {
             float x, y, h_rad;
             getPoseFloat(x, y, h_rad);

@@ -1,11 +1,11 @@
 ---
 id: '003'
 title: 'DriveController: turn-in-place gate (PRE_ROTATE reactivation on bearing threshold)'
-status: open
+status: done
 use-cases:
 - SUC-002
 depends-on:
-- "011-002"
+- 011-002
 github-issue: ''
 issue: kinematics-pose-control-goto.md
 completes_issue: false
@@ -98,22 +98,22 @@ needed here.
 
 ## Acceptance Criteria
 
-- [ ] Unit test: bearing computation — target at `(tx=-300, ty=0)` (directly
+- [x] Unit test: bearing computation — target at `(tx=-300, ty=0)` (directly
   behind) gives bearing = π (> default 45° gate); gate fires. [unit]
-- [ ] Unit test: target at `(tx=300, ty=10)` gives bearing ≈ 1.9° (< 45° gate);
+- [x] Unit test: target at `(tx=300, ty=10)` gives bearing ≈ 1.9° (< 45° gate);
   gate does not fire, enters PURSUE directly. [unit]
-- [ ] Unit test: target at `(tx=0, ty=300)` gives bearing = 90° (> 45° gate);
+- [x] Unit test: target at `(tx=0, ty=300)` gives bearing = 90° (> 45° gate);
   gate fires. [unit]
-- [ ] Unit test: bearing threshold configurable — `SET turnGate=30` makes target
+- [x] Unit test: bearing threshold configurable — `SET turnGate=30` makes target
   at `(tx=200, ty=150)` (≈37°) trigger the gate. [unit]
 - [ ] **Bench**: `G -200 0 150` (directly behind) causes a visible in-place
   rotation before forward pursuit; robot arrives within `arriveTolMm` of
-  target. [bench — HARDWARE REQUIRED]
+  target. [bench — HARDWARE REQUIRED — DEFERRED]
 - [ ] **Bench**: `G 0 300 150` (90° left) causes in-place rotation then forward
-  pursuit. [bench — HARDWARE REQUIRED]
+  pursuit. [bench — HARDWARE REQUIRED — DEFERRED]
 - [ ] **Bench**: `G 300 50 200` (slight left, within gate) does not pre-rotate;
-  goes directly to pursuit arc. [bench — HARDWARE REQUIRED]
-- [ ] All existing tests pass.
+  goes directly to pursuit arc. [bench — HARDWARE REQUIRED — DEFERRED]
+- [x] All existing tests pass.
 
 ## Implementation Plan
 
