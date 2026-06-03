@@ -1,32 +1,22 @@
 {
-  "99063602000528204f02a3519fdba0c7000000006e052820": {
-    "announcement": "DEVICE:RADIOBRIDGE:relay:gozop:4267970133",
+  "990636020005282017449eac613c0332000000006e052820": {
+    "announcement": "DEVICE:RADIOBRIDGE:relay:getez:1784514240",
     "common_name": "relay",
-    "device_name": "gozop",
+    "device_name": "getez",
     "enum": 1,
     "port": "/dev/cu.usbmodem21421302",
     "role": "RADIOBRIDGE",
-    "serial": "4267970133",
-    "uid": "99063602000528204f02a3519fdba0c7000000006e052820"
+    "serial": "1784514240",
+    "uid": "990636020005282017449eac613c0332000000006e052820"
   },
   "9906360200052820a8fdb5e413abb276000000006e052820": {
-    "announcement": "DEVICE:ROBOT:tovez:tovez:89f137c0",
-    "common_name": "tovez",
+    "announcement": "DEVICE:NEZHA2:robot:tovez:2314287040",
+    "common_name": "robot",
     "device_name": "tovez",
-    "enum": 3,
-    "port": "/dev/cu.usbmodem21421102",
-    "role": "ROBOT",
-    "serial": "89f137c0",
-    "uid": "9906360200052820a8fdb5e413abb276000000006e052820"
-  },
-  "9906360200052820f92f913d5f4e8412000000006e052820": {
-    "announcement": "DEVICE:RADIORELAY:relay:zetog:cd6f4895",
-    "common_name": "relay",
-    "device_name": "zetog",
     "enum": 2,
-    "port": "/dev/cu.usbmodem2142202",
-    "role": "RADIORELAY",
-    "serial": "cd6f4895",
-    "uid": "9906360200052820f92f913d5f4e8412000000006e052820"
+    "port": "/dev/cu.usbmodem21421102",
+    "role": "NEZHA2",
+    "serial": "2314287040",
+    "uid": "9906360200052820a8fdb5e413abb276000000006e052820"
   }
 }
