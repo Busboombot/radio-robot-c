@@ -14,11 +14,11 @@ namespace icons {
     /// Classic micro:bit 5x5 heart — used as a "powered and ready" boot cue.
     inline MicroBitImage boot() {
         static const uint8_t px[25] = {
-            0, 1, 0, 1, 0,
-            1, 1, 1, 1, 1,
-            1, 1, 1, 1, 1,
-            0, 1, 1, 1, 0,
-            0, 0, 1, 0, 0,
+            0, 255, 0, 255,   0,
+            255, 255, 255, 255, 255,
+            255, 255, 255, 255, 255,
+            0, 255, 255, 255,   0,
+            0,   0, 255,   0,   0,
         };
         return MicroBitImage(5, 5, px);
     }
