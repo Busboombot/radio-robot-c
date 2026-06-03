@@ -1,7 +1,7 @@
 ---
 id: '010'
 title: 'Kinematics: Velocity Control and Pose Estimation'
-status: planning-docs
+status: done
 branch: sprint/010-kinematics-velocity-control-and-pose-estimation
 use-cases: []
 issues:
