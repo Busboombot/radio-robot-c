@@ -381,6 +381,26 @@ class NezhaProtocol:
         """Stop motors immediately (STOP command)."""
         self._conn.send_fast("STOP")
 
+    def vw(self, v_mms: int, omega_mrads: int,
+           corr_id: str | None = None) -> None:
+        """Send VW keepalive — sets body-twist velocity, resets watchdog.
+
+        Format: VW <v> <omega_mrads> [#id]
+        - ``v_mms``: forward speed in mm/s (−1000 … +1000).
+        - ``omega_mrads``: yaw rate in milli-radians/s (−3142 … +3142).
+          Positive = CCW (left turn).
+        - ``corr_id``: optional correlation id; echoed in EVT safety_stop.
+
+        Uses fire-and-forget (send_fast) so it can be called at streaming
+        rate without blocking.  The firmware echoes ``OK vw v=… omega=…``
+        synchronously, but callers driving at high frequency typically ignore
+        the per-frame reply.
+        """
+        if corr_id is not None:
+            self._conn.send_fast(f"VW {v_mms} {omega_mrads} #{corr_id}")
+        else:
+            self._conn.send_fast(f"VW {v_mms} {omega_mrads}")
+
     def drive(self, left_mms: int, right_mms: int) -> None:
         """Send S keepalive — sets streaming wheel speeds, resets watchdog.
 

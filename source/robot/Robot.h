@@ -59,6 +59,9 @@ public:
     // ---------------------------------------------------------------------------
     void stop();
     void streamDrive(int32_t leftMms, int32_t rightMms, ReplyFn fn, void* ctx);
+    // VW command: body-twist keepalive (v mm/s, omega rad/s); reuses STREAMING watchdog.
+    void velocityDrive(float v_mms, float omega_rads, ReplyFn fn, void* ctx,
+                       const char* corr_id = nullptr);
     void timedDrive(int32_t leftMms, int32_t rightMms, uint32_t durationMs,
                     ReplyFn fn, void* ctx, const char* corr_id = nullptr);
     void distanceDrive(int32_t leftMms, int32_t rightMms, int32_t targetMm,

@@ -1,11 +1,11 @@
 ---
 id: '005'
 title: 'VW command: watchdogged (v,omega) velocity primitive in v2 protocol'
-status: open
+status: done
 use-cases:
 - SUC-003
 depends-on:
-- "011-001"
+- 011-001
 github-issue: ''
 issue: kinematics-pose-control-goto.md
 completes_issue: false
@@ -117,18 +117,18 @@ in protocol-v2.md: "S = STREAMING (set by either S or VW command)".
 
 ## Acceptance Criteria
 
-- [ ] `VW 200 0` → `OK vw v=200 omega=0`; robot drives straight forward. [bench]
-- [ ] `VW 0 500` → `OK vw v=0 omega=500`; robot spins in place CCW. [bench]
+- [ ] `VW 200 0` → `OK vw v=200 omega=0`; robot drives straight forward. [bench — deferred]
+- [ ] `VW 0 500` → `OK vw v=0 omega=500`; robot spins in place CCW. [bench — deferred]
 - [ ] `VW 200 300` → `OK vw v=200 omega=300`; robot drives a curved arc (left
-  turn). [bench]
+  turn). [bench — deferred]
 - [ ] Watchdog fires within `sTimeoutMs` ± one tick when VW stream stops;
-  `EVT safety_stop` emitted. [bench]
-- [ ] `VW 200 0 #7` → `OK vw v=200 omega=0 #7`; watchdog stop → `EVT safety_stop #7`. [bench]
-- [ ] `VW 1001 0` → `ERR range v`. [unit]
-- [ ] `VW 200 3200 0` (too many args parsed as range error) — verify `VW 200 3143` → `ERR range omega`. [unit]
-- [ ] `STOP` during VW halts immediately; no `EVT`. [bench]
-- [ ] `GET` full dump still within 512-byte buffer (no new keys added in this ticket). [unit]
-- [ ] All existing tests pass.
+  `EVT safety_stop` emitted. [bench — deferred]
+- [ ] `VW 200 0 #7` → `OK vw v=200 omega=0 #7`; watchdog stop → `EVT safety_stop #7`. [bench — deferred]
+- [x] `VW 1001 0` → `ERR range v`. [unit]
+- [x] `VW 200 3143` → `ERR range omega`. [unit]
+- [ ] `STOP` during VW halts immediately; no `EVT`. [bench — deferred]
+- [x] `GET` full dump still within 512-byte buffer (no new keys added in this ticket). [unit]
+- [x] All existing tests pass.
 
 ## Implementation Plan
 

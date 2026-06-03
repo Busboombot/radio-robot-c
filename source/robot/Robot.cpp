@@ -68,6 +68,12 @@ void Robot::streamDrive(int32_t leftMms, int32_t rightMms, ReplyFn fn, void* ctx
     _dc.beginStream((float)leftMms, (float)rightMms, _uBit.systemTime(), fn, ctx);
 }
 
+void Robot::velocityDrive(float v_mms, float omega_rads, ReplyFn fn, void* ctx,
+                           const char* corr_id)
+{
+    _dc.beginVelocity(v_mms, omega_rads, _uBit.systemTime(), fn, ctx, corr_id);
+}
+
 void Robot::timedDrive(int32_t leftMms, int32_t rightMms, uint32_t durationMs,
                        ReplyFn fn, void* ctx, const char* corr_id)
 {

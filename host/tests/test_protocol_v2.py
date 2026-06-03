@@ -404,6 +404,84 @@ class TestCommandEncoding:
         proto.port_write_analog(1, 255)
         conn.send.assert_called_once_with("PA 1 255", read_ms=200)
 
+    # ── vw ───────────────────────────────────────────────────────────────────
+
+    def test_vw_straight(self) -> None:
+        """vw(200, 0) → send_fast 'VW 200 0'."""
+        proto, conn = _proto()
+        proto.vw(200, 0)
+        conn.send_fast.assert_called_once_with("VW 200 0")
+
+    def test_vw_spin_ccw(self) -> None:
+        """vw(0, 500) → send_fast 'VW 0 500'."""
+        proto, conn = _proto()
+        proto.vw(0, 500)
+        conn.send_fast.assert_called_once_with("VW 0 500")
+
+    def test_vw_spin_cw(self) -> None:
+        """vw(0, -500) → send_fast 'VW 0 -500'."""
+        proto, conn = _proto()
+        proto.vw(0, -500)
+        conn.send_fast.assert_called_once_with("VW 0 -500")
+
+    def test_vw_curved_arc(self) -> None:
+        """vw(200, 300) → send_fast 'VW 200 300'."""
+        proto, conn = _proto()
+        proto.vw(200, 300)
+        conn.send_fast.assert_called_once_with("VW 200 300")
+
+    def test_vw_negative_v(self) -> None:
+        """vw(-200, 0) → send_fast 'VW -200 0'."""
+        proto, conn = _proto()
+        proto.vw(-200, 0)
+        conn.send_fast.assert_called_once_with("VW -200 0")
+
+    def test_vw_with_corr_id(self) -> None:
+        """vw(200, 0, corr_id='7') → send_fast 'VW 200 0 #7'."""
+        proto, conn = _proto()
+        proto.vw(200, 0, corr_id="7")
+        conn.send_fast.assert_called_once_with("VW 200 0 #7")
+
+    def test_vw_at_max_omega(self) -> None:
+        """vw(0, 3142) → send_fast 'VW 0 3142' (≈π rad/s)."""
+        proto, conn = _proto()
+        proto.vw(0, 3142)
+        conn.send_fast.assert_called_once_with("VW 0 3142")
+
+    def test_vw_at_min_omega(self) -> None:
+        """vw(0, -3142) → send_fast 'VW 0 -3142'."""
+        proto, conn = _proto()
+        proto.vw(0, -3142)
+        conn.send_fast.assert_called_once_with("VW 0 -3142")
+
+    def test_vw_zero(self) -> None:
+        """vw(0, 0) → send_fast 'VW 0 0' (stationary keepalive)."""
+        proto, conn = _proto()
+        proto.vw(0, 0)
+        conn.send_fast.assert_called_once_with("VW 0 0")
+
+    def test_vw_uses_send_fast(self) -> None:
+        """vw() uses fire-and-forget (send_fast), not blocking send."""
+        proto, conn = _proto()
+        proto.vw(200, 0)
+        conn.send_fast.assert_called_once()
+        conn.send.assert_not_called()
+
+    def test_vw_reply_parsed_ok(self) -> None:
+        """OK vw v=200 omega=0 is a valid parsed response."""
+        r = parse_response("OK vw v=200 omega=0")
+        assert r is not None
+        assert r.tag == "OK"
+        assert r.tokens == ["vw"]
+        assert r.kv == {"v": "200", "omega": "0"}
+
+    def test_vw_reply_with_corr_id_parsed(self) -> None:
+        """OK vw v=200 omega=0 #7 extracts corr_id='7'."""
+        r = parse_response("OK vw v=200 omega=0 #7")
+        assert r is not None
+        assert r.corr_id == "7"
+        assert r.kv == {"v": "200", "omega": "0"}
+
 
 # ===========================================================================
 # NezhaProtocol response parsing

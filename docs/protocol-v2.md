@@ -448,7 +448,7 @@ clear, or whose hardware is absent, are omitted.
 | Field    | Format                      | Units / notes                                            |
 |----------|-----------------------------|----------------------------------------------------------|
 | `t`      | `%lu` (unsigned long)       | Robot clock in ms at sensor-sample time (see note below) |
-| `mode`   | single character            | `I`=idle, `S`=streaming, `T`=timed, `D`=distance, `G`=go-to |
+| `mode`   | single character            | `I`=idle, `S`=streaming (set by either `S` or `VW` command), `T`=timed, `D`=distance, `G`=go-to |
 | `enc`    | `%d,%d`                     | Left and right encoder accumulated distance in mm        |
 | `pose`   | `%d,%d,%d`                  | x mm, y mm, heading in centi-degrees                     |
 | `vel`    | `%d,%d`                     | Left and right actual velocity in mm/s (from `MotorController::getActualVelocity()`) |
@@ -550,7 +550,7 @@ produce bare events with no `#id`.
 | `EVT done T [#id]`     | Timed drive elapsed                                   |
 | `EVT done D [#id]`     | Distance drive target reached (or 5-second timeout)   |
 | `EVT done G [#id]`     | Go-to arc completed within `doneTol` mm               |
-| `EVT safety_stop [#id]`| S-mode watchdog expired (no S command within `sTimeout` ms) |
+| `EVT safety_stop [#id]`| S/VW watchdog expired (no `S` or `VW` command within `sTimeout` ms) |
 
 `[#id]` is present only when the originating command carried one.  Example:
 
@@ -675,6 +675,47 @@ EVT done G
 G 300 0 200 #7
 OK goto x=300 y=0 speed=200 #7
 EVT done G #7
+```
+
+### VW — Body-Twist Velocity Drive (Watchdogged)
+
+```
+VW <v> <omega_mrads> [#id]
+→ OK vw v=<v> omega=<omega_mrads> [#id]
+```
+
+Sets a body-twist velocity: `v` is the forward speed in mm/s and
+`omega_mrads` is the yaw rate in **milli-radians per second** (integer).
+Positive `omega` is CCW (left turn).
+
+The firmware converts `(v, ω)` to individual wheel speeds via
+`BodyKinematics::inverse()`, applies `saturate()`, and enters `STREAMING`
+mode — the **same** watchdog path as the `S` command.  If no `VW` (or `S`)
+command arrives within `sTimeout` ms the motors stop and
+`EVT safety_stop [#id]` is emitted (with the `#id` from the last `VW`
+command, if one was supplied).
+
+The TLM `mode=` field uses `S` for both `S` and `VW` commands.
+
+Ranges:
+- `v` — −1 000 … +1 000 mm/s.  Out of range → `ERR range v`.
+- `omega_mrads` — −3 142 … +3 142 mrad/s (≈ ±π rad/s).  Out of range →
+  `ERR range omega`.
+- Too few arguments → `ERR badarg`.
+
+Example:
+
+```
+VW 200 0
+OK vw v=200 omega=0
+
+VW 0 500
+OK vw v=0 omega=500
+
+VW 200 300 #7
+OK vw v=200 omega=300 #7
+… (watchdog fires with no subsequent VW) …
+EVT safety_stop #7
 ```
 
 ### STOP

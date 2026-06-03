@@ -871,6 +871,34 @@ void CommandProcessor::process(const char* line, ReplyFn replyFn, void* ctx)
         return;
     }
 
+    // ── VW — body-twist velocity drive (watchdogged) ─────────────────────────
+    // VW <v> <omega_mrads> [#id]  → OK vw v=<v> omega=<omega_mrads> [#id]
+    // Converts (v mm/s, omega mrad/s) → wheel setpoints via BodyKinematics::inverse()
+    // then enters STREAMING mode — same watchdog/safety_stop as S command.
+    // omega on wire: milli-radians/s (integer); converted to rad/s at firmware boundary.
+    if (strcmp(verb, "VW") == 0) {
+        if (ntok < 3) {
+            replyErr(rbuf, sizeof(rbuf), "badarg", nullptr, corr_id, replyFn, ctx);
+            return;
+        }
+        int v     = atoi(tokens[1]);
+        int omega = atoi(tokens[2]);
+        if (v < -1000 || v > 1000) {
+            replyErr(rbuf, sizeof(rbuf), "range", "v", corr_id, replyFn, ctx);
+            return;
+        }
+        if (omega < -3142 || omega > 3142) {
+            replyErr(rbuf, sizeof(rbuf), "range", "omega", corr_id, replyFn, ctx);
+            return;
+        }
+        float omega_rads = (float)omega / 1000.0f;  // mrad/s → rad/s
+        _robot.velocityDrive((float)v, omega_rads, replyFn, ctx, corr_id);
+        char body[32];
+        snprintf(body, sizeof(body), "v=%d omega=%d", v, omega);
+        replyOK(rbuf, sizeof(rbuf), "vw", body, corr_id, replyFn, ctx);
+        return;
+    }
+
     // ── STOP — stop motors immediately ───────────────────────────────────────
     // STOP  → OK stop
     if (strcmp(verb, "STOP") == 0) {

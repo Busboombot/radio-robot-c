@@ -82,6 +82,25 @@ void DriveController::beginStream(float leftMms, float rightMms, uint32_t now_ms
     _driveCtx = ctx;
 }
 
+void DriveController::beginVelocity(float v_mms, float omega_rads, uint32_t now_ms,
+                                     ReplyFn fn, void* ctx, const char* corr_id)
+{
+    // Convert body-twist (v, ω) → individual wheel speeds, then saturate.
+    float vL, vR;
+    BodyKinematics::inverse(v_mms, omega_rads, _cfg.trackwidthMm, vL, vR);
+    float sL, sR;
+    BodyKinematics::saturate(vL, vR, _cfg.vWheelMax, _cfg.steerHeadroom, sL, sR);
+    // Delegate to the existing STREAMING path (keeps watchdog logic in one place).
+    beginStream(sL, sR, now_ms, fn, ctx);
+    // Store corr_id so the watchdog EVT safety_stop echoes it (beginStream clears nothing).
+    if (corr_id && corr_id[0] != '\0') {
+        strncpy(_corrId, corr_id, sizeof(_corrId) - 1);
+        _corrId[sizeof(_corrId) - 1] = '\0';
+    } else {
+        _corrId[0] = '\0';
+    }
+}
+
 void DriveController::beginTimed(float leftMms, float rightMms,
                                   uint32_t durationMs, uint32_t now_ms,
                                   ReplyFn fn, void* ctx, const char* corr_id)
