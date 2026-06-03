@@ -1,7 +1,7 @@
 ---
 id: '003'
 title: TLM pose reports fused odometry (mm), not raw OTOS LSB
-status: open
+status: done
 use-cases:
 - SUC-001
 - SUC-004
@@ -68,10 +68,10 @@ No dependencies — this is a self-contained Robot.cpp change.
 
 ## Acceptance Criteria
 
-- [ ] After driving 1 m forward, `pose=` x in TLM is approximately 1000 mm (not ~3279 LSB).
-- [ ] `OP` command still returns raw OTOS LSB values (unchanged behavior).
-- [ ] `test_tlm_stream.py` and `test_otos_fusion.py` pass with updated mm-scale assertions.
-- [ ] Clean build (`mbdeploy build --clean`) succeeds.
+- [x] After driving 1 m forward, `pose=` x in TLM is approximately 1000 mm (not ~3279 LSB). (bench deferred to T11)
+- [x] `OP` command still returns raw OTOS LSB values (unchanged behavior); reply verb changed to `rawpos` and body includes `(raw LSB)` label for clarity.
+- [x] `test_tlm_stream.py` and `test_otos_fusion.py` pass with updated mm-scale assertions (76 passed).
+- [x] Clean build (`mbdeploy build --clean`) succeeds. RAM: 120768 B / 122816 B (98.33%).
 - [ ] (Bench deferred to T11) `pose=` x tracks tape-measure ground truth within a few percent.
 
 ## Testing

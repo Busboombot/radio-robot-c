@@ -184,18 +184,11 @@ void Robot::tick(uint32_t now_ms, ReplyFn fn, void* ctx)
     int32_t encL = 0, encR = 0;
     _mc.getEncoderPositions(encL, encR);
 
-    // ----- 3. Read pose (OTOS if present, else odometry) --------------------
+    // ----- 3. Read pose — always fused odometry (mm, mm, centidegrees) ------
+    // Raw OTOS LSB is available via the OP command for debug cross-check only.
     int32_t pose_x = 0, pose_y = 0, pose_h = 0;
     if (_config.tlmFields & TLM_FIELD_POSE) {
-        if (_otosPresent) {
-            int16_t rx = 0, ry = 0, rh = 0;
-            _otos.getPositionRaw(rx, ry, rh);
-            pose_x = (int32_t)rx;
-            pose_y = (int32_t)ry;
-            pose_h = (int32_t)rh;
-        } else {
-            _odo.getPose(pose_x, pose_y, pose_h);
-        }
+        _odo.getPose(pose_x, pose_y, pose_h);
     }
 
     // ----- 4. Read line sensor (if present and field requested) --------------
