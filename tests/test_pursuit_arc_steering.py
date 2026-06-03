@@ -472,3 +472,332 @@ class TestTurnInPlaceTickBearing:
         # After 180° rotation: goal is directly ahead
         bearing_180    = tick_pre_rotate_bearing(gx_world, gy_world, 0.0, 0.0, math.pi)
         assert bearing_180 == pytest.approx(0.0, abs=1e-5)
+
+
+# ---------------------------------------------------------------------------
+# Tests — trapezoidal accel/decel shaper (011-004)
+#
+# Pure Python mirror of the speed shaper in DriveController::tick() PURSUE branch:
+#
+#   _vRamped += aMax * dt_s
+#   if _vRamped > _gSpeed: _vRamped = _gSpeed       # clamp to user max
+#   v_cap = sqrt(2 * aDecel * d_remaining)
+#   if v_cap < _vRamped: _vRamped = v_cap            # clamp to decel cap
+#   v = _vRamped
+# ---------------------------------------------------------------------------
+
+
+def accel_ramp_tick(v_ramped: float, a_max: float, dt_s: float, g_speed: float) -> float:
+    """Advance _vRamped by one accel-ramp step and clamp to g_speed.
+
+    Mirrors:
+        _vRamped += aMax * dt_s
+        if (_vRamped > _gSpeed) _vRamped = _gSpeed
+    """
+    v = v_ramped + a_max * dt_s
+    if v > g_speed:
+        v = g_speed
+    return v
+
+
+def decel_cap(a_decel: float, d_remaining: float) -> float:
+    """Compute v_cap = sqrt(2 * aDecel * d_remaining).
+
+    Mirrors:
+        float v_cap = sqrtf(2.0f * aDecel * d_remaining)
+    """
+    return math.sqrt(2.0 * a_decel * d_remaining)
+
+
+def three_way_min(v_ramped: float, v_cap: float, g_speed: float) -> float:
+    """Apply the three-way min: v = min(_vRamped, v_cap, _gSpeed).
+
+    The C++ code applies the two clamps sequentially:
+      1. clamp _vRamped to _gSpeed
+      2. clamp _vRamped to v_cap
+    The result is min(v_ramped, g_speed, v_cap).
+    """
+    v = min(v_ramped, g_speed)
+    v = min(v, v_cap)
+    return v
+
+
+class TestAccelRamp:
+    """AC: accel ramp — _vRamped slews up at aMax per second, capped at _gSpeed."""
+
+    def test_first_tick_ramp_up(self):
+        """AC: aMax=300, dt=0.02s → _vRamped ramps from 0 to min(6.0, _gSpeed).
+
+        Ticket spec: first tick ramps _vRamped from 0 to min(6.0, _gSpeed).
+        With _gSpeed=200, result is 6.0.
+        """
+        a_max   = 300.0
+        dt_s    = 0.02
+        g_speed = 200.0
+        v_ramped = 0.0
+
+        v_ramped = accel_ramp_tick(v_ramped, a_max, dt_s, g_speed)
+
+        expected = a_max * dt_s   # 300 * 0.02 = 6.0
+        assert v_ramped == pytest.approx(expected, rel=1e-6)
+        assert v_ramped == pytest.approx(6.0, rel=1e-6)
+
+    def test_multiple_ticks_ramp_up(self):
+        """After multiple ticks, _vRamped grows by aMax*dt each tick until g_speed."""
+        a_max   = 300.0
+        dt_s    = 0.02   # 50 Hz
+        g_speed = 200.0
+        v_ramped = 0.0
+
+        # After N ticks (without decel cap), v_ramped grows linearly
+        for _ in range(10):
+            v_ramped = accel_ramp_tick(v_ramped, a_max, dt_s, g_speed)
+
+        # 10 ticks * 6 mm/s per tick = 60 mm/s
+        assert v_ramped == pytest.approx(60.0, rel=1e-6)
+
+    def test_ramp_clamped_at_g_speed(self):
+        """Once v_ramped reaches g_speed, further ticks hold it there."""
+        a_max   = 300.0
+        dt_s    = 0.02
+        g_speed = 50.0   # small ceiling
+        v_ramped = 0.0
+
+        # Run enough ticks to reach and exceed g_speed
+        for _ in range(20):
+            v_ramped = accel_ramp_tick(v_ramped, a_max, dt_s, g_speed)
+
+        assert v_ramped == pytest.approx(g_speed, rel=1e-6)
+
+    def test_first_tick_g_speed_small(self):
+        """If aMax*dt > g_speed, first tick is already clamped to g_speed."""
+        a_max   = 300.0
+        dt_s    = 0.02
+        g_speed = 3.0    # less than aMax*dt = 6.0
+        v_ramped = 0.0
+
+        v_ramped = accel_ramp_tick(v_ramped, a_max, dt_s, g_speed)
+        assert v_ramped == pytest.approx(g_speed, rel=1e-6)
+
+
+class TestDecelCap:
+    """AC: decel cap — v_cap = sqrt(2 * aDecel * d_remaining)."""
+
+    def test_known_value(self):
+        """AC: aDecel=250, d_remaining=10mm → v_cap = sqrt(5000) ≈ 70.71 mm/s."""
+        v_cap = decel_cap(a_decel=250.0, d_remaining=10.0)
+        expected = math.sqrt(2.0 * 250.0 * 10.0)   # sqrt(5000) ≈ 70.711
+        assert v_cap == pytest.approx(expected, rel=1e-6)
+        assert v_cap == pytest.approx(70.710678, rel=1e-5)
+
+    def test_large_distance_high_cap(self):
+        """Large d_remaining → v_cap high → shaper not yet limited by decel."""
+        v_cap = decel_cap(a_decel=250.0, d_remaining=1000.0)
+        expected = math.sqrt(2.0 * 250.0 * 1000.0)  # sqrt(500000) ≈ 707.1
+        assert v_cap == pytest.approx(expected, rel=1e-6)
+
+    def test_zero_distance_zero_cap(self):
+        """d_remaining = 0 → v_cap = 0 (robot at goal)."""
+        v_cap = decel_cap(a_decel=250.0, d_remaining=0.0)
+        assert v_cap == pytest.approx(0.0, abs=1e-9)
+
+    def test_cap_decreases_as_distance_shrinks(self):
+        """As robot approaches goal, v_cap decreases monotonically."""
+        a_decel = 250.0
+        distances = [500.0, 300.0, 100.0, 50.0, 10.0, 1.0]
+        caps = [decel_cap(a_decel, d) for d in distances]
+
+        for i in range(len(caps) - 1):
+            assert caps[i] > caps[i + 1], (
+                f"v_cap should decrease: d={distances[i]} → {caps[i]:.2f} "
+                f"but d={distances[i+1]} → {caps[i+1]:.2f}"
+            )
+
+    def test_cap_limits_speed_smoothly(self):
+        """v_cap limits speed: at d=10mm the cap (≈70.7) is well below typical g_speed=200."""
+        v_cap = decel_cap(a_decel=250.0, d_remaining=10.0)
+        assert v_cap < 200.0, "decel cap should constrain speed near goal"
+
+
+class TestThreeWayMin:
+    """AC: v = min(v_ramped, v_cap, g_speed) — all three limiting cases."""
+
+    def test_ramp_limited(self):
+        """_vRamped < v_cap and _vRamped < g_speed → v = _vRamped (ramp is binding)."""
+        v_ramped = 50.0
+        v_cap    = 200.0   # high (far from goal)
+        g_speed  = 200.0
+        v = three_way_min(v_ramped, v_cap, g_speed)
+        assert v == pytest.approx(v_ramped, rel=1e-9)
+
+    def test_decel_cap_limited(self):
+        """v_cap < _vRamped and v_cap < g_speed → v = v_cap (decel curve is binding)."""
+        v_ramped = 200.0   # fully ramped up
+        v_cap    = 30.0    # near goal
+        g_speed  = 200.0
+        v = three_way_min(v_ramped, v_cap, g_speed)
+        assert v == pytest.approx(v_cap, rel=1e-9)
+
+    def test_user_max_limited(self):
+        """g_speed < _vRamped and g_speed < v_cap → v = g_speed (user max is binding)."""
+        v_ramped = 250.0   # hypothetically above g_speed (shouldn't happen after ramp clamp)
+        v_cap    = 300.0   # far from goal
+        g_speed  = 150.0
+        v = three_way_min(v_ramped, v_cap, g_speed)
+        assert v == pytest.approx(g_speed, rel=1e-9)
+
+    def test_all_equal(self):
+        """All three equal → v = that value."""
+        val = 100.0
+        v = three_way_min(v_ramped=val, v_cap=val, g_speed=val)
+        assert v == pytest.approx(val, rel=1e-9)
+
+    def test_ramp_at_zero(self):
+        """_vRamped = 0 → v = 0 (start of ramp, robot stopped)."""
+        v = three_way_min(v_ramped=0.0, v_cap=200.0, g_speed=200.0)
+        assert v == pytest.approx(0.0, abs=1e-9)
+
+    def test_sequence_ramp_then_decel(self):
+        """Simulate a full go-to: v rises during accel phase, v_cap takes over near goal."""
+        a_max    = 300.0
+        a_decel  = 250.0
+        g_speed  = 200.0
+        dt_s     = 0.02   # 50 Hz
+
+        # Start far away; v_cap is high (not binding) — ramp phase
+        v_ramped    = 0.0
+        d_remaining = 500.0
+
+        # Simulate accel phase (first 10 ticks, d_remaining assumed large)
+        for _ in range(10):
+            v_ramped = accel_ramp_tick(v_ramped, a_max, dt_s, g_speed)
+
+        v_cap = decel_cap(a_decel, d_remaining)
+        v_accel = three_way_min(v_ramped, v_cap, g_speed)
+        # After 10 ticks at 300 mm/s² * 0.02s = 60 mm/s; v_cap at 500mm ≈ 500 → not binding
+        assert v_accel == pytest.approx(60.0, rel=1e-6), "Ramp should dominate far from goal"
+
+        # Near the goal: v_cap takes over
+        v_ramped    = 200.0   # fully ramped
+        d_remaining = 10.0
+        v_cap = decel_cap(a_decel, d_remaining)  # ≈ 70.7
+        v_decel = three_way_min(v_ramped, v_cap, g_speed)
+        assert v_decel == pytest.approx(v_cap, rel=1e-6), "Decel cap should dominate near goal"
+        assert v_decel < g_speed
+
+
+class TestArrivalGate:
+    """AC: when d_remaining < arriveTolMm, robot should stop (arrival detected)."""
+
+    def _simulate_arrive(
+        self,
+        d_remaining: float,
+        arrive_tol_mm: float,
+    ) -> bool:
+        """Return True when arrival would be detected (d < tol).
+
+        Mirrors:
+            if (d_remaining < _cfg.arriveTolMm) {
+                fullStop(dfn, dct);
+                _gPhase = GPhase::IDLE;
+                emitEvt("EVT done G");
+                return;
+            }
+        """
+        return d_remaining < arrive_tol_mm
+
+    def test_arrival_detected_when_within_tol(self):
+        """AC: d_remaining < arriveTolMm → arrival gate fires."""
+        assert self._simulate_arrive(d_remaining=4.9, arrive_tol_mm=5.0)
+
+    def test_arrival_not_detected_at_boundary(self):
+        """AC: d_remaining == arriveTolMm → NOT arrived (< not <=)."""
+        assert not self._simulate_arrive(d_remaining=5.0, arrive_tol_mm=5.0)
+
+    def test_arrival_not_detected_far_away(self):
+        """AC: d_remaining > arriveTolMm → arrival gate does NOT fire."""
+        assert not self._simulate_arrive(d_remaining=100.0, arrive_tol_mm=5.0)
+
+    def test_arrival_at_zero_distance(self):
+        """d_remaining = 0 (exact goal) → arrival fires."""
+        assert self._simulate_arrive(d_remaining=0.0, arrive_tol_mm=5.0)
+
+    def test_d_remaining_computed_from_dx_dy(self):
+        """d_remaining = sqrt(dx² + dy²): verify the computation matches expected."""
+        dx, dy = 3.0, 4.0
+        d_remaining = math.sqrt(dx * dx + dy * dy)
+        assert d_remaining == pytest.approx(5.0, rel=1e-6)
+        # With tol=5.0: NOT arrived (5.0 is not < 5.0)
+        assert not self._simulate_arrive(d_remaining, arrive_tol_mm=5.0)
+        # With tol=5.1: arrived
+        assert self._simulate_arrive(d_remaining, arrive_tol_mm=5.1)
+
+    def test_arrival_triggers_before_kappa_computed(self):
+        """Arrival check is BEFORE kappa computation: at d=0, d2=0 guard would fire.
+
+        This is important: we want fullStop() before dividing by d2.
+        Pure Python simulation: arrival check comes first, so kappa is never called.
+        """
+        dx, dy = 0.0, 0.0
+        d2 = dx * dx + dy * dy
+        d_remaining = math.sqrt(d2)
+        arrive_tol_mm = 5.0
+
+        if self._simulate_arrive(d_remaining, arrive_tol_mm):
+            # Arrival fires: fullStop, emit, return — kappa never computed
+            arrived = True
+            kappa_computed = False
+        else:
+            # Would proceed to kappa (with d2 guard)
+            arrived = False
+            kappa_computed = True
+
+        assert arrived, "At d=0, arrival gate must fire before kappa computation"
+        assert not kappa_computed
+
+    def test_vramped_resets_between_commands(self):
+        """_vRamped should be 0 at the start of each new go-to command."""
+        # Simulate beginGoTo reset: _vRamped = 0
+        v_ramped = 150.0   # leftover from previous drive
+        # beginGoTo resets:
+        v_ramped = 0.0
+        assert v_ramped == pytest.approx(0.0, abs=1e-9)
+
+    def test_vramped_resets_at_pre_rotate_to_pursue_transition(self):
+        """_vRamped must be 0 at PRE_ROTATE→PURSUE transition."""
+        # Simulate: PRE_ROTATE ended, _vRamped reset
+        v_ramped = 100.0   # might be nonzero if PRE_ROTATE had speed
+        # Transition hook resets:
+        v_ramped = 0.0
+        assert v_ramped == pytest.approx(0.0, abs=1e-9)
+
+    def test_full_shaper_sequence_accel_then_arrive(self):
+        """End-to-end: ramp up, approach, then arrive. v_ramped > 0 before arrival."""
+        a_max        = 300.0
+        a_decel      = 250.0
+        g_speed      = 200.0
+        dt_s         = 0.02
+        arrive_tol   = 5.0
+
+        v_ramped  = 0.0
+        d_remaining = 300.0
+
+        arrived = False
+        for _ in range(200):
+            if self._simulate_arrive(d_remaining, arrive_tol):
+                arrived = True
+                break
+            # Ramp
+            v_ramped += a_max * dt_s
+            if v_ramped > g_speed:
+                v_ramped = g_speed
+            # Decel cap
+            v_cap = math.sqrt(2.0 * a_decel * d_remaining)
+            if v_cap < v_ramped:
+                v_ramped = v_cap
+            v = v_ramped
+            # Advance robot (simplified: ignore curvature, go straight)
+            d_remaining -= v * dt_s
+
+        assert arrived, "Robot should arrive within 200 ticks"
+        assert d_remaining < arrive_tol

@@ -44,6 +44,7 @@ DriveController::DriveController(MotorController& mc, Odometry& odo, const Robot
     , _gTargetXWorld(0.0f)
     , _gTargetYWorld(0.0f)
     , _gSpeed(0.0f)
+    , _vRamped(0.0f)
     , _lastTickMs(0)
     , _currentTimeMs(0)
     , _lastOtosMs(0)
@@ -139,8 +140,9 @@ void DriveController::beginGoTo(float tx, float ty, float speedMms, uint32_t now
     getPoseFloat(x, y, h_rad);
     _gTargetXWorld = x + tx * cosf(h_rad) - ty * sinf(h_rad);
     _gTargetYWorld = y + tx * sinf(h_rad) + ty * cosf(h_rad);
-    _gSpeed  = speedMms;
-    _mode    = DriveMode::GO_TO;
+    _gSpeed   = speedMms;
+    _vRamped  = 0.0f;   // accel ramp starts fresh on each new go-to command
+    _mode     = DriveMode::GO_TO;
     _driveFn  = fn;
     _driveCtx = ctx;
     if (corr_id && corr_id[0] != '\0') {
@@ -284,9 +286,9 @@ void DriveController::tick(uint32_t now_ms, ReplyFn fn, void* ctx)
 
             if (bearing <= gateRad) {
                 // Bearing is now within threshold — transition to PURSUE.
-                // HOOK for ticket 004: reset _vRamped here so the accel ramp
-                // restarts from zero at the beginning of pursuit.
-                _gPhase = GPhase::PURSUE;
+                // Reset _vRamped so the accel ramp starts fresh from zero.
+                _vRamped = 0.0f;
+                _gPhase  = GPhase::PURSUE;
                 // PURSUE tick will set correct wheel speeds on next iteration.
             }
             // else: keep spinning (wheel setpoints set at beginGoTo() remain active).
@@ -302,10 +304,30 @@ void DriveController::tick(uint32_t now_ms, ReplyFn fn, void* ctx)
             float dx  =  dxW * cosf(h_rad) + dyW * sinf(h_rad);  // forward in robot frame
             float dy  = -dxW * sinf(h_rad) + dyW * cosf(h_rad);  // left in robot frame
 
-            float d2    = dx * dx + dy * dy;
-            float kappa = (d2 > 0.1f) ? (2.0f * dy / d2) : 0.0f;  // κ = 2dy/(dx²+dy²)
+            float d2          = dx * dx + dy * dy;
+            float d_remaining = sqrtf(d2);  // one sqrt per tick; used for decel cap and arrival
 
-            float v     = _gSpeed;    // ticket 004 replaces with trapezoidal v
+            // Arrival detection: stop and emit completion when within tolerance.
+            if (d_remaining < _cfg.arriveTolMm) {
+                fullStop(dfn, dct);
+                _gPhase = GPhase::IDLE;
+                emitEvt("EVT done G");
+                return;   // skip further PURSUE logic this tick
+            }
+
+            // Trapezoidal speed shaper (kinematics-model.md §1.6):
+            //   1. Ramp up _vRamped toward _gSpeed at aMax per second.
+            //   2. Cap by decel curve: v_cap = sqrt(2 * aDecel * d_remaining).
+            //   3. v = min(_vRamped, v_cap, _gSpeed) — three-way min.
+            _vRamped += _cfg.aMax * dt_s;
+            if (_vRamped > _gSpeed) _vRamped = _gSpeed;   // clamp to user-commanded max
+
+            float v_cap = sqrtf(2.0f * _cfg.aDecel * d_remaining);
+            if (v_cap < _vRamped) _vRamped = v_cap;       // clamp ramped speed to decel cap
+
+            float v     = _vRamped;   // v ≤ _gSpeed and v ≤ v_cap
+
+            float kappa = (d2 > 0.1f) ? (2.0f * dy / d2) : 0.0f;  // κ = 2dy/(dx²+dy²)
             float omega = v * kappa;
 
             float vL, vR;

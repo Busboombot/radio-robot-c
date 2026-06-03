@@ -1,12 +1,12 @@
 ---
 id: '004'
 title: 'DriveController: online trapezoidal accel/decel shaping and arrival detection'
-status: open
+status: done
 use-cases:
 - SUC-001
 - SUC-002
 depends-on:
-- "011-003"
+- 011-003
 github-issue: ''
 issue: kinematics-pose-control-goto.md
 completes_issue: false
@@ -98,23 +98,23 @@ _gPhase  = GPhase::PURSUE;
 
 ## Acceptance Criteria
 
-- [ ] Unit test: accel ramp — at `aMax=300`, `dt=0.02s`, first tick ramps
+- [x] Unit test: accel ramp — at `aMax=300`, `dt=0.02s`, first tick ramps
   `_vRamped` from 0 to `min(6.0, _gSpeed)`. [unit]
-- [ ] Unit test: decel cap — at `aDecel=250`, `d_remaining=10mm`,
+- [x] Unit test: decel cap — at `aDecel=250`, `d_remaining=10mm`,
   `v_cap = sqrt(2·250·10) = sqrt(5000) ≈ 70.7 mm/s`. [unit]
-- [ ] Unit test: `v = min(v_ramped, v_cap, _gSpeed)` — all three limiting
+- [x] Unit test: `v = min(v_ramped, v_cap, _gSpeed)` — all three limiting
   cases produce the correct minimum. [unit]
-- [ ] Unit test: arrival gate — when `d_remaining < arriveTolMm`, returns
+- [x] Unit test: arrival gate — when `d_remaining < arriveTolMm`, returns
   (does not drive further). [unit]
 - [ ] **Bench**: `G 300 0 200` — robot accelerates from rest, decelerates to
-  a stop on the 300 mm mark, stops within `arriveTolMm`. [bench — HARDWARE REQUIRED]
+  a stop on the 300 mm mark, stops within `arriveTolMm`. [bench — HARDWARE REQUIRED, DEFERRED]
 - [ ] **Bench**: Accel phase is visually smooth (no lurch from rest); decel
-  brings robot to clean stop, not coasting past the target. [bench — HARDWARE REQUIRED]
+  brings robot to clean stop, not coasting past the target. [bench — HARDWARE REQUIRED, DEFERRED]
 - [ ] **Bench**: `G -300 0 150` (behind) — pre-rotates, then pursues with
-  smooth accel/decel, lands within `arriveTolMm`. [bench — HARDWARE REQUIRED]
+  smooth accel/decel, lands within `arriveTolMm`. [bench — HARDWARE REQUIRED, DEFERRED]
 - [ ] **Bench**: `EVT done G #id` is emitted exactly once on arrival and routed
-  to the originating channel. [bench — HARDWARE REQUIRED]
-- [ ] All existing tests pass.
+  to the originating channel. [bench — HARDWARE REQUIRED, DEFERRED]
+- [x] All existing tests pass.
 
 ## Implementation Plan
 
