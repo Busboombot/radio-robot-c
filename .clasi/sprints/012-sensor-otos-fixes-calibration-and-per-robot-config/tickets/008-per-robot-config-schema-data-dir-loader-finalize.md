@@ -1,7 +1,7 @@
 ---
-id: '008'
+id: 008
 title: Per-robot config schema + data dir + loader finalize
-status: open
+status: done
 use-cases:
 - SUC-008
 depends-on: []
@@ -66,13 +66,13 @@ with the `RobotConfig` Pydantic model, but:
 
 ## Acceptance Criteria
 
-- [ ] `data/robots/<robot>.json` exists with known-good calibration values.
-- [ ] `data/robots/active_robot.json` pointer file resolves to the robot JSON.
-- [ ] `data/robots/robot_config.schema.json` exists and validates the robot JSON.
-- [ ] `get_robot_config()` returns the active robot config.
-- [ ] `match_robot_by_id("ID model=Nezha2 name=<name> serial=...")` returns the matching config.
-- [ ] Unit test for `match_robot_by_id()` passes.
-- [ ] `uv run pytest` passes.
+- [x] `data/robots/<robot>.json` exists with known-good calibration values.
+- [x] `data/robots/active_robot.json` pointer file resolves to the robot JSON.
+- [x] `data/robots/robot_config.schema.json` exists and validates the robot JSON.
+- [x] `get_robot_config()` returns the active robot config.
+- [x] `match_robot_by_id("ID model=Nezha2 name=<name> serial=...")` returns the matching config.
+- [x] Unit test for `match_robot_by_id()` passes.
+- [x] `uv run pytest` passes.
 
 ## Testing
 

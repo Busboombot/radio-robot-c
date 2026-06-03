@@ -1,0 +1,174 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "robot_config.schema.json",
+  "title": "RobotConfig",
+  "description": "Per-robot configuration for the radio-robot system.",
+  "type": "object",
+  "required": ["schema_version", "identity"],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 2,
+      "description": "Config schema version. 1 = legacy (no rotation_gain_neg fields). 2 = current."
+    },
+
+    "identity": {
+      "type": "object",
+      "required": ["robot_name", "uid"],
+      "additionalProperties": false,
+      "properties": {
+        "robot_name":     { "type": "string" },
+        "uid":            { "type": "string" },
+        "hardware_model": { "type": "string" },
+        "common_name":    { "type": "string" }
+      }
+    },
+
+    "connection": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "device_announcement_name": { "type": "string" },
+        "serial_last_6":            { "type": "string", "pattern": "^[0-9a-f]{6}$" },
+        "i2c_addresses": {
+          "type": "object",
+          "additionalProperties": { "type": "integer" }
+        }
+      }
+    },
+
+    "vision": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "robot_tag_id": { "type": "integer", "minimum": 0 },
+        "tag_offset_mm": { "$ref": "#/$defs/OffsetXYYaw" }
+      }
+    },
+
+    "geometry": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "drive_axle_offset_mm":    { "$ref": "#/$defs/OffsetXY" },
+        "odometry_offset_mm":      { "$ref": "#/$defs/OffsetXYYaw" },
+        "odometry_chip_upside_down": { "type": "boolean" },
+        "trackwidth":              { "type": ["number", "null"] },
+        "wheelbase_mm":            { "type": ["number", "null"] }
+      }
+    },
+
+    "wheels": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "wheel_diameter_mm": { "type": ["number", "null"] },
+        "ticks_per_rev":     { "type": ["number", "null"] },
+        "ticks_per_mm":      { "type": ["number", "null"] }
+      }
+    },
+
+    "encoders": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "has_encoders":  { "type": "boolean" },
+        "encoder_count": { "type": "integer", "minimum": 0 }
+      }
+    },
+
+    "drive": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "motor_deadband":       { "type": ["number", "null"] },
+        "max_cmd":              { "type": ["number", "null"] },
+        "cmd_to_mm_per_s":      { "type": ["number", "null"] },
+        "max_drive_mm_s":       { "type": ["number", "null"] },
+        "max_turn_deg_s":       { "type": ["number", "null"] },
+        "min_drive_mm_s":       { "type": ["number", "null"] },
+        "crawl_threshold_mm_s": { "type": ["number", "null"] },
+        "crawl_cmd":            { "type": ["number", "null"] }
+      }
+    },
+
+    "gripper": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "has_gripper":       { "type": "boolean" },
+        "gripper_offset_mm": {
+          "oneOf": [
+            { "$ref": "#/$defs/OffsetXY" },
+            { "type": "null" }
+          ]
+        }
+      }
+    },
+
+    "calibration": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "otos_angular_scale": {
+          "type": "number",
+          "description": "OTOS angular scale multiplier (e.g. 0.987). int8 = round((scale-1)/0.001)."
+        },
+        "otos_linear_scale": {
+          "type": "number",
+          "description": "OTOS linear scale multiplier (e.g. 1.050). int8 = round((scale-1)/0.001)."
+        },
+        "mm_per_wheel_deg_left": {
+          "type": ["number", "null"],
+          "description": "Per-wheel encoder calibration: mm of travel per degree of wheel rotation (left wheel)."
+        },
+        "mm_per_wheel_deg_right": {
+          "type": ["number", "null"],
+          "description": "Per-wheel encoder calibration: mm of travel per degree of wheel rotation (right wheel)."
+        },
+        "rotational_slip": {
+          "type": ["number", "null"],
+          "description": "Body-rotation efficiency: actual_body_rotation / no_slip_estimate. 1.0 = no slip."
+        },
+        "rotation_gain": {
+          "type": ["number", "null"],
+          "description": "Linear correction gain for CCW (positive) turns: actual_deg = gain * commanded + offset."
+        },
+        "rotation_offset_deg": {
+          "type": ["number", "null"],
+          "description": "Linear correction offset (deg) for CCW (positive) turns."
+        },
+        "rotation_gain_neg": {
+          "type": ["number", "null"],
+          "description": "Linear correction gain for CW (negative) turns. Falls back to rotation_gain when null."
+        },
+        "rotation_offset_deg_neg": {
+          "type": ["number", "null"],
+          "description": "Linear correction offset (deg) for CW (negative) turns. Falls back to rotation_offset_deg when null."
+        }
+      }
+    }
+  },
+
+  "$defs": {
+    "OffsetXY": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "x": { "type": "number" },
+        "y": { "type": "number" }
+      }
+    },
+    "OffsetXYYaw": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "x":       { "type": "number" },
+        "y":       { "type": "number" },
+        "yaw_rad": { "type": "number" }
+      }
+    }
+  }
+}

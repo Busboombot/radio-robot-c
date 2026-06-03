@@ -1,0 +1,70 @@
+{
+  "schema_version": 2,
+  "identity": {
+    "robot_name": "tovez",
+    "uid": "tovez",
+    "hardware_model": "DFRobot Nezha",
+    "common_name": "classroom-bot"
+  },
+  "connection": {
+    "device_announcement_name": "tovez",
+    "serial_last_6": "f137c0",
+    "i2c_addresses": {}
+  },
+  "vision": {
+    "robot_tag_id": 1,
+    "tag_offset_mm": {
+      "x": 0.0,
+      "y": 0.0,
+      "yaw_rad": 0.0
+    }
+  },
+  "geometry": {
+    "drive_axle_offset_mm": {
+      "x": 0.0,
+      "y": 0.0
+    },
+    "odometry_offset_mm": {
+      "x": 0.0,
+      "y": 0.0,
+      "yaw_rad": 0.0
+    },
+    "odometry_chip_upside_down": false,
+    "trackwidth": 126,
+    "wheelbase_mm": null
+  },
+  "wheels": {
+    "wheel_diameter_mm": 80.77,
+    "ticks_per_rev": 360,
+    "ticks_per_mm": 1.4187
+  },
+  "encoders": {
+    "has_encoders": true,
+    "encoder_count": 2
+  },
+  "drive": {
+    "motor_deadband": null,
+    "max_cmd": null,
+    "cmd_to_mm_per_s": null,
+    "max_drive_mm_s": null,
+    "max_turn_deg_s": null,
+    "min_drive_mm_s": null,
+    "crawl_threshold_mm_s": null,
+    "crawl_cmd": null
+  },
+  "gripper": {
+    "has_gripper": false,
+    "gripper_offset_mm": null
+  },
+  "calibration": {
+    "otos_linear_scale": 1.05,
+    "otos_angular_scale": 0.987,
+    "mm_per_wheel_deg_left": 0.487,
+    "mm_per_wheel_deg_right": 0.481,
+    "rotational_slip": 0.74,
+    "rotation_gain": 1.0,
+    "rotation_offset_deg": 0.0,
+    "rotation_gain_neg": 1.17,
+    "rotation_offset_deg_neg": 0.0
+  }
+}
