@@ -1,11 +1,15 @@
 ---
-id: "011"
-title: "Kinematics: Pose Control (Go-To)"
-status: roadmap
+id: '011'
+title: 'Kinematics: Pose Control (Go-To)'
+status: planning-docs
 branch: sprint/011-kinematics-pose-control-go-to
-use-cases: []
+use-cases:
+- SUC-001
+- SUC-002
+- SUC-003
+- SUC-004
 issues:
-  - kinematics-pose-control-goto.md
+- kinematics-pose-control-goto.md
 ---
 <!-- CLASI: Before changing code or making plans, review the SE process in CLAUDE.md -->
 
@@ -55,5 +59,13 @@ delivered in 010 and rides on the v2 command surface from 009.
 
 | # | Title | Depends On |
 |---|-------|------------|
+| 001 | RobotConfig: add aMax, aDecel, turnInPlaceGate, arriveTolMm fields and registry entries | — |
+| 002 | DriveController: pursuit-arc steering law (receding-horizon curvature, replace computeArc) | 011-001 |
+| 003 | DriveController: turn-in-place gate (PRE_ROTATE reactivation on bearing threshold) | 011-002 |
+| 004 | DriveController: online trapezoidal accel/decel shaping and arrival detection | 011-003 |
+| 005 | VW command: watchdogged (v,ω) velocity primitive in v2 protocol | 011-001 |
+| 006 | Bench verification: go-to end-to-end from 3 start positions and VW drive | 011-004, 011-005 |
 
-Tickets execute serially in the order listed. (Populated in detail mode.)
+Tickets execute serially in the listed order. Ticket 005 depends only on
+011-001 and may be developed in parallel with 002–004 if two programmers
+are available; the serial ordering above is safe for a single programmer.
