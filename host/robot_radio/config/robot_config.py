@@ -98,6 +98,11 @@ class GripperConfig(BaseModel):
     gripper_offset_mm: Optional[OffsetXY] = None
 
 
+class PeripheralsConfig(BaseModel):
+    # Digital port (J1..J4) the line laser is wired to. Default 4.
+    laser_port: Optional[int] = 4
+
+
 class CalibrationConfig(BaseModel):
     """Sensor and odometry calibration values measured on this specific robot.
 
@@ -152,6 +157,7 @@ class RobotConfig(BaseModel):
     encoders: EncodersConfig = EncodersConfig()
     drive: DriveConfig = DriveConfig()
     gripper: GripperConfig = GripperConfig()
+    peripherals: PeripheralsConfig = PeripheralsConfig()
     calibration: CalibrationConfig = CalibrationConfig()
 
     # Derived field — not stored in JSON, computed after load
@@ -237,6 +243,10 @@ class RobotConfig(BaseModel):
     @property
     def gripper_offset_mm(self) -> Optional[OffsetXY]:
         return self.gripper.gripper_offset_mm
+
+    @property
+    def laser_port(self) -> Optional[int]:
+        return self.peripherals.laser_port
 
     @property
     def device_announcement_name(self) -> str:

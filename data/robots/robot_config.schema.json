@@ -108,6 +108,19 @@
       }
     },
 
+    "peripherals": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "laser_port": {
+          "description": "Digital port (J1..J4) the line laser is wired to.",
+          "type": ["integer", "null"],
+          "minimum": 1,
+          "maximum": 4
+        }
+      }
+    },
+
     "calibration": {
       "type": "object",
       "additionalProperties": false,

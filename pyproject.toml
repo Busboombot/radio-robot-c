@@ -8,8 +8,21 @@ dependencies = [
     "pyserial>=3.5",
 ]
 
+[dependency-groups]
+# Bench calibration / camera-ground-truth tooling (tests/calibrate/). Pulls in
+# the aprilcam camera client (and its CV/gRPC stack). Install with `uv sync`.
+calibrate = [
+    "aprilcam",
+]
+
 [tool.uv]
 package = false
+# Include the calibrate group by default so `uv run tests/calibrate/...` always
+# has the aprilcam camera client available without an explicit --group flag.
+default-groups = ["calibrate"]
+
+[tool.uv.sources]
+aprilcam = { path = "/Volumes/Proj/proj/RobotProjects/AprilTags", editable = true }
 
 [tool.uv.workspace]
 members = [

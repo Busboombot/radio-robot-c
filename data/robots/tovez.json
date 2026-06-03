@@ -56,6 +56,9 @@
     "has_gripper": false,
     "gripper_offset_mm": null
   },
+  "peripherals": {
+    "laser_port": 4
+  },
   "calibration": {
     "otos_linear_scale": 1.05,
     "otos_angular_scale": 0.987,
