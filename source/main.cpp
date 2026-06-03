@@ -3,6 +3,7 @@
 #include "CommandProcessor.h"
 #include "SerialPort.h"
 #include "Radio.h"
+#include "Icons.h"
 
 // ---------------------------------------------------------------------------
 // MicroBit uBit singleton — must be file-scope so CODAL peripherals are
@@ -36,6 +37,11 @@ static void radioReply(const char* msg, void* ctx) {
 
 int main() {
     uBit.init();
+
+    // Show a heart on the 5x5 LED matrix as a "powered and ready" indicator.
+    // Non-blocking: CODAL display ISR drives the LEDs independently of the
+    // main loop so this never interferes with motors, sensors, or radio.
+    uBit.display.printAsync(icons::boot()); // delay=0 → show forever, non-blocking
 
     static Robot            robot(uBit.i2c, uBit.serial, uBit.radio,
                                   uBit.io, uBit.messageBus, uBit);

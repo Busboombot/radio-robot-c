@@ -13,7 +13,7 @@ import time
 from robot_radio.io.serial_conn import SerialConnection, list_serial_ports, DEFAULT_PORT
 from robot_radio.robot import QBotPro, Nezha, NezhaProtocol, Cutebot
 from robot_radio.sensors.color import nezha_classifier
-from robot_radio.config.robot_config import get_robot_config
+from robot_radio.config.robot_config import get_robot_config, match_robot_by_id
 
 _verbose = False
 
@@ -356,89 +356,104 @@ def _make_robot(args) -> tuple[QBotPro, SerialConnection, dict]:
 
 
 def _push_calibration(conn: SerialConnection) -> None:
-    """Push every runtime-configurable calibration value from the active
-    robot config to firmware.  Uses blocking send() (waits for ACK) so the
-    radio queue is drained before the next command is sent — over the relay
-    path, back-to-back fire-and-forget writes overflow the radio and drop
-    subsequent packets (observed: G command silently dropped if K commands
-    precede it without ack-gating).
+    """Push every runtime-configurable calibration value to firmware using v2 verbs.
 
-    Pushes:
-      * KML / KMR     ← cfg.wheels.wheel_diameter_mm
-      * OL / OA       ← cfg.otos_linear_scale / otos_angular_scale
-      * OI            ← init signal processing (must come before OO)
-      * OO            ← cfg.geometry.odometry_offset_mm
-                        (x = sensor offset along robot-forward, mm;
-                         y = sensor offset along robot-left, mm;
-                         yaw_rad = chip X-axis rotation from
-                         robot-forward, CCW positive)
-      * OK            ← IMU bias calibration (~700ms, robot must be still)
+    Uses blocking send() (waits for ACK before next send) so the radio queue
+    is drained — over the relay path, back-to-back fire-and-forget writes
+    overflow the radio and drop subsequent packets.
 
-    Source of truth: data/robots/<robot>.json.  Firmware defaults are
-    factory values and will be wrong for any robot whose hardware does not
-    match the defaults.
+    Sequence:
+      1. Send ``ID`` to identify the robot; call ``match_robot_by_id()`` to
+         load the matching per-robot config.  Falls back to ``get_robot_config()``
+         if the ID command fails or no config matches.
+      2. ``SET ml <float>``  ← cfg.calibration.mm_per_wheel_deg_left
+      3. ``SET mr <float>``  ← cfg.calibration.mm_per_wheel_deg_right
+      4. ``SET tw <int>``    ← cfg.geometry.trackwidth (integer mm)
+      5. ``OI``              ← OTOS init (must precede OL/OA scalar writes)
+      6. ``OL <int8>``       ← cfg.calibration.otos_linear_scale encoded as
+                               round((scale-1)/0.001), clamped to -128..127
+      7. ``OA <int8>``       ← cfg.calibration.otos_angular_scale (same encoding)
+      8. ``SET odomOffX/odomOffY/odomYaw`` — only when geometry offsets are
+         nonzero in the config (tovez offsets are all 0 → skipped).
+
+    Removed v1 verbs: KML, KMR, OO, OK — none recognized by v2 firmware.
+    Source of truth: data/robots/<robot>.json.
     """
-    cfg = get_robot_config()
+    # ── Step 1: identify robot via v2 ID command ──────────────────────────
+    id_resp = conn.send("ID", read_ms=500)
+    id_line: str | None = None
+    for raw in id_resp.get("responses", []):
+        stripped = raw.strip()
+        if stripped.startswith("ID ") or stripped == "ID":
+            id_line = stripped
+            break
+
+    if id_line:
+        _log(f"push calibration: robot ID response: {id_line!r}")
+        cfg = match_robot_by_id(id_line)
+    else:
+        _log("push calibration: no ID response — falling back to get_robot_config()")
+        cfg = get_robot_config()
+
     if cfg is None:
+        import sys as _sys
+        print("Warning: no robot config — calibration push skipped.", file=_sys.stderr)
         return
 
-    # Wheel mm/deg (KML/KMR)
-    # Per-wheel calibration overrides take precedence over wheel_diameter derived value.
+    # ── Step 2–4: wheel encoder calibration and trackwidth (SET keys) ────
+    cal = getattr(cfg, "calibration", None)
+
+    # Derive mm/deg from per-wheel overrides, then from wheel_diameter_mm.
     wd = getattr(getattr(cfg, "wheels", None), "wheel_diameter_mm", None)
     default_mm_per_deg = (math.pi * wd / 360.0) if wd is not None else None
 
-    cal = getattr(cfg, "calibration", None)
     left_mm_per_deg  = getattr(cal, "mm_per_wheel_deg_left",  None) if cal else None
     right_mm_per_deg = getattr(cal, "mm_per_wheel_deg_right", None) if cal else None
     left_mm_per_deg  = left_mm_per_deg  if left_mm_per_deg  is not None else default_mm_per_deg
     right_mm_per_deg = right_mm_per_deg if right_mm_per_deg is not None else default_mm_per_deg
 
     if left_mm_per_deg is not None:
-        val_l = round(left_mm_per_deg * 1000)
-        _log(f"sync calibration: K+ML+{val_l} (mm/deg={left_mm_per_deg:.4f})")
-        conn.send(f"K+ML+{val_l}", read_ms=200)
+        _log(f"push calibration: SET ml {left_mm_per_deg:.6f}")
+        conn.send(f"SET ml={left_mm_per_deg:.6f}", read_ms=200)
     if right_mm_per_deg is not None:
-        val_r = round(right_mm_per_deg * 1000)
-        _log(f"sync calibration: K+MR+{val_r} (mm/deg={right_mm_per_deg:.4f})")
-        conn.send(f"K+MR+{val_r}", read_ms=200)
+        _log(f"push calibration: SET mr {right_mm_per_deg:.6f}")
+        conn.send(f"SET mr={right_mm_per_deg:.6f}", read_ms=200)
 
-    # OTOS distance and heading scalars (OL/OA, int8 with 0.1%/step)
+    geom = getattr(cfg, "geometry", None)
+    tw = getattr(geom, "trackwidth", None) if geom else None
+    if tw is not None:
+        tw_int = int(round(float(tw)))
+        _log(f"push calibration: SET tw {tw_int}")
+        conn.send(f"SET tw={tw_int}", read_ms=200)
+
+    # ── Step 5: OTOS init (must precede scalar writes) ────────────────────
+    _log("push calibration: OI (OTOS init)")
+    conn.send("OI", read_ms=500)
+
+    # ── Steps 6–7: OTOS distance and heading scalars ──────────────────────
     lin_int8 = _scale_to_int8(getattr(cfg, "otos_linear_scale", 1.0) or 1.0)
     ang_int8 = _scale_to_int8(getattr(cfg, "otos_angular_scale", 1.0) or 1.0)
-    _log(f"sync calibration: OL{lin_int8:+d} OA{ang_int8:+d} "
-         f"(linear={1.0 + lin_int8 * 0.001:.4f}, "
-         f"angular={1.0 + ang_int8 * 0.001:.4f})")
-    conn.send(f"OL{lin_int8:+d}", read_ms=200)
-    conn.send(f"OA{ang_int8:+d}", read_ms=200)
+    _log(f"push calibration: OL {lin_int8:+d} "
+         f"(linear_scale={1.0 + lin_int8 * 0.001:.4f})")
+    conn.send(f"OL {lin_int8}", read_ms=200)
+    _log(f"push calibration: OA {ang_int8:+d} "
+         f"(angular_scale={1.0 + ang_int8 * 0.001:.4f})")
+    conn.send(f"OA {ang_int8}", read_ms=200)
 
-    # OTOS init must come before OO so the chip is ready to accept the
-    # offset register write.  The IMU gyro bias is volatile (lost on
-    # power-cycle); OK calibrates it (~600 ms, robot must be still).
-    _log("sync calibration: OI (init signal processing)")
-    conn.send("OI", read_ms=200)
-
-    # OTOS mounting offset (OO).  Yaw is stored as radians in config,
-    # converted to degrees for the wire protocol.  The flip flag is
-    # sent as the 4th arg when present.
-    geom = getattr(cfg, "geometry", None)
+    # ── Step 8: OTOS mounting offset via SET keys (skip if all zero) ──────
     off = getattr(geom, "odometry_offset_mm", None) if geom else None
-    flip = bool(getattr(geom, "odometry_chip_upside_down", False)) if geom else False
     if off is not None:
-        ox = int(round(float(off.x)))
-        oy = int(round(float(off.y)))
-        oh = int(round(math.degrees(float(off.yaw_rad))))
-        of = 1 if flip else 0
-        _log(f"sync calibration: OO{ox:+d}{oy:+d}{oh:+d}{of:+d} "
-             f"(x={off.x:.1f}mm fwd, y={off.y:.1f}mm left, "
-             f"yaw={math.degrees(off.yaw_rad):.1f}°, "
-             f"flip={'upside-down' if flip else 'normal'})")
-        conn.send(f"OO{ox:+d}{oy:+d}{oh:+d}{of:+d}", read_ms=200)
-
-    # IMU bias calibration — must be after OI.  255 samples ≈ 612 ms;
-    # robot MUST be stationary during this window.
-    _log("sync calibration: OK (IMU calibration, ~700ms still)")
-    conn.send("OK", read_ms=200)
-    time.sleep(0.75)
+        ox = float(off.x)
+        oy = float(off.y)
+        oyaw_deg = math.degrees(float(off.yaw_rad))
+        if ox != 0.0 or oy != 0.0 or oyaw_deg != 0.0:
+            _log(f"push calibration: SET odomOffX={ox:.3f} odomOffY={oy:.3f} "
+                 f"odomYaw={oyaw_deg:.3f}")
+            conn.send(f"SET odomOffX={ox:.3f}", read_ms=200)
+            conn.send(f"SET odomOffY={oy:.3f}", read_ms=200)
+            conn.send(f"SET odomYaw={oyaw_deg:.3f}", read_ms=200)
+        else:
+            _log("push calibration: odom offsets all zero — skipping SET odomOff*")
 
 
 def cmd_sync_pose(args):
@@ -538,11 +553,8 @@ def cmd_sync_cal(args):
     """Connect to the robot, push the full calibration set, and disconnect.
 
     This is a one-time setup step after power-up or after editing the robot
-    config.  The robot MUST be stationary during the ~700 ms IMU bias window.
-
-    Pushes: KML, KMR, OL, OA, OI, OO, OK — same set as the automatic push
-    in _make_robot(), but invoked explicitly so you can confirm the values
-    before running motion commands.
+    config.  Pushes per-robot calibration using v2 verbs: SET ml, SET mr,
+    SET tw, OI, OL, OA, and optionally SET odomOffX/odomOffY/odomYaw.
     """
     port = _get_port(args)
     on_send = (lambda cmd: _log(f"TX: {cmd}")) if _verbose else None
@@ -574,47 +586,51 @@ def cmd_sync_cal(args):
 
     _push_calibration(conn)
 
-    # Print a human-readable summary of everything pushed.
-    wd = getattr(getattr(cfg, "wheels", None), "wheel_diameter_mm", None)
+    # Print a human-readable summary of what was pushed (v2 verbs).
+    # _push_calibration() resolved the config via ID+match_robot_by_id;
+    # fall back to get_robot_config() for the summary display.
+    cfg_display = get_robot_config()
+    if cfg_display is None:
+        print("sync cal: calibration pushed (no config for display summary)")
+        conn.disconnect()
+        return
+
+    wd = getattr(getattr(cfg_display, "wheels", None), "wheel_diameter_mm", None)
     default_mm_per_deg = (math.pi * wd / 360.0) if wd is not None else None
-    cal = getattr(cfg, "calibration", None)
+    cal = getattr(cfg_display, "calibration", None)
     left_mm_per_deg  = getattr(cal, "mm_per_wheel_deg_left",  None) if cal else None
     right_mm_per_deg = getattr(cal, "mm_per_wheel_deg_right", None) if cal else None
     left_mm_per_deg  = left_mm_per_deg  if left_mm_per_deg  is not None else default_mm_per_deg
     right_mm_per_deg = right_mm_per_deg if right_mm_per_deg is not None else default_mm_per_deg
 
-    lin_int8 = _scale_to_int8(getattr(cfg, "otos_linear_scale", 1.0) or 1.0)
-    ang_int8 = _scale_to_int8(getattr(cfg, "otos_angular_scale", 1.0) or 1.0)
-    geom = getattr(cfg, "geometry", None)
+    lin_int8 = _scale_to_int8(getattr(cfg_display, "otos_linear_scale", 1.0) or 1.0)
+    ang_int8 = _scale_to_int8(getattr(cfg_display, "otos_angular_scale", 1.0) or 1.0)
+    geom = getattr(cfg_display, "geometry", None)
+    tw = getattr(geom, "trackwidth", None) if geom else None
     off = getattr(geom, "odometry_offset_mm", None) if geom else None
-    flip = bool(getattr(geom, "odometry_chip_upside_down", False)) if geom else False
 
-    print("sync cal: calibration pushed successfully")
+    print("sync cal: calibration pushed successfully (v2 verbs)")
     if left_mm_per_deg is not None:
-        print(f"  KML {round(left_mm_per_deg * 1000):+d}  "
-              f"(mm/deg={left_mm_per_deg:.4f})")
+        print(f"  SET ml={left_mm_per_deg:.6f}  (mm/deg={left_mm_per_deg:.4f})")
     if right_mm_per_deg is not None:
-        print(f"  KMR {round(right_mm_per_deg * 1000):+d}  "
-              f"(mm/deg={right_mm_per_deg:.4f})")
+        print(f"  SET mr={right_mm_per_deg:.6f}  (mm/deg={right_mm_per_deg:.4f})")
+    if tw is not None:
+        print(f"  SET tw={int(round(float(tw)))}  (trackwidth mm)")
+    print("  OI  (OTOS init)")
     print(f"  OL  {lin_int8:+d}  "
           f"(linear_scale={1.0 + lin_int8 * 0.001:.4f},"
-          f" source={'config' if getattr(cfg, 'otos_linear_scale', None) is not None else 'default'})")
+          f" source={'config' if getattr(cfg_display, 'otos_linear_scale', None) is not None else 'default'})")
     print(f"  OA  {ang_int8:+d}  "
           f"(angular_scale={1.0 + ang_int8 * 0.001:.4f},"
-          f" source={'config' if getattr(cfg, 'otos_angular_scale', None) is not None else 'default'})")
-    print("  OI  (init signal processing)")
+          f" source={'config' if getattr(cfg_display, 'otos_angular_scale', None) is not None else 'default'})")
     if off is not None:
-        ox = int(round(float(off.x)))
-        oy = int(round(float(off.y)))
-        oh = int(round(math.degrees(float(off.yaw_rad))))
-        of = 1 if flip else 0
-        print(f"  OO  {ox:+d}{oy:+d}{oh:+d}{of:+d}  "
-              f"(x={off.x:.1f}mm fwd, y={off.y:.1f}mm left, "
-              f"yaw={math.degrees(float(off.yaw_rad)):.1f}°, "
-              f"flip={'upside-down' if flip else 'normal'})")
-    else:
-        print("  OO  (no geometry.odometry_offset_mm in config; skipped)")
-    print("  OK  (IMU bias calibration; ~700ms, robot must be still)")
+        ox = float(off.x)
+        oy = float(off.y)
+        oyaw_deg = math.degrees(float(off.yaw_rad))
+        if ox != 0.0 or oy != 0.0 or oyaw_deg != 0.0:
+            print(f"  SET odomOffX={ox:.3f} odomOffY={oy:.3f} odomYaw={oyaw_deg:.3f}")
+        else:
+            print("  (odom offsets all zero — SET odomOff* skipped)")
 
     conn.disconnect()
 

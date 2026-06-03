@@ -178,9 +178,34 @@ void DriveController::beginGoTo(float tx, float ty, float speedMms, uint32_t now
 
     if (bearing > gateRad) {
         // Target is beside or behind the robot — pre-rotate in place first.
+        //
+        // Per-direction feedforward gain (012-006):
+        //   turnSign > 0 → CCW (positive heading), use rotationGainPos / rotationOffsetDeg.
+        //   turnSign < 0 → CW  (negative heading), use rotationGainNeg / rotationOffsetDegNeg.
+        //
+        // We apply the gain as a wheel-speed scalar on the initial feedforward command.
+        // The per-direction gain corrects for mechanical asymmetry (e.g. the CW direction
+        // under-rotates relative to CCW at equal wheel speeds). Dividing the commanded speed
+        // by the gain means a mechanically "weak" direction spins proportionally faster,
+        // delivering the same effective heading change per second as the stronger direction.
+        //
+        // Oscillation safety: this is a FEEDFORWARD correction applied once at command time.
+        // PRE_ROTATE termination is determined by the OTOS-corrected bearing in tick(), so
+        // the closed-loop heading accuracy is unaffected. No feedback path runs through the
+        // gain, so there is no risk of oscillation or double-correction.
+        //
+        // The rotationOffsetDeg / rotationOffsetDegNeg fields represent a fixed startup-loss
+        // angle (dead-band). In an open-loop model the correction is (target - offset) / gain.
+        // Here, since the bearing gate (not a fixed target angle) terminates the turn, there
+        // is no fixed target to subtract the offset from. The offset is therefore stored for
+        // future open-loop callers and is NOT applied here; the closed-loop bearing gate
+        // provides equivalent compensation.
         float turnSign = (ty >= 0.0f) ? 1.0f : -1.0f;
-        float rawL = -turnSign * _gSpeed;
-        float rawR =  turnSign * _gSpeed;
+        float dirGain  = (turnSign > 0.0f) ? _cfg.rotationGainPos : _cfg.rotationGainNeg;
+        // Guard against divide-by-zero or degenerate gain values.
+        if (dirGain < 0.05f) dirGain = 0.05f;
+        float rawL = -turnSign * (_gSpeed / dirGain);
+        float rawR =  turnSign * (_gSpeed / dirGain);
         float sL, sR;
         BodyKinematics::saturate(rawL, rawR, _cfg.vWheelMax, _cfg.steerHeadroom, sL, sR);
         _mc.startDriveClean(sL, sR);
@@ -215,15 +240,16 @@ void DriveController::tick(uint32_t now_ms, ReplyFn fn, void* ctx)
     _lastTickMs     = now_ms;
     _currentTimeMs  = now_ms;
 
-    // Run motor controller and update odometry (fast cadence: every tick)
-    if (_mode != DriveMode::IDLE) {
-        _mc.tick(dt_s);
+    // Run motor controller and update odometry (fast cadence: every tick).
+    // Always runs — even at IDLE — so encoder caches and odometry are never stale.
+    // MotorController::tick() already no-ops motor commands when targets are zero
+    // (_tgtLMms == 0 && _tgtRMms == 0 → setSpeed(0); return), so no motor twitch.
+    _mc.tick(dt_s);
 
-        int32_t encL, encR;
-        _mc.getEncoderPositions(encL, encR);
-        _odo.predict(static_cast<float>(encL), static_cast<float>(encR),
-                     _cfg.trackwidthMm);
-    }
+    int32_t encL, encR;
+    _mc.getEncoderPositions(encL, encR);
+    _odo.predict(static_cast<float>(encL), static_cast<float>(encR),
+                 _cfg.trackwidthMm);
 
     // OTOS complementary correction (slow cadence: every kOtosSlowMs).
     // OtosSensor conversion constants (from OtosSensor.h register map comments):
@@ -236,9 +262,34 @@ void DriveController::tick(uint32_t now_ms, ReplyFn fn, void* ctx)
         _otos->getPositionRaw(rx, ry, rh);
         constexpr float kPosMmPerLsb  = 0.305f;
         constexpr float kHdgRadPerLsb = 0.00549f * (3.14159265f / 180.0f);
-        float x_mm   = static_cast<float>(rx) * kPosMmPerLsb;
-        float y_mm   = static_cast<float>(ry) * kPosMmPerLsb;
-        float h_rad  = static_cast<float>(rh) * kHdgRadPerLsb;
+
+        // OTOS chip-frame → robot-center frame transform (012-007).
+        // Mirrors poseRobotFrame() from the prior TypeScript system (src/otos.ts).
+        //
+        // Step 1: Scale raw LSBs to chip-frame engineering units.
+        float xF = static_cast<float>(rx) * kPosMmPerLsb;
+        float yF = static_cast<float>(ry) * kPosMmPerLsb;
+        float hF = static_cast<float>(rh) * kHdgRadPerLsb;
+
+        // Step 2: If chip is mounted upside-down (Z-axis flipped), negate x, y, heading.
+        if (_cfg.odomUpsideDown) {
+            xF = -xF;
+            yF = -yF;
+            hF = -hF;
+        }
+
+        // Step 3: Rotate chip frame by -odomYawDeg into robot frame, then subtract
+        // the mounting offset so the reported pose is the robot rotation center.
+        // At defaults (yaw=0, offX=0, offY=0): identity — x_mm=xF, y_mm=yF.
+        float angRad = -_cfg.odomYawDeg * (3.14159265f / 180.0f);
+        float c = cosf(angRad);
+        float s = sinf(angRad);
+        float x_mm = c * xF - s * yF - _cfg.odomOffX;
+        float y_mm = s * xF + c * yF - _cfg.odomOffY;
+
+        // Step 4: Heading correction — chip heading + yaw offset gives robot heading.
+        float h_rad = hF + _cfg.odomYawDeg * (3.14159265f / 180.0f);
+
         _odo.correct(x_mm, y_mm, h_rad,
                      _cfg.alphaPos, _cfg.alphaYaw, _cfg.otosGate);
     }

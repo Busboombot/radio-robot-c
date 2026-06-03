@@ -359,3 +359,172 @@ class TestOtosUnitConversion:
         """360 / 0.00549 ≈ 65573 LSBs for a full revolution."""
         lsb_per_rev = 360.0 / self.HDG_DEG_PER_LSB
         assert lsb_per_rev == pytest.approx(65573.0, rel=1e-3)
+
+
+# ---------------------------------------------------------------------------
+# OTOS mounting-offset transform tests (012-007)
+# ---------------------------------------------------------------------------
+# Pure-Python mirror of the chip-frame → robot-center transform applied in
+# DriveController::tick() before calling _odo.correct().
+# Mirrors poseRobotFrame() from src/otos.ts.
+# ---------------------------------------------------------------------------
+
+def otos_to_robot_frame(
+    x_chip: float,
+    y_chip: float,
+    h_chip_rad: float,
+    odom_off_x: float,
+    odom_off_y: float,
+    odom_yaw_deg: float,
+    odom_upside_down: bool,
+) -> tuple[float, float, float]:
+    """Python mirror of the DriveController 012-007 mounting-offset transform.
+
+    Steps (match DriveController.cpp exactly):
+      1. If upside-down: negate x, y, heading (Z-axis flip).
+      2. Rotate chip frame by -odomYawDeg, subtract mounting offset.
+      3. Heading += odomYawDeg (in radians).
+
+    At defaults (all zeros/false): returns (x_chip, y_chip, h_chip_rad) unchanged.
+    """
+    xF, yF, hF = x_chip, y_chip, h_chip_rad
+
+    if odom_upside_down:
+        xF, yF, hF = -xF, -yF, -hF
+
+    ang_rad = -odom_yaw_deg * (math.pi / 180.0)
+    c = math.cos(ang_rad)
+    s = math.sin(ang_rad)
+    x_mm = c * xF - s * yF - odom_off_x
+    y_mm = s * xF + c * yF - odom_off_y
+    h_rad = hF + odom_yaw_deg * (math.pi / 180.0)
+
+    return x_mm, y_mm, h_rad
+
+
+class TestOtosMountingOffsetTransform:
+    """Unit tests for the OTOS chip-frame → robot-center mounting offset transform.
+
+    Sprint 012, Ticket 007.
+    """
+
+    # ── Identity (default config) ──────────────────────────────────────────
+
+    def test_identity_at_defaults_x(self):
+        """At default offsets (all zero, no flip), x passes through unchanged."""
+        x, _y, _h = otos_to_robot_frame(100.0, 0.0, 0.0, 0.0, 0.0, 0.0, False)
+        assert x == pytest.approx(100.0, abs=1e-6)
+
+    def test_identity_at_defaults_y(self):
+        """At default offsets, y passes through unchanged."""
+        _x, y, _h = otos_to_robot_frame(0.0, 200.0, 0.0, 0.0, 0.0, 0.0, False)
+        assert y == pytest.approx(200.0, abs=1e-6)
+
+    def test_identity_at_defaults_heading(self):
+        """At default offsets, heading passes through unchanged."""
+        h_in = math.pi / 4
+        _x, _y, h = otos_to_robot_frame(0.0, 0.0, h_in, 0.0, 0.0, 0.0, False)
+        assert h == pytest.approx(h_in, abs=1e-6)
+
+    def test_identity_all_nonzero_input_defaults(self):
+        """With all offsets at default, arbitrary chip pose passes through unchanged."""
+        x, y, h = otos_to_robot_frame(37.5, -18.2, 0.523, 0.0, 0.0, 0.0, False)
+        assert x == pytest.approx(37.5, abs=1e-6)
+        assert y == pytest.approx(-18.2, abs=1e-6)
+        assert h == pytest.approx(0.523, abs=1e-6)
+
+    # ── Translation offset only ────────────────────────────────────────────
+
+    def test_x_offset_subtracts_from_x(self):
+        """odomOffX is subtracted from x (with yaw=0)."""
+        x, y, h = otos_to_robot_frame(100.0, 0.0, 0.0, 10.0, 0.0, 0.0, False)
+        assert x == pytest.approx(90.0, abs=1e-6)
+        assert y == pytest.approx(0.0, abs=1e-6)
+
+    def test_y_offset_subtracts_from_y(self):
+        """odomOffY is subtracted from y (with yaw=0)."""
+        x, y, h = otos_to_robot_frame(0.0, 50.0, 0.0, 0.0, 5.0, 0.0, False)
+        assert x == pytest.approx(0.0, abs=1e-6)
+        assert y == pytest.approx(45.0, abs=1e-6)
+
+    def test_both_offsets(self):
+        """Both offsets applied simultaneously."""
+        x, y, h = otos_to_robot_frame(100.0, 50.0, 0.0, 10.0, 5.0, 0.0, False)
+        assert x == pytest.approx(90.0, abs=1e-6)
+        assert y == pytest.approx(45.0, abs=1e-6)
+
+    # ── Yaw rotation ──────────────────────────────────────────────────────
+
+    def test_yaw_90_rotates_x_to_minus_y(self):
+        """90° yaw: chip +X maps to robot -Y (rotation by -90°)."""
+        # angRad = -90°; cos(-90)=0, sin(-90)=-1
+        # x_mm = 0*xF - (-1)*yF - 0 = yF; y_mm = -1*xF + 0*yF - 0 = -xF
+        # With xF=100, yF=0: x_mm=0, y_mm=-100
+        x, y, h = otos_to_robot_frame(100.0, 0.0, 0.0, 0.0, 0.0, 90.0, False)
+        assert x == pytest.approx(0.0, abs=1e-5)
+        assert y == pytest.approx(-100.0, abs=1e-5)
+
+    def test_yaw_90_heading_correction(self):
+        """90° yaw adds 90° (π/2 rad) to heading."""
+        _, _, h = otos_to_robot_frame(0.0, 0.0, 0.0, 0.0, 0.0, 90.0, False)
+        assert h == pytest.approx(math.pi / 2.0, abs=1e-6)
+
+    def test_yaw_45_combined_rotation(self):
+        """45° yaw rotates the chip (1,0) vector by -45° = (cos(-45), sin(-45))."""
+        c45 = math.cos(math.radians(-45.0))
+        s45 = math.sin(math.radians(-45.0))
+        x, y, h = otos_to_robot_frame(1.0, 0.0, 0.0, 0.0, 0.0, 45.0, False)
+        assert x == pytest.approx(c45, abs=1e-6)
+        assert y == pytest.approx(s45, abs=1e-6)
+
+    def test_yaw_and_offset_combined(self):
+        """Yaw rotation then translation offset are both applied correctly."""
+        # 90° yaw: chip (100, 0) → robot (0, -100); then subtract offX=5, offY=3
+        x, y, h = otos_to_robot_frame(100.0, 0.0, 0.0, 5.0, 3.0, 90.0, False)
+        assert x == pytest.approx(-5.0, abs=1e-5)
+        assert y == pytest.approx(-103.0, abs=1e-5)
+
+    # ── Upside-down flip ──────────────────────────────────────────────────
+
+    def test_upside_down_negates_x(self):
+        """Upside-down flag negates chip X before the rotation."""
+        # upsideDown negates xF; then with yaw=0 and no offset: x_mm = -x_chip
+        x, y, h = otos_to_robot_frame(100.0, 0.0, 0.0, 0.0, 0.0, 0.0, True)
+        assert x == pytest.approx(-100.0, abs=1e-6)
+
+    def test_upside_down_negates_y(self):
+        """Upside-down flag negates chip Y before the rotation."""
+        x, y, h = otos_to_robot_frame(0.0, 50.0, 0.0, 0.0, 0.0, 0.0, True)
+        assert y == pytest.approx(-50.0, abs=1e-6)
+
+    def test_upside_down_negates_heading(self):
+        """Upside-down flag negates chip heading before the yaw addition."""
+        h_in = math.pi / 4
+        _, _, h = otos_to_robot_frame(0.0, 0.0, h_in, 0.0, 0.0, 0.0, True)
+        assert h == pytest.approx(-h_in, abs=1e-6)
+
+    def test_upside_down_false_leaves_sign_unchanged(self):
+        """Without upside-down, positive chip X stays positive."""
+        x, _, _ = otos_to_robot_frame(80.0, 0.0, 0.0, 0.0, 0.0, 0.0, False)
+        assert x > 0.0
+
+    def test_upside_down_with_yaw(self):
+        """Flip then rotate: chip (100, 0) → flip → (-100, 0) → rotate -90° → (0, 100)."""
+        # After flip: xF=-100, yF=0
+        # angRad = -90°: cos=0, sin=-1
+        # x_mm = 0*(-100) - (-1)*0 = 0; y_mm = (-1)*(-100) + 0*0 = 100
+        x, y, _ = otos_to_robot_frame(100.0, 0.0, 0.0, 0.0, 0.0, 90.0, True)
+        assert x == pytest.approx(0.0, abs=1e-5)
+        assert y == pytest.approx(100.0, abs=1e-5)
+
+    # ── Nezha robot: defaults are a no-op ──────────────────────────────────
+
+    def test_nezha_defaults_are_identity_for_typical_pose(self):
+        """Nezha robot defaults (all zero, no flip): realistic pose is unchanged."""
+        # Typical pose after 200 mm forward travel, slight yaw
+        x_chip, y_chip = 198.5, 3.2
+        h_chip = math.radians(1.5)
+        x, y, h = otos_to_robot_frame(x_chip, y_chip, h_chip, 0.0, 0.0, 0.0, False)
+        assert x == pytest.approx(x_chip, abs=1e-6)
+        assert y == pytest.approx(y_chip, abs=1e-6)
+        assert h == pytest.approx(h_chip, abs=1e-6)

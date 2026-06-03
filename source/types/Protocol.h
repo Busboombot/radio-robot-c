@@ -15,7 +15,7 @@ constexpr const char* PROTO_TAG_ID  = "ID";
 // Protocol version and firmware version string
 // ---------------------------------------------------------------------------
 constexpr int         PROTO_VERSION    = 2;
-constexpr const char* FIRMWARE_VERSION = "0.20260602.29";
+constexpr const char* FIRMWARE_VERSION = "0.20260602.41";
 
 using ReplyFn = void(*)(const char* msg, void* ctx);
 

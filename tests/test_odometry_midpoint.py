@@ -388,3 +388,94 @@ class TestGetPose:
         assert x == 0 and y == 0 and h == 0
         assert odo.prev_enc_l == pytest.approx(0.0)
         assert odo.prev_enc_r == pytest.approx(0.0)
+
+
+# ---------------------------------------------------------------------------
+# Tests — IDLE-tick cache refresh (012-005)
+# ---------------------------------------------------------------------------
+
+class TestIdleTickCacheRefresh:
+    """Verify that predict() called at idle (zero encoder delta) updates
+    encoder state caches without changing pose — mirrors the fix where
+    DriveController always calls mc.tick()+getEncoderPositions()+odo.predict()
+    regardless of mode, so SNAP/TLM caches are never stale.
+
+    Sprint 012, Ticket 005.
+    """
+
+    TRACKWIDTH = 120.0  # mm
+
+    def test_idle_predict_zero_delta_no_pose_change(self):
+        """predict() with zero encoder delta at idle: pose unchanged."""
+        odo = OdometryMidpoint()
+        # Drive forward to some pose.
+        odo.predict(200.0, 200.0, self.TRACKWIDTH)
+        x_after_drive = odo.x
+        y_after_drive = odo.y
+        h_after_drive = odo.heading
+
+        # Simulate several IDLE ticks: encoder doesn't move.
+        for _ in range(10):
+            odo.predict(200.0, 200.0, self.TRACKWIDTH)  # same position
+
+        # Pose must not drift despite repeated IDLE ticks.
+        assert odo.x == pytest.approx(x_after_drive, abs=1e-5)
+        assert odo.y == pytest.approx(y_after_drive, abs=1e-5)
+        assert odo.heading == pytest.approx(h_after_drive, abs=1e-5)
+
+    def test_idle_predict_updates_encoder_state(self):
+        """predict() at idle updates prev_enc so the next non-zero delta is correct.
+
+        If prev_enc were NOT updated at idle, the next active tick would compute
+        an artificially large delta — a 'stale cache' bug. After IDLE ticks that
+        hold encoder position, a small additional movement produces exactly the
+        right delta.
+        """
+        odo = OdometryMidpoint()
+        # Drive to 200mm.
+        odo.predict(200.0, 200.0, self.TRACKWIDTH)
+
+        # IDLE: several ticks at same encoder position.
+        for _ in range(5):
+            odo.predict(200.0, 200.0, self.TRACKWIDTH)
+
+        # Now a small additional movement of 10mm.
+        odo.predict(210.0, 210.0, self.TRACKWIDTH)
+
+        # x should now be 200 + 10 = 210mm (not 200 + (210-0)=210 via stale cache).
+        assert odo.x == pytest.approx(210.0, abs=1e-5)
+        assert odo.y == pytest.approx(0.0, abs=1e-5)
+
+    def test_idle_predict_prev_enc_matches_last_reading(self):
+        """After IDLE ticks, prev_enc_l/r equal the last encoder reading."""
+        odo = OdometryMidpoint()
+        odo.predict(150.0, 150.0, self.TRACKWIDTH)
+
+        # IDLE ticks at same position.
+        for _ in range(3):
+            odo.predict(150.0, 150.0, self.TRACKWIDTH)
+
+        assert odo.prev_enc_l == pytest.approx(150.0, abs=1e-5)
+        assert odo.prev_enc_r == pytest.approx(150.0, abs=1e-5)
+
+    def test_snap_at_rest_after_motion_reflects_current_pose(self):
+        """Simulate SNAP at rest: pose after stop matches actual encoder position.
+
+        A fresh predict() at idle with the stopped encoder reading should produce
+        the same pose as the last active tick — not some stale intermediate value.
+        This is the core invariant ensured by always calling predict() every tick.
+        """
+        odo = OdometryMidpoint()
+        # Drive forward 500mm in 10 ticks of 50mm each.
+        for i in range(1, 11):
+            odo.predict(50.0 * i, 50.0 * i, self.TRACKWIDTH)
+
+        x_stopped = odo.x  # should be ~500mm
+
+        # IDLE tick: encoder doesn't change.
+        odo.predict(500.0, 500.0, self.TRACKWIDTH)
+        x_snap = odo.x
+
+        # SNAP should return the same pose as the stopped position.
+        assert x_snap == pytest.approx(x_stopped, abs=1e-5)
+        assert x_snap == pytest.approx(500.0, abs=1e-5)

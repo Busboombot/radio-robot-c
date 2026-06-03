@@ -3,6 +3,7 @@
 #include "ColorSensor.h"
 #include "DriveController.h"
 #include <cstdio>
+#include <cmath>
 
 Robot::Robot(MicroBitI2C&    i2c,
              NRF52Serial&    serial,
@@ -42,6 +43,18 @@ Robot::Robot(MicroBitI2C&    i2c,
     if (_otosPresent) {
         _otos.init();
         _dc.setOtos(&_otos);  // wire OTOS into DriveController for fusion
+
+        // Apply calibration scalars from config at boot.
+        // Formula: scalar = clamp(round((scale - 1.0) / 0.001), -127, 127).
+        // E.g. otosLinearScale=1.05 → +50; otosAngularScale=0.987 → -13.
+        auto scaleToInt8 = [](float scale) -> int8_t {
+            float raw = roundf((scale - 1.0f) / 0.001f);
+            if (raw > 127.0f) raw = 127.0f;
+            if (raw < -127.0f) raw = -127.0f;
+            return static_cast<int8_t>(raw);
+        };
+        _otos.setLinearScalar(scaleToInt8(_config.otosLinearScale));
+        _otos.setAngularScalar(scaleToInt8(_config.otosAngularScale));
     }
 
     _linePresent  = _line.readValues(nullptr);  // probe: returns false on I2C error
@@ -171,18 +184,11 @@ void Robot::tick(uint32_t now_ms, ReplyFn fn, void* ctx)
     int32_t encL = 0, encR = 0;
     _mc.getEncoderPositions(encL, encR);
 
-    // ----- 3. Read pose (OTOS if present, else odometry) --------------------
+    // ----- 3. Read pose — always fused odometry (mm, mm, centidegrees) ------
+    // Raw OTOS LSB is available via the OP command for debug cross-check only.
     int32_t pose_x = 0, pose_y = 0, pose_h = 0;
     if (_config.tlmFields & TLM_FIELD_POSE) {
-        if (_otosPresent) {
-            int16_t rx = 0, ry = 0, rh = 0;
-            _otos.getPositionRaw(rx, ry, rh);
-            pose_x = (int32_t)rx;
-            pose_y = (int32_t)ry;
-            pose_h = (int32_t)rh;
-        } else {
-            _odo.getPose(pose_x, pose_y, pose_h);
-        }
+        _odo.getPose(pose_x, pose_y, pose_h);
     }
 
     // ----- 4. Read line sensor (if present and field requested) --------------

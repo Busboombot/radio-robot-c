@@ -694,6 +694,53 @@ class TestOtosCommands:
 
 
 # ---------------------------------------------------------------------------
+# OTOS scalar conversion formula (mirrors Robot.cpp scaleToInt8 logic)
+# ---------------------------------------------------------------------------
+
+class TestOtosScaleToInt8:
+    """Unit tests for the float-to-int8 scalar conversion used at OTOS boot.
+
+    The formula is: scalar = clamp(round((scale - 1.0) / 0.001), -127, 127).
+    This is the same logic as the C++ lambda `scaleToInt8` in Robot.cpp.
+    """
+
+    @staticmethod
+    def scale_to_int8(scale: float) -> int:
+        """Python mirror of the C++ scaleToInt8 lambda in Robot.cpp."""
+        import math
+        raw = round((scale - 1.0) / 0.001)
+        return max(-127, min(127, raw))
+
+    def test_linear_default_1_05(self) -> None:
+        """otosLinearScale=1.05 → scalar +50."""
+        assert self.scale_to_int8(1.05) == 50
+
+    def test_angular_default_0_987(self) -> None:
+        """otosAngularScale=0.987 → scalar -13."""
+        assert self.scale_to_int8(0.987) == -13
+
+    def test_unity_scale(self) -> None:
+        """scale=1.0 → scalar 0 (no correction)."""
+        assert self.scale_to_int8(1.0) == 0
+
+    def test_clamp_upper(self) -> None:
+        """scale=1.2 → raw=200, clamped to 127."""
+        assert self.scale_to_int8(1.2) == 127
+
+    def test_clamp_lower(self) -> None:
+        """scale=0.8 → raw=-200, clamped to -127."""
+        assert self.scale_to_int8(0.8) == -127
+
+    def test_small_positive(self) -> None:
+        """scale=1.001 → scalar +1."""
+        assert self.scale_to_int8(1.001) == 1
+
+    def test_small_negative(self) -> None:
+        """scale=0.999 → scalar -1."""
+        assert self.scale_to_int8(0.999) == -1
+
+
+# ---------------------------------------------------------------------------
 # Port commands
 # ---------------------------------------------------------------------------
 

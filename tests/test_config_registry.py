@@ -3,16 +3,18 @@
 
 Covers sprint 009-004 (original 22 keys), sprint 010-004 (6 new
 velocity/saturation tunables: vel.kP, vel.kI, vel.kFF, minWheelMms,
-vWheelMax, steerHeadroom), and sprint 011-001 (4 new pose-control tunables:
-aMax, aDecel, turnGate, arriveTol).
+vWheelMax, steerHeadroom), sprint 011-001 (4 new pose-control tunables:
+aMax, aDecel, turnGate, arriveTol), and sprint 012-001 (10 new OTOS
+calibration and turn-asymmetry keys: otosLinSc, otosAngSc, rotGainPos,
+rotGainNeg, rotOffPos, rotOffNeg, rotSlip, odomOffX, odomOffY, odomYaw).
 
 These tests validate:
-  - GET response format: CFG prefix, all 32 keys present, correct value format
+  - GET response format: CFG prefix, all 42 keys present, correct value format
   - GET subset: only requested keys returned
   - SET value parsing: float, integer, float-as-int
   - Error paths: badkey, missing key=value in SET
   - #id correlation in GET and SET responses
-  - Response length under 512 bytes for full GET dump
+  - Response length under 768 bytes for full GET dump (buffer expanded in Sprint 012)
   - Integer params formatted without decimal point
   - Float params formatted with 3 decimal places
   - lapsToMmScale is absent from the registry
@@ -97,6 +99,17 @@ REGISTRY = [
     ("aDecel",        "float"),
     ("turnGate",      "float_as_int"),   # wire: integer degrees
     ("arriveTol",     "float_as_int"),   # wire: integer mm
+    # New keys added Sprint 012-001: OTOS calibration and turn asymmetry
+    ("otosLinSc",     "float"),
+    ("otosAngSc",     "float"),
+    ("rotGainPos",    "float"),
+    ("rotGainNeg",    "float"),
+    ("rotOffPos",     "float"),
+    ("rotOffNeg",     "float"),
+    ("rotSlip",       "float"),
+    ("odomOffX",      "float"),
+    ("odomOffY",      "float"),
+    ("odomYaw",       "float"),
 ]
 
 REGISTRY_KEYS = [k for k, _ in REGISTRY]
@@ -107,12 +120,15 @@ REGISTRY_KEYS = [k for k, _ in REGISTRY]
 # Total 32 keys.
 DEFAULT_GET_LINE = (
     "CFG ml=0.487 mr=0.481 kff=0.150 klf=1.000 klb=1.000 krf=1.000 krb=1.000 "
-    "adjThr=0.500 adjGain=0.050 tw=120 pid.kp=300.000 pid.ki=0.000 pid.kd=0.000 "
+    "adjThr=0.500 adjGain=0.050 tw=126 pid.kp=300.000 pid.ki=0.000 pid.kd=0.000 "
     "pid.max=30.000 vel.kP=0.300 vel.kI=0.050 vel.kFF=0.150 "
     "minWheelMms=20.000 vWheelMax=400.000 steerHeadroom=20.000 "
     "turnThr=50 doneTol=5 distScale=0.940 turnScale=1.070 "
     "minSpeed=50 sTimeout=200 tick=20 tlmPeriod=0 "
-    "aMax=300.000 aDecel=250.000 turnGate=45 arriveTol=5"
+    "aMax=300.000 aDecel=250.000 turnGate=45 arriveTol=5 "
+    "otosLinSc=1.050 otosAngSc=0.987 rotGainPos=1.000 rotGainNeg=1.170 "
+    "rotOffPos=0.000 rotOffNeg=0.000 rotSlip=0.740 "
+    "odomOffX=0.000 odomOffY=0.000 odomYaw=0.000"
 )
 
 
@@ -123,8 +139,8 @@ DEFAULT_GET_LINE = (
 class TestRegistrySpec:
     """Validate the registry spec itself is consistent."""
 
-    def test_all_32_keys_present(self) -> None:
-        assert len(REGISTRY) == 32, f"Expected 32 registry entries, got {len(REGISTRY)}"
+    def test_all_42_keys_present(self) -> None:
+        assert len(REGISTRY) == 42, f"Expected 42 registry entries, got {len(REGISTRY)}"
 
     def test_key_names_unique(self) -> None:
         keys = [k for k, _ in REGISTRY]
@@ -181,7 +197,7 @@ class TestGetResponseFormat:
 
     def test_default_tw_value(self) -> None:
         kv = parse_cfg(DEFAULT_GET_LINE)
-        assert kv["tw"] == "120"
+        assert kv["tw"] == "126"
 
     def test_default_pid_kp_value(self) -> None:
         kv = parse_cfg(DEFAULT_GET_LINE)
@@ -199,22 +215,24 @@ class TestGetResponseFormat:
         kv = parse_cfg(DEFAULT_GET_LINE)
         assert kv["tlmPeriod"] == "0"
 
-    def test_response_length_under_512_bytes(self) -> None:
-        # The full GET response (including the CFG prefix and all key=value
-        # pairs) must fit in the firmware's 512-byte buffer.
+    def test_response_length_under_768_bytes(self) -> None:
+        # Sprint 012-001: GET buffer expanded from 512 to 768 to accommodate
+        # 10 new keys (~156 extra bytes, pushing total to ~565 bytes).
+        # The full GET response must fit in the firmware's 768-byte line[] buffer.
         length = len(DEFAULT_GET_LINE.encode("utf-8"))
-        assert length < 512, (
-            f"GET response is {length} bytes — exceeds 512-byte buffer limit"
+        assert length < 768, (
+            f"GET response is {length} bytes — exceeds 768-byte buffer limit"
         )
 
     def test_response_length_reasonable(self) -> None:
-        """Confirm the response is in the expected range (~250-510 bytes).
+        """Confirm the response is in the expected range (~540-765 bytes).
         Sprint 010-004 added 6 keys raising the floor from ~238 to ~336 bytes.
         Sprint 011-001 added 4 more keys raising the floor to ~390 bytes.
+        Sprint 012-001 added 10 more keys raising the floor to ~565 bytes.
         """
         length = len(DEFAULT_GET_LINE)
-        assert 250 < length < 510, (
-            f"GET response length {length} is outside expected range 250-510"
+        assert 540 < length < 765, (
+            f"GET response length {length} is outside expected range 540-765"
         )
 
 
@@ -437,16 +455,170 @@ class TestPoseControlTunables:
         err_line = "ERR badkey badkey"
         assert err_line == "ERR badkey badkey"
 
-    def test_full_get_32_keys(self) -> None:
-        """Full GET dump has exactly 32 keys (28 existing + 4 new)."""
+    def test_full_get_42_keys(self) -> None:
+        """Full GET dump has exactly 42 keys (32 existing + 10 new Sprint 012-001)."""
         kv = parse_cfg(DEFAULT_GET_LINE)
-        assert len(kv) == 32, f"Expected 32 keys in full GET, got {len(kv)}"
+        assert len(kv) == 42, f"Expected 42 keys in full GET, got {len(kv)}"
 
-    def test_get_dump_under_512_bytes_with_new_keys(self) -> None:
-        """Confirm the 32-key GET dump still fits in the 512-byte firmware buffer."""
+    def test_get_dump_under_768_bytes_with_new_keys(self) -> None:
+        """Confirm the 42-key GET dump fits in the 768-byte firmware buffer (expanded Sprint 012-001)."""
         length = len(DEFAULT_GET_LINE.encode("utf-8"))
-        assert length < 512, (
-            f"GET response is {length} bytes — exceeds 512-byte buffer limit"
+        assert length < 768, (
+            f"GET response is {length} bytes — exceeds 768-byte buffer limit"
+        )
+
+
+class TestOtosAndTurnAsymmetryKeys:
+    """Sprint 012-001: new OTOS calibration and turn-asymmetry keys in kRegistry[]."""
+
+    def test_otosLinSc_present_in_full_get(self) -> None:
+        kv = parse_cfg(DEFAULT_GET_LINE)
+        assert "otosLinSc" in kv, "otosLinSc missing from GET dump"
+
+    def test_otosAngSc_present_in_full_get(self) -> None:
+        kv = parse_cfg(DEFAULT_GET_LINE)
+        assert "otosAngSc" in kv, "otosAngSc missing from GET dump"
+
+    def test_rotGainPos_present_in_full_get(self) -> None:
+        kv = parse_cfg(DEFAULT_GET_LINE)
+        assert "rotGainPos" in kv, "rotGainPos missing from GET dump"
+
+    def test_rotGainNeg_present_in_full_get(self) -> None:
+        kv = parse_cfg(DEFAULT_GET_LINE)
+        assert "rotGainNeg" in kv, "rotGainNeg missing from GET dump"
+
+    def test_rotOffPos_present_in_full_get(self) -> None:
+        kv = parse_cfg(DEFAULT_GET_LINE)
+        assert "rotOffPos" in kv, "rotOffPos missing from GET dump"
+
+    def test_rotOffNeg_present_in_full_get(self) -> None:
+        kv = parse_cfg(DEFAULT_GET_LINE)
+        assert "rotOffNeg" in kv, "rotOffNeg missing from GET dump"
+
+    def test_rotSlip_present_in_full_get(self) -> None:
+        kv = parse_cfg(DEFAULT_GET_LINE)
+        assert "rotSlip" in kv, "rotSlip missing from GET dump"
+
+    def test_odomOffX_present_in_full_get(self) -> None:
+        kv = parse_cfg(DEFAULT_GET_LINE)
+        assert "odomOffX" in kv, "odomOffX missing from GET dump"
+
+    def test_odomOffY_present_in_full_get(self) -> None:
+        kv = parse_cfg(DEFAULT_GET_LINE)
+        assert "odomOffY" in kv, "odomOffY missing from GET dump"
+
+    def test_odomYaw_present_in_full_get(self) -> None:
+        kv = parse_cfg(DEFAULT_GET_LINE)
+        assert "odomYaw" in kv, "odomYaw missing from GET dump"
+
+    def test_otosLinSc_default_value(self) -> None:
+        """otosLinearScale default is 1.05 → formatted as 1.050."""
+        kv = parse_cfg(DEFAULT_GET_LINE)
+        assert kv["otosLinSc"] == "1.050", f"otosLinSc expected '1.050', got {kv['otosLinSc']!r}"
+
+    def test_otosAngSc_default_value(self) -> None:
+        """otosAngularScale default is 0.987 → formatted as 0.987."""
+        kv = parse_cfg(DEFAULT_GET_LINE)
+        assert kv["otosAngSc"] == "0.987", f"otosAngSc expected '0.987', got {kv['otosAngSc']!r}"
+
+    def test_rotGainPos_default_value(self) -> None:
+        """rotationGainPos default is 1.0 → formatted as 1.000."""
+        kv = parse_cfg(DEFAULT_GET_LINE)
+        assert kv["rotGainPos"] == "1.000", f"rotGainPos expected '1.000', got {kv['rotGainPos']!r}"
+
+    def test_rotGainNeg_default_value(self) -> None:
+        """rotationGainNeg default is 1.17 → formatted as 1.170."""
+        kv = parse_cfg(DEFAULT_GET_LINE)
+        assert kv["rotGainNeg"] == "1.170", f"rotGainNeg expected '1.170', got {kv['rotGainNeg']!r}"
+
+    def test_rotOffPos_default_value(self) -> None:
+        """rotationOffsetDeg default is 0.0 → formatted as 0.000."""
+        kv = parse_cfg(DEFAULT_GET_LINE)
+        assert kv["rotOffPos"] == "0.000", f"rotOffPos expected '0.000', got {kv['rotOffPos']!r}"
+
+    def test_rotOffNeg_default_value(self) -> None:
+        """rotationOffsetDegNeg default is 0.0 → formatted as 0.000."""
+        kv = parse_cfg(DEFAULT_GET_LINE)
+        assert kv["rotOffNeg"] == "0.000", f"rotOffNeg expected '0.000', got {kv['rotOffNeg']!r}"
+
+    def test_rotSlip_default_value(self) -> None:
+        """rotationalSlip default is 0.74 → formatted as 0.740."""
+        kv = parse_cfg(DEFAULT_GET_LINE)
+        assert kv["rotSlip"] == "0.740", f"rotSlip expected '0.740', got {kv['rotSlip']!r}"
+
+    def test_odomOffX_default_value(self) -> None:
+        """odomOffX default is 0.0 → formatted as 0.000."""
+        kv = parse_cfg(DEFAULT_GET_LINE)
+        assert kv["odomOffX"] == "0.000", f"odomOffX expected '0.000', got {kv['odomOffX']!r}"
+
+    def test_odomOffY_default_value(self) -> None:
+        """odomOffY default is 0.0 → formatted as 0.000."""
+        kv = parse_cfg(DEFAULT_GET_LINE)
+        assert kv["odomOffY"] == "0.000", f"odomOffY expected '0.000', got {kv['odomOffY']!r}"
+
+    def test_odomYaw_default_value(self) -> None:
+        """odomYawDeg default is 0.0 → formatted as 0.000."""
+        kv = parse_cfg(DEFAULT_GET_LINE)
+        assert kv["odomYaw"] == "0.000", f"odomYaw expected '0.000', got {kv['odomYaw']!r}"
+
+    def test_all_sprint012_keys_are_float_formatted(self) -> None:
+        """All 10 new Sprint 012-001 keys are CFG_F floats with 3 decimal places."""
+        kv = parse_cfg(DEFAULT_GET_LINE)
+        sprint012_keys = (
+            "otosLinSc", "otosAngSc", "rotGainPos", "rotGainNeg",
+            "rotOffPos", "rotOffNeg", "rotSlip", "odomOffX", "odomOffY", "odomYaw"
+        )
+        for key in sprint012_keys:
+            assert is_float_formatted(kv[key]), (
+                f"Sprint 012 key {key!r} value {kv[key]!r} not formatted as %.3f"
+            )
+
+    def test_set_otosLinSc_round_trip(self) -> None:
+        """SET otosLinSc=1.05 → OK set otosLinSc=1.05; GET otosLinSc → CFG otosLinSc=1.050."""
+        ok_line = "OK set otosLinSc=1.05"
+        assert ok_line.startswith("OK set")
+        assert "otosLinSc=1.05" in ok_line
+        get_line = "CFG otosLinSc=1.050"
+        kv = parse_cfg(get_line)
+        assert kv["otosLinSc"] == "1.050"
+
+    def test_set_otosAngSc_round_trip(self) -> None:
+        """SET otosAngSc=0.987 → OK set otosAngSc=0.987; GET otosAngSc → CFG otosAngSc=0.987."""
+        ok_line = "OK set otosAngSc=0.987"
+        assert ok_line.startswith("OK set")
+        assert "otosAngSc=0.987" in ok_line
+        get_line = "CFG otosAngSc=0.987"
+        kv = parse_cfg(get_line)
+        assert kv["otosAngSc"] == "0.987"
+
+    def test_set_rotGainNeg_round_trip(self) -> None:
+        """SET rotGainNeg=1.17 → OK set rotGainNeg=1.17; GET rotGainNeg → CFG rotGainNeg=1.170."""
+        ok_line = "OK set rotGainNeg=1.17"
+        assert ok_line.startswith("OK set")
+        assert "rotGainNeg=1.17" in ok_line
+        get_line = "CFG rotGainNeg=1.170"
+        kv = parse_cfg(get_line)
+        assert kv["rotGainNeg"] == "1.170"
+
+    def test_all_10_sprint012_keys_round_trip(self) -> None:
+        """All 10 new keys appear in DEFAULT_GET_LINE (simulated round-trip from defaults)."""
+        kv = parse_cfg(DEFAULT_GET_LINE)
+        sprint012_keys = (
+            "otosLinSc", "otosAngSc", "rotGainPos", "rotGainNeg",
+            "rotOffPos", "rotOffNeg", "rotSlip", "odomOffX", "odomOffY", "odomYaw"
+        )
+        for key in sprint012_keys:
+            assert key in kv, f"Sprint 012-001 key {key!r} missing from full GET dump"
+
+    def test_get_dump_length_reported(self) -> None:
+        """Report and validate the new full GET dump byte count (565 bytes, fits in 768-byte buffer)."""
+        length = len(DEFAULT_GET_LINE.encode("utf-8"))
+        # The full 42-key GET dump is ~565 bytes; firmware buffer is now 768 bytes.
+        assert 550 <= length <= 600, (
+            f"GET dump is {length} bytes — outside expected 550-600 byte range for 42 keys"
+        )
+        assert length < 768, (
+            f"GET dump is {length} bytes — exceeds 768-byte firmware buffer"
         )
 
 

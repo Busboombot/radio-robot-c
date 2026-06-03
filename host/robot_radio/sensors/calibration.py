@@ -1,12 +1,16 @@
 """Robot calibration loader and applier.
 
 The firmware exposes four runtime-tunable calibration values through
-the ``K`` command family (see ``src/command.ts``):
+the ``SET ml`` / ``SET mr`` commands (v2 protocol).  The legacy K-command
+family (KML, KMR, KSD, KST) has been retired; all calibration is now
+pushed via ``SET`` and verified with ``GET`` / ``CFG`` responses.
 
-  KML<v×1000>   mmPerDegL    left-wheel mm per encoder degree
-  KMR<v×1000>   mmPerDegR    right-wheel mm per encoder degree
-  KSD<v×100>    distScale    correction on commanded linear distance
-  KST<v×100>    turnScale    correction on commanded turn angle
+Ground truth for calibration is provided by the v2 TLM ``pose=x,y,h``
+field (emitted on each ``TLM`` line, or on demand via ``SNAP``).
+Heading ``h`` is in centi-degrees (integer).  Position x/y are in mm.
+
+Use ``calibrate_linear.py`` / ``calibrate_angular.py`` scripts in the
+project root to collect measurements and update ``data/robots/<robot>.json``.
 
 A ``robot_calibration.json`` file stores these as floats in human-
 readable form plus provenance notes.  This module reads the file,

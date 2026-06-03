@@ -3,6 +3,7 @@ name = "robot-radio"
 version = "0.20260602.1"
 requires-python = ">=3.11"
 dependencies = [
+    "pydantic>=2.13.4",
     "pyserial>=3.5",
 ]
 
@@ -20,5 +21,6 @@ norecursedirs = ["vendor", "node_modules", "built", ".pxt", "old", "__pycache__"
 
 [dependency-groups]
 dev = [
+    "jsonschema>=4.26.0",
     "pytest>=8.0",
 ]

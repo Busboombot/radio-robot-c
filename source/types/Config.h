@@ -70,6 +70,29 @@ struct RobotConfig {
     float alphaYaw;    // OTOS heading blend gain [0, 1]
     float otosGate;    // outlier rejection distance threshold, mm
 
+    // OTOS calibration scalars and per-direction turn asymmetry (Sprint 012).
+    // otosLinearScale: multiplier for OTOS linear calibration (e.g. 1.05).
+    // otosAngularScale: multiplier for OTOS angular calibration (e.g. 0.987).
+    // rotationGainPos: per-direction turn gain for CCW (positive) turns.
+    // rotationGainNeg: per-direction turn gain for CW (negative) turns.
+    // rotationOffsetDeg: turn offset added to CCW turns, degrees.
+    // rotationOffsetDegNeg: turn offset added to CW turns, degrees.
+    // rotationalSlip: body-rotation efficiency (arc / no-slip estimate).
+    // odomOffX/odomOffY: OTOS mounting offset from robot center, mm.
+    // odomYawDeg: OTOS mounting yaw offset, degrees.
+    // odomUpsideDown: OTOS mounted upside-down (Z-axis flipped).
+    float otosLinearScale;      // OTOS linear calibration multiplier (default 1.05)
+    float otosAngularScale;     // OTOS angular calibration multiplier (default 0.987)
+    float rotationGainPos;      // CCW turn gain (default 1.0)
+    float rotationGainNeg;      // CW turn gain (default 1.17)
+    float rotationOffsetDeg;    // CCW turn offset, degrees (default 0.0)
+    float rotationOffsetDegNeg; // CW turn offset, degrees (default 0.0)
+    float rotationalSlip;       // body-rotation efficiency (default 0.74)
+    float odomOffX;             // OTOS X mounting offset, mm (default 0.0)
+    float odomOffY;             // OTOS Y mounting offset, mm (default 0.0)
+    float odomYawDeg;           // OTOS yaw mounting offset, degrees (default 0.0)
+    bool  odomUpsideDown;       // OTOS mounted upside-down (default false)
+
     // Go-to tolerances (legacy, retained for backward compatibility)
     float turnThresholdMm;
     float doneTolMm;
@@ -118,7 +141,7 @@ inline RobotConfig defaultRobotConfig() {
     p.kScaleRB        = 1.0f;
     p.kAdjThreshold   = 0.5f;
     p.kAdjGain        = 0.05f;
-    p.trackwidthMm    = 120.0f;
+    p.trackwidthMm    = 126.0f;
     p.ratioPidKp      = 300.0f;
     p.ratioPidKi      = 0.0f;
     p.ratioPidKd      = 0.0f;
@@ -128,6 +151,17 @@ inline RobotConfig defaultRobotConfig() {
     p.alphaPos        = 0.15f;
     p.alphaYaw        = 0.10f;
     p.otosGate        = 50.0f;
+    p.otosLinearScale      = 1.05f;
+    p.otosAngularScale     = 0.987f;
+    p.rotationGainPos      = 1.0f;
+    p.rotationGainNeg      = 1.17f;
+    p.rotationOffsetDeg    = 0.0f;
+    p.rotationOffsetDegNeg = 0.0f;
+    p.rotationalSlip       = 0.74f;
+    p.odomOffX             = 0.0f;
+    p.odomOffY             = 0.0f;
+    p.odomYawDeg           = 0.0f;
+    p.odomUpsideDown       = false;
     p.velKp           = 0.3f;
     p.velKi           = 0.05f;
     p.velKff          = 0.15f;

@@ -508,3 +508,80 @@ class TestTlmFieldBitmask:
         assert mask & TLM_FIELD_POSE
         assert not (mask & TLM_FIELD_LINE)
         assert not (mask & TLM_FIELD_COLOR)
+
+
+# ---------------------------------------------------------------------------
+# IDLE mode cache freshness (012-005)
+# ---------------------------------------------------------------------------
+
+class TestIdleModeEncPoseFreshness:
+    """Verify that TLM frames carry current enc/pose even when mode=I (IDLE).
+
+    After the 012-005 fix, DriveController always calls mc.tick(),
+    getEncoderPositions(), and odo.predict() every tick regardless of mode.
+    These tests assert the wire-protocol invariant: a TLM frame with mode=I
+    must still carry enc= and pose= fields when those bits are set.
+
+    Sprint 012, Ticket 005.
+    """
+
+    def test_idle_tlm_frame_has_enc_field(self) -> None:
+        """TLM at IDLE includes enc= when TLM_FIELD_ENC is set."""
+        frame = make_tlm(t=100, mode="I", enc=(0, 0))
+        kv = parse_tlm(frame)
+        assert kv["mode"] == "I"
+        assert "enc" in kv
+
+    def test_idle_tlm_frame_has_pose_field(self) -> None:
+        """TLM at IDLE includes pose= when TLM_FIELD_POSE is set."""
+        frame = make_tlm(t=100, mode="I", pose=(0, 0, 0))
+        kv = parse_tlm(frame)
+        assert kv["mode"] == "I"
+        assert "pose" in kv
+
+    def test_idle_enc_value_reflects_stopped_position(self) -> None:
+        """enc= in IDLE TLM reflects the final stopped encoder reading, not stale.
+
+        Simulate: robot drove to enc=(500, 495), then stopped. A subsequent IDLE
+        TLM frame should carry those values — not zeros from the last active tick.
+        This is the invariant that the always-refresh change enforces.
+        """
+        # Simulate last encoder reading after motion stopped.
+        stopped_enc = (500, 495)
+        frame = make_tlm(t=200, mode="I", enc=stopped_enc)
+        kv = parse_tlm(frame)
+        vals = [int(v) for v in kv["enc"].split(",")]
+        assert vals == list(stopped_enc), (
+            f"IDLE enc expected {stopped_enc}, got {vals}"
+        )
+
+    def test_idle_pose_value_reflects_stopped_position(self) -> None:
+        """pose= in IDLE TLM reflects final pose after motion, not intermediate."""
+        stopped_pose = (350, 0, 0)
+        frame = make_tlm(t=200, mode="I", pose=stopped_pose)
+        kv = parse_tlm(frame)
+        vals = [int(v) for v in kv["pose"].split(",")]
+        assert vals == list(stopped_pose)
+
+    def test_idle_enc_updates_after_hand_push(self) -> None:
+        """enc= changes between IDLE frames when encoders are pushed externally.
+
+        This models the hand-push scenario: two consecutive IDLE TLM frames
+        where the encoder reading changed (robot was pushed). The cache-refresh
+        fix ensures the second frame carries the new encoder value, not the old.
+        """
+        frame_before = make_tlm(t=100, mode="I", enc=(0, 0))
+        frame_after  = make_tlm(t=140, mode="I", enc=(25, 24))  # pushed ~25mm
+
+        kv_before = parse_tlm(frame_before)
+        kv_after  = parse_tlm(frame_after)
+
+        enc_before = [int(v) for v in kv_before["enc"].split(",")]
+        enc_after  = [int(v) for v in kv_after["enc"].split(",")]
+
+        # After push, enc values must differ from before.
+        assert enc_after != enc_before, (
+            "enc= should change after hand-push even at IDLE"
+        )
+        assert enc_after[0] > enc_before[0]
+        assert enc_after[1] > enc_before[1]

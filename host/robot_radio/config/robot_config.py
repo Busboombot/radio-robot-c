@@ -21,7 +21,7 @@ from pydantic import BaseModel, model_validator
 
 logger = logging.getLogger(__name__)
 
-_PROJECT_ROOT = Path(__file__).parent.parent.parent
+_PROJECT_ROOT = Path(__file__).parent.parent.parent.parent
 
 
 # ---------------------------------------------------------------------------
@@ -98,6 +98,11 @@ class GripperConfig(BaseModel):
     gripper_offset_mm: Optional[OffsetXY] = None
 
 
+class PeripheralsConfig(BaseModel):
+    # Digital port (J1..J4) the line laser is wired to. Default 4.
+    laser_port: Optional[int] = 4
+
+
 class CalibrationConfig(BaseModel):
     """Sensor and odometry calibration values measured on this specific robot.
 
@@ -152,6 +157,7 @@ class RobotConfig(BaseModel):
     encoders: EncodersConfig = EncodersConfig()
     drive: DriveConfig = DriveConfig()
     gripper: GripperConfig = GripperConfig()
+    peripherals: PeripheralsConfig = PeripheralsConfig()
     calibration: CalibrationConfig = CalibrationConfig()
 
     # Derived field — not stored in JSON, computed after load
@@ -237,6 +243,10 @@ class RobotConfig(BaseModel):
     @property
     def gripper_offset_mm(self) -> Optional[OffsetXY]:
         return self.gripper.gripper_offset_mm
+
+    @property
+    def laser_port(self) -> Optional[int]:
+        return self.peripherals.laser_port
 
     @property
     def device_announcement_name(self) -> str:
@@ -368,3 +378,73 @@ def get_robot_config() -> Optional[RobotConfig]:
         "data/robots/active_robot.json"
     )
     return None
+
+
+# ---------------------------------------------------------------------------
+# Robot matching by v2 ID response
+# ---------------------------------------------------------------------------
+
+def match_robot_by_id(id_response: str) -> Optional[RobotConfig]:
+    """Return the RobotConfig whose device_announcement_name matches the v2 ID reply.
+
+    Parses the firmware's v2 ``ID`` response line, e.g.:
+        ``ID model=Nezha2 name=TOVEZ serial=89f137c0``
+
+    Matching is case-insensitive on the ``name=`` field against
+    ``connection.device_announcement_name`` in every JSON file found in
+    ``data/robots/`` (excluding ``active_robot.json``).
+
+    Falls back to ``get_robot_config()`` when:
+    - No ``name=`` field is present in the response.
+    - No config file's announcement name matches.
+
+    Args:
+        id_response: Raw ID response line from firmware (with or without
+            the leading ``ID`` tag).
+
+    Returns:
+        The matching ``RobotConfig``, or ``None`` if nothing matches and
+        the fallback also finds nothing.
+    """
+    import json
+    import re
+
+    # Extract name= from the ID response (may include "ID " prefix or not)
+    m = re.search(r"\bname=(\S+)", id_response, re.IGNORECASE)
+    if not m:
+        logger.warning("match_robot_by_id: no name= field in ID response: %r", id_response)
+        return get_robot_config()
+
+    announced_name = m.group(1).lower()
+
+    # Scan data/robots/ for candidate config files
+    robots_dir = _PROJECT_ROOT / "data" / "robots"
+    if not robots_dir.is_dir():
+        logger.warning("match_robot_by_id: robots dir not found: %s", robots_dir)
+        return get_robot_config()
+
+    candidates = [
+        p for p in robots_dir.glob("*.json")
+        if p.name not in ("active_robot.json", "robot_config.schema.json")
+           and not p.name.startswith("_")
+    ]
+
+    for candidate in candidates:
+        try:
+            data = json.loads(candidate.read_text())
+            conn = data.get("connection", {})
+            dan = conn.get("device_announcement_name", "").lower()
+            if dan == announced_name:
+                cfg = load_robot_config(candidate)
+                logger.info(
+                    "match_robot_by_id: matched %r -> %s", announced_name, candidate.name
+                )
+                return cfg
+        except Exception as exc:
+            logger.warning("match_robot_by_id: skipping %s: %s", candidate.name, exc)
+
+    logger.warning(
+        "match_robot_by_id: no config matched name=%r; falling back to get_robot_config()",
+        announced_name,
+    )
+    return get_robot_config()

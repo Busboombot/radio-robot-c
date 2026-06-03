@@ -100,6 +100,17 @@ static const ConfigEntry kRegistry[] = {
     CFG_I("sTimeout",     sTimeoutMs),
     CFG_I("tick",         tickMs),
     CFG_I("tlmPeriod",    tlmPeriodMs),
+    // OTOS calibration and turn asymmetry (Sprint 012)
+    CFG_F("otosLinSc",    otosLinearScale),
+    CFG_F("otosAngSc",    otosAngularScale),
+    CFG_F("rotGainPos",   rotationGainPos),
+    CFG_F("rotGainNeg",   rotationGainNeg),
+    CFG_F("rotOffPos",    rotationOffsetDeg),
+    CFG_F("rotOffNeg",    rotationOffsetDegNeg),
+    CFG_F("rotSlip",      rotationalSlip),
+    CFG_F("odomOffX",     odomOffX),
+    CFG_F("odomOffY",     odomOffY),
+    CFG_F("odomYaw",      odomYawDeg),
 };
 
 #undef CFG_F
@@ -335,7 +346,11 @@ static void handleGet(char** tokens, int ntok, const RobotConfig& cfg,
                       ReplyFn replyFn, void* ctx)
 {
     // Build: "CFG key=val key=val ... [#id]"
-    char line[512];
+    // Sprint 012: buffer expanded from 512 to 768 to accommodate 10 new config
+    // keys (otosLinSc, otosAngSc, rotGainPos/Neg, rotOffPos/Neg, rotSlip,
+    // odomOffX/Y, odomYaw) which add ~156 bytes to the full GET dump.
+    // Stack-local buffer; no heap impact.
+    char line[768];
     int pos = 0;
     int rem = (int)sizeof(line);
 
@@ -1016,8 +1031,9 @@ void CommandProcessor::process(const char* line, ReplyFn replyFn, void* ctx)
         return;
     }
 
-    // ── OP — OTOS read position ───────────────────────────────────────────────
-    // OP  → OK pos x=<x> y=<y> h=<h>
+    // ── OP — OTOS read raw position (LSB units, debug cross-check) ───────────
+    // OP  → OK rawpos x=<x> y=<y> h=<h>  (values are raw OTOS LSB, not mm)
+    // 1 LSB ≈ 0.305 mm for position; TLM pose= is fused odometry in mm/cdeg.
     if (strcmp(verb, "OP") == 0) {
         OtosSensor* otos = _robot.otos();
         if (!otos) {
@@ -1026,9 +1042,9 @@ void CommandProcessor::process(const char* line, ReplyFn replyFn, void* ctx)
         }
         int16_t ox = 0, oy = 0, oh = 0;
         otos->getPositionRaw(ox, oy, oh);
-        char body[48];
-        snprintf(body, sizeof(body), "x=%d y=%d h=%d", (int)ox, (int)oy, (int)oh);
-        replyOK(rbuf, sizeof(rbuf), "pos", body, corr_id, replyFn, ctx);
+        char body[64];
+        snprintf(body, sizeof(body), "x=%d y=%d h=%d (raw LSB)", (int)ox, (int)oy, (int)oh);
+        replyOK(rbuf, sizeof(rbuf), "rawpos", body, corr_id, replyFn, ctx);
         return;
     }
 
