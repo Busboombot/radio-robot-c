@@ -129,13 +129,34 @@ int32_t Motor::readEncoderRaw() const
 int32_t Motor::readSpeedRaw() const
 {
     // Vendor pxt-nezha2 readSpeed() — register 0x47.
-    // Same 4 ms pre/post delay as readEncoderRaw (required by vendor protocol).
     // Frame: [0xFF, 0xF9, motorId, 0x00, 0x47, 0x00, 0xF5, 0x00]
     // Response: 2 bytes, unsigned uint16 little-endian.
     //
     // The chip returns unsigned speed magnitude; direction must be inferred
     // from the commanded PWM sign (_lastDir), not from this register.
-    fiber_sleep(4);
+    //
+    // Timing rationale (sprint 012-004):
+    //   The vendor oracle uses 4 ms pre + 4 ms post (identical to readEncoderRaw).
+    //   In practice, register 0x47 is always read immediately after two 0x46 encoder
+    //   reads in the tick() loop.  The chip appears to need additional time to switch
+    //   internal register context and update the speed accumulator after the preceding
+    //   encoder-read transactions.  Increasing the post-write delay from 4 ms to 8 ms
+    //   gives the chip a longer window to prepare the speed response, which reduces
+    //   the probability of reading a stale (stuck) value.
+    //
+    //   The pre-write delay remains 4 ms (matching vendor oracle) to allow the bus
+    //   to idle after the previous transaction before we assert the 0x47 command.
+    //
+    //   HARDWARE-CONFIRM REQUIRED: After reflashing, run `S 200 200` and observe
+    //   `GET VEL`.  If source flag is still 'E' (encoder fallback) due to stuck chip
+    //   reading, try increasing kPostWriteDelayMs further (12 ms, then 16 ms).
+    //   If source flag shows 'C' with plausible values (~200 mm/s), the fix is confirmed.
+    //   The Part-A plausibility gate (stuck-low rejection) provides a safety net
+    //   during this hardware confirmation phase.
+    static constexpr uint32_t kPreWriteDelayMs  = 4;
+    static constexpr uint32_t kPostWriteDelayMs = 8;  // increased from 4 ms (012-004)
+
+    fiber_sleep(kPreWriteDelayMs);
     uint8_t cmd[8] = {
         0xFF, 0xF9,
         _motorId,
@@ -144,7 +165,7 @@ int32_t Motor::readSpeedRaw() const
         0x00
     };
     int writeResult = _i2c.write((ADDR << 1), (uint8_t*)cmd, 8, false);
-    fiber_sleep(4);
+    fiber_sleep(kPostWriteDelayMs);
 
     if (writeResult != MICROBIT_OK) {
         return -1;  // I2C error sentinel

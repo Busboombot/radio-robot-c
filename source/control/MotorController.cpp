@@ -127,20 +127,37 @@ void MotorController::tick(float dt_s)
     // Chip-native velocity (primary source via register 0x47).
     // Falls back to encoder-delta if:
     //   (a) I2C read fails (readSpeed returns false), or
-    //   (b) chip reading exceeds 2× the encoder-derived velocity (implausibility gate).
+    //   (b) chip reading fails the two-sided plausibility gate (see below).
     float chipVelL = 0.0f, chipVelR = 0.0f;
     bool chipOkL = _motorL.readSpeed(chipVelL, _cal);
     bool chipOkR = _motorR.readSpeed(chipVelR, _cal);
 
-    // Implausibility gate: reject chip reading if it is more than 2× encoder velocity.
-    // This guards against I2C noise producing out-of-range readings.
-    if (chipOkL && fabsf(encVelL) > 0.0f &&
-        fabsf(chipVelL) > 2.0f * fabsf(encVelL)) {
-        chipOkL = false;
+    // Implausibility gate: reject chip reading if it is more than 2× encoder velocity
+    // (too-high / noise) OR less than 0.5× encoder velocity when the wheel is clearly
+    // moving (too-low / stuck register).
+    //
+    // The "stuck ~30 mm/s" symptom (register 0x47 returning a stale low value while
+    // encoder-delta reports ~140 mm/s) is caught by the tooLow branch.
+    //
+    // Guard: only apply when |encVel| > minWheelMms so we don't misfire at near-zero
+    // speeds where encoder-delta is itself noisy and the ratio is unreliable.
+    {
+        float floor = _cal.minWheelMms;
+        bool tooHighL = fabsf(chipVelL) > 2.0f * fabsf(encVelL);
+        bool tooLowL  = (fabsf(encVelL) > floor) &&
+                        (fabsf(chipVelL) < 0.5f * fabsf(encVelL));
+        if (chipOkL && fabsf(encVelL) > 0.0f && (tooHighL || tooLowL)) {
+            chipOkL = false;
+        }
     }
-    if (chipOkR && fabsf(encVelR) > 0.0f &&
-        fabsf(chipVelR) > 2.0f * fabsf(encVelR)) {
-        chipOkR = false;
+    {
+        float floor = _cal.minWheelMms;
+        bool tooHighR = fabsf(chipVelR) > 2.0f * fabsf(encVelR);
+        bool tooLowR  = (fabsf(encVelR) > floor) &&
+                        (fabsf(chipVelR) < 0.5f * fabsf(encVelR));
+        if (chipOkR && fabsf(encVelR) > 0.0f && (tooHighR || tooLowR)) {
+            chipOkR = false;
+        }
     }
 
     _usingChipVelL = chipOkL;

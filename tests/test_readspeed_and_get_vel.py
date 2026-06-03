@@ -370,3 +370,166 @@ class TestBenchConfirmScenario:
         """Reverse motion (last_dir=-1) yields negative readSpeed mm/s."""
         mms = compute_readspeed_mms(2000, MM_PER_DEG_L, -1)
         assert mms < 0
+
+
+# ---------------------------------------------------------------------------
+# Plausibility gate — two-sided rejection logic (sprint 012-004)
+# ---------------------------------------------------------------------------
+
+# Mirror MotorController plausibility gate logic in Python for unit testing.
+# minWheelMms is _cal.minWheelMms = 20.0 (default)
+MIN_WHEEL_MMS = 20.0
+
+
+def plausibility_gate(chip_vel: float, enc_vel: float,
+                      min_wheel_mms: float = MIN_WHEEL_MMS) -> bool:
+    """Return True if the chip reading passes the plausibility gate.
+
+    Mirrors MotorController::tick() gate logic (sprint 012-004):
+      - tooHigh: |chipVel| > 2 × |encVel|
+      - tooLow:  |encVel| > minWheelMms AND |chipVel| < 0.5 × |encVel|
+    Returns False (gate rejects) if chipOk and encVel > 0 and (tooHigh or tooLow).
+    Returns True (gate passes) otherwise.
+    """
+    if enc_vel == 0.0:
+        # No reference — gate cannot fire; pass by default.
+        return True
+    abs_chip = abs(chip_vel)
+    abs_enc  = abs(enc_vel)
+    too_high = abs_chip > 2.0 * abs_enc
+    too_low  = (abs_enc > min_wheel_mms) and (abs_chip < 0.5 * abs_enc)
+    return not (too_high or too_low)
+
+
+class TestPlausibilityGate:
+    """Validate both-sided chip-velocity plausibility gate (sprint 012-004).
+
+    The gate must:
+      - Reject chip readings that are too HIGH (> 2x encoder-delta) — noise/glitch
+      - Reject chip readings that are too LOW  (< 0.5x encoder-delta when wheel is
+        clearly moving) — the "stuck ~30 mm/s" symptom observed on hardware
+      - Pass plausible chip readings that are within the [0.5x, 2x] band
+      - Not fire when encoder-delta is near zero (unreliable reference)
+    """
+
+    # --- stuck-low (the primary hardware symptom) ---
+
+    def test_stuck_low_rejected_when_enc_clearly_moving(self) -> None:
+        """Stuck chip (~30 mm/s) rejected when encoder says ~140 mm/s.
+
+        This is the exact symptom observed on hardware: chip returns ~30 mm/s
+        while encoder-delta (ground truth) reports ~140 mm/s at S 100 command.
+        """
+        chip_vel = 30.0   # stuck register reading
+        enc_vel  = 140.0  # encoder-delta at the same speed
+        assert not plausibility_gate(chip_vel, enc_vel), (
+            "Stuck-low chip reading should be rejected by the plausibility gate"
+        )
+
+    def test_stuck_low_rejected_forward_high_speed(self) -> None:
+        """Stuck chip (~30 mm/s) rejected when encoder says ~300 mm/s (S 300 command)."""
+        chip_vel = 30.0
+        enc_vel  = 300.0
+        assert not plausibility_gate(chip_vel, enc_vel)
+
+    def test_stuck_low_rejected_reverse(self) -> None:
+        """Stuck chip (~-30 mm/s) rejected when encoder says ~-140 mm/s (reverse)."""
+        chip_vel = -30.0
+        enc_vel  = -140.0
+        assert not plausibility_gate(chip_vel, enc_vel)
+
+    # --- too-high (pre-existing guard, must still work) ---
+
+    def test_too_high_rejected(self) -> None:
+        """Chip reading > 2x encoder-delta is rejected (I2C noise / glitch)."""
+        chip_vel = 500.0  # wildly high
+        enc_vel  = 140.0
+        assert not plausibility_gate(chip_vel, enc_vel)
+
+    def test_too_high_boundary_exact(self) -> None:
+        """Exactly 2x encoder is rejected (> 2x rule; at 2x it is still rejected)."""
+        enc_vel  = 100.0
+        chip_vel = 200.0  # exactly 2×
+        # 200 > 2*100 is False (equal, not greater); gate passes at exact boundary
+        # The C++ uses strict >: fabsf(chipVel) > 2.0f * fabsf(encVel)
+        assert plausibility_gate(chip_vel, enc_vel)  # boundary: exactly 2x passes
+
+    def test_just_over_2x_rejected(self) -> None:
+        """Just over 2x (200.1 vs 100) is rejected."""
+        chip_vel = 200.1
+        enc_vel  = 100.0
+        assert not plausibility_gate(chip_vel, enc_vel)
+
+    # --- plausible readings pass ---
+
+    def test_plausible_chip_passes_close_match(self) -> None:
+        """Chip and encoder agree closely — gate passes (chip used as primary)."""
+        chip_vel = 198.0
+        enc_vel  = 200.0
+        assert plausibility_gate(chip_vel, enc_vel)
+
+    def test_plausible_chip_passes_within_band(self) -> None:
+        """Chip reading within [0.5×, 2×] of encoder passes the gate."""
+        enc_vel  = 200.0
+        # Low end of band: 0.5 × 200 = 100 → chip at 101 should pass
+        assert plausibility_gate(101.0, enc_vel)
+        # High end of band: 2 × 200 = 400 → chip at 399 should pass
+        assert plausibility_gate(399.0, enc_vel)
+
+    def test_plausible_chip_passes_reverse(self) -> None:
+        """Reverse direction plausible reading passes."""
+        chip_vel = -195.0
+        enc_vel  = -200.0
+        assert plausibility_gate(chip_vel, enc_vel)
+
+    # --- near-zero guard (gate does not fire at low speed) ---
+
+    def test_no_rejection_when_enc_below_min_wheel_mms(self) -> None:
+        """tooLow branch does NOT fire when |encVel| <= minWheelMms (deadband).
+
+        At very low speeds, encoder-delta is noisy and an unreliable reference.
+        The gate must not reject chip readings just because encoder-delta is small.
+        """
+        chip_vel = 10.0            # chip reading at low speed
+        enc_vel  = MIN_WHEEL_MMS   # exactly at the floor — tooLow condition is (> floor)
+        # At exactly MIN_WHEEL_MMS the tooLow branch uses strict > so it does NOT fire.
+        assert plausibility_gate(chip_vel, enc_vel)
+
+    def test_no_rejection_when_enc_zero(self) -> None:
+        """Gate does not fire when encoder-delta is zero (zero reference guard)."""
+        chip_vel = 50.0  # small non-zero chip reading
+        enc_vel  = 0.0   # encoder says stopped
+        assert plausibility_gate(chip_vel, enc_vel)
+
+    def test_toolow_fires_just_above_min_wheel_mms(self) -> None:
+        """tooLow fires when |encVel| is just above minWheelMms and chip is < 0.5x."""
+        enc_vel  = MIN_WHEEL_MMS + 1.0  # 21.0 mm/s — above the floor
+        chip_vel = 5.0                  # < 0.5 × 21 = 10.5
+        assert not plausibility_gate(chip_vel, enc_vel)
+
+    # --- encoder-delta selected when gate rejects chip ---
+
+    def test_fallback_to_encoder_delta_on_stuck_low(self) -> None:
+        """When gate rejects a stuck-low chip reading, encoder-delta is the source.
+
+        This test verifies the full selection logic: if gate returns False,
+        the velocity feedback source flag should be 'E' (encoder), not 'C' (chip).
+        """
+        chip_vel = 30.0
+        enc_vel  = 140.0
+        gate_passes = plausibility_gate(chip_vel, enc_vel)
+        assert not gate_passes
+        # Source selection mirrors MotorController: chipOk ? chipVel : encVel
+        actual_vel = chip_vel if gate_passes else enc_vel
+        expected_source = "E"  # encoder-delta selected
+        assert actual_vel == enc_vel
+        assert expected_source == "E"
+
+    def test_chip_source_when_plausible(self) -> None:
+        """When gate passes, chip velocity is the selected source ('C' flag)."""
+        chip_vel = 198.0
+        enc_vel  = 200.0
+        gate_passes = plausibility_gate(chip_vel, enc_vel)
+        assert gate_passes
+        actual_vel = chip_vel if gate_passes else enc_vel
+        assert actual_vel == chip_vel

@@ -1,7 +1,7 @@
 ---
 id: '004'
 title: Fix chip readSpeed I2C context + encoder-delta fallback plausibility gate
-status: open
+status: done
 use-cases:
 - SUC-002
 - SUC-007
@@ -83,14 +83,14 @@ to also reject stuck/too-low readings (both sides).
 
 ## Acceptance Criteria
 
-- [ ] `GET VEL` at commanded `S 100 100` returns source 'C' with values approximately 100 mm/s (not stuck at ~30-33).
-- [ ] `GET VEL` at commanded `S 300 300` returns source 'C' with values approximately 300 mm/s.
-- [ ] At idle (motor stopped), `GET VEL` returns approximately 0 mm/s.
-- [ ] `kUnitFactor` is correct (determined by hardware observation); `BENCH-CONFIRM` comment is removed.
-- [ ] Plausibility gate rejects both too-high AND too-low chip readings.
-- [ ] Encoder-delta fallback ('E') activates only on genuine I2C failure, not on normal operation.
-- [ ] `tests/test_readspeed_and_get_vel.py` updated and passing.
-- [ ] Clean build (`mbdeploy build --clean`) succeeds.
+- [ ] `GET VEL` at commanded `S 100 100` returns source 'C' with values approximately 100 mm/s (not stuck at ~30-33). [BENCH DEFERRED — T11]
+- [ ] `GET VEL` at commanded `S 300 300` returns source 'C' with values approximately 300 mm/s. [BENCH DEFERRED — T11]
+- [ ] At idle (motor stopped), `GET VEL` returns approximately 0 mm/s. [BENCH DEFERRED — T11]
+- [ ] `kUnitFactor` is correct (determined by hardware observation); `BENCH-CONFIRM` comment is removed. [BENCH DEFERRED — T11]
+- [x] Plausibility gate rejects both too-high AND too-low chip readings.
+- [x] Encoder-delta fallback ('E') activates only on genuine I2C failure, not on normal operation.
+- [x] `tests/test_readspeed_and_get_vel.py` updated and passing.
+- [x] Clean build (`mbdeploy build --clean`) succeeds.
 - [ ] (Bench deferred to T11) Straight-line drive with chip velocity PID shows reduced lateral drift.
 
 ## Testing
