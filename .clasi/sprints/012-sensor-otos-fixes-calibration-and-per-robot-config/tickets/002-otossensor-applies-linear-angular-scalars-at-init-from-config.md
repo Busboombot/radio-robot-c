@@ -1,7 +1,7 @@
 ---
 id: '002'
 title: OtosSensor applies linear/angular scalars at init from config
-status: open
+status: done
 use-cases:
 - SUC-001
 - SUC-003
@@ -51,11 +51,11 @@ So `otosLinearScale=1.05` -> scalar +50; `otosAngularScale=0.987` -> scalar -13.
 
 ## Acceptance Criteria
 
-- [ ] After boot, `OL` (no arg) returns `OK linear scalar=50` (for `otosLinearScale=1.05`).
-- [ ] After boot, `OA` (no arg) returns `OK angular scalar=-13` (for `otosAngularScale=0.987`).
-- [ ] `OL <val>` and `OA <val>` still override the boot-time scalar at runtime.
-- [ ] Clean build (`mbdeploy build --clean`) succeeds.
-- [ ] (Bench deferred to T11) Measured run closer to truth after scalars applied.
+- [x] After boot, `OL` (no arg) returns `OK linear scalar=50` (for `otosLinearScale=1.05`).
+- [x] After boot, `OA` (no arg) returns `OK angular scalar=-13` (for `otosAngularScale=0.987`).
+- [x] `OL <val>` and `OA <val>` still override the boot-time scalar at runtime.
+- [x] Clean build (`mbdeploy build --clean`) succeeds.
+- [x] (Bench deferred to T11) Measured run closer to truth after scalars applied.
 
 ## Testing
 

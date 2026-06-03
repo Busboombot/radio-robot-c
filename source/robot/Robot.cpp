@@ -3,6 +3,7 @@
 #include "ColorSensor.h"
 #include "DriveController.h"
 #include <cstdio>
+#include <cmath>
 
 Robot::Robot(MicroBitI2C&    i2c,
              NRF52Serial&    serial,
@@ -42,6 +43,18 @@ Robot::Robot(MicroBitI2C&    i2c,
     if (_otosPresent) {
         _otos.init();
         _dc.setOtos(&_otos);  // wire OTOS into DriveController for fusion
+
+        // Apply calibration scalars from config at boot.
+        // Formula: scalar = clamp(round((scale - 1.0) / 0.001), -127, 127).
+        // E.g. otosLinearScale=1.05 → +50; otosAngularScale=0.987 → -13.
+        auto scaleToInt8 = [](float scale) -> int8_t {
+            float raw = roundf((scale - 1.0f) / 0.001f);
+            if (raw > 127.0f) raw = 127.0f;
+            if (raw < -127.0f) raw = -127.0f;
+            return static_cast<int8_t>(raw);
+        };
+        _otos.setLinearScalar(scaleToInt8(_config.otosLinearScale));
+        _otos.setAngularScalar(scaleToInt8(_config.otosAngularScale));
     }
 
     _linePresent  = _line.readValues(nullptr);  // probe: returns false on I2C error
