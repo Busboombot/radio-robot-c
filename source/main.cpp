@@ -37,6 +37,25 @@ static void radioReply(const char* msg, void* ctx) {
 int main() {
     uBit.init();
 
+    // Show a heart on the 5x5 LED matrix as a "powered and ready" indicator.
+    // printAsync(image, delay=0) is non-blocking and leaves the image shown
+    // persistently — the CODAL display ISR drives the LEDs independently of
+    // the main loop, so this never interferes with motors, sensors, or radio.
+    // The display is otherwise unused by this firmware; the persistent heart
+    // gives students an immediate visual "it's on" cue without any delay.
+    {
+        // Classic micro:bit 5×5 heart (row-major, 0=off, 1=on).
+        const uint8_t heart[25] = {
+            0, 1, 0, 1, 0,
+            1, 1, 1, 1, 1,
+            1, 1, 1, 1, 1,
+            0, 1, 1, 1, 0,
+            0, 0, 1, 0, 0,
+        };
+        MicroBitImage bootImage(5, 5, heart);
+        uBit.display.printAsync(bootImage); // delay=0 → show forever, non-blocking
+    }
+
     static Robot            robot(uBit.i2c, uBit.serial, uBit.radio,
                                   uBit.io, uBit.messageBus, uBit);
     static CommandProcessor cmd(robot);
