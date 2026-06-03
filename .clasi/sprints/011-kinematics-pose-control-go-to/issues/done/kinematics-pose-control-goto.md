@@ -1,13 +1,11 @@
 ---
-status: in-progress
+status: done
 sprint: '011'
 tickets:
-- 011-001
-- 011-002
-- 011-003
-- 011-004
-- 011-005
-- 011-006
+- '002'
+- '003'
+- '004'
+- '005'
 ---
 
 # Kinematics: Pose Control (pursuit-arc go-to + accel/decel + turn-in-place gate)

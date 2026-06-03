@@ -1,15 +1,15 @@
 ---
 id: '006'
 title: 'Bench verification: go-to end-to-end from 3 start positions and VW drive'
-status: open
+status: done
 use-cases:
 - SUC-001
 - SUC-002
 - SUC-003
 - SUC-004
 depends-on:
-- "011-004"
-- "011-005"
+- 011-004
+- 011-005
 github-issue: ''
 issue: kinematics-pose-control-goto.md
 completes_issue: true
