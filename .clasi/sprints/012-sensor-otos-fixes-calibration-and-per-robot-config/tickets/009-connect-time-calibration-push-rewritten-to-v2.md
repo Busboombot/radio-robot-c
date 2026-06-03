@@ -1,11 +1,11 @@
 ---
-id: '009'
+id: 009
 title: Connect-time calibration push rewritten to v2
-status: open
+status: done
 use-cases:
 - SUC-008
 depends-on:
-- '008'
+- 008
 - '001'
 github-issue: ''
 issue: ''
@@ -64,12 +64,12 @@ from the v2 `ID` response and loads the matching config before pushing.
 
 ## Acceptance Criteria
 
-- [ ] `_push_calibration()` emits only v2 verbs: `SET ml`, `SET mr`, `SET tw`, `OI`, `OL`, `OA`.
-- [ ] No `KML`, `KMR`, `OO`, `OK`, `KML/KMR` verbs in the emitted sequence.
-- [ ] Each command is sent with ack-gated blocking (not fire-and-forget).
-- [ ] Host unit test asserts the correct verb sequence (mocking conn.send).
-- [ ] `show calibration` prints v2 verbs only.
-- [ ] `uv run pytest` passes.
+- [x] `_push_calibration()` emits only v2 verbs: `SET ml`, `SET mr`, `SET tw`, `OI`, `OL`, `OA`.
+- [x] No `KML`, `KMR`, `OO`, `OK`, `KML/KMR` verbs in the emitted sequence.
+- [x] Each command is sent with ack-gated blocking (not fire-and-forget).
+- [x] Host unit test asserts the correct verb sequence (mocking conn.send).
+- [x] `show calibration` prints v2 verbs only.
+- [x] `uv run pytest` passes.
 - [ ] (Bench deferred to T11) Post-connect `GET tw/ml/mr` matches active robot JSON.
 
 ## Testing
