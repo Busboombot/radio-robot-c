@@ -63,6 +63,12 @@ Robot::Robot(MicroBitI2C&    i2c,
     _colorPresent = _color.begin();
     _gripperPresent = true;  // servo always available on P1
 
+    // Bind authoritative HardwareState into DriveController so it can call
+    // Odometry::correct() with the struct-based API (014-004).
+    // Ticket 005 will move correct() into Robot::otosCorrect() and remove
+    // this coupling.
+    _dc.setHardwareState(&_state.inputs);
+
     // Unified TLM frame assembled in Robot::tick() — Sprint 009 ticket 005.
     // Streaming period controlled by RobotConfig::tlmPeriodMs.
 }
@@ -127,12 +133,12 @@ void Robot::zeroEncoders()
 
 void Robot::setPose(int32_t x_mm, int32_t y_mm, int32_t h_cdeg)
 {
-    _odo.setPose(x_mm, y_mm, h_cdeg);
+    _odo.setPose(_state.inputs, x_mm, y_mm, h_cdeg);
 }
 
 void Robot::zeroOdometry()
 {
-    _odo.zero();
+    _odo.zero(_state.inputs);
 }
 
 // ---------------------------------------------------------------------------
@@ -149,7 +155,7 @@ Robot::EncoderReading Robot::getEncoders() const
 Robot::Pose Robot::getPose() const
 {
     Pose p{};
-    _odo.getPose(p.x_mm, p.y_mm, p.h_cdeg);
+    Odometry::getPose(_state.inputs, p.x_mm, p.y_mm, p.h_cdeg);
     return p;
 }
 
@@ -162,11 +168,16 @@ Robot::Pose Robot::getPose() const
 
 void Robot::controlTick(uint32_t now_ms)
 {
-    // Stub: collect encoder readings + run motor PID, then advance drive state machines.
-    // The cooperative-loop split (ticket 006) will later call these from the LoopScheduler
-    // at the correct phase; until then controlTick() preserves the original call site in
-    // main.cpp unchanged.
+    // Collect encoder readings + run motor PID.
     controlCollect(now_ms);
+
+    // Dead-reckoning update: reads encLMm/R from _state.inputs, writes poseX/Y/Hrad.
+    // (014-004: odometry predict moved from DriveController to Robot.)
+    odometryPredict();
+
+    // Advance drive-mode state machines (S/T/D/G + OTOS correction).
+    // The cooperative-loop split (ticket 006) will later call these from the
+    // LoopScheduler at the correct phase.
     _dc.controlTick(now_ms);
 }
 
@@ -217,6 +228,75 @@ void Robot::controlCollect(uint32_t now_ms)
 }
 
 // ---------------------------------------------------------------------------
+// odometryPredict — dead-reckoning update task entry point (014-004).
+//
+// Reads _state.inputs.encLMm / encRMm (written by controlCollect() this tick)
+// and applies midpoint (exact-arc) integration into _state.inputs.poseX/Y/Hrad.
+//
+// This is the cooperative-loop task slot for odometry predict.  The LoopScheduler
+// (ticket 006) will call this at the correct phase; until then controlTick() calls
+// it directly after controlCollect().
+// ---------------------------------------------------------------------------
+
+void Robot::odometryPredict()
+{
+    _odo.predict(_state.inputs, _config.trackwidthMm);
+}
+
+// ---------------------------------------------------------------------------
+// otosCorrect — OTOS complementary correction task entry point (014-004).
+//
+// If OTOS is present, reads raw position from hardware, converts LSB → mm/rad,
+// applies the mounting-offset transform, writes _state.inputs.otosX/Y/H,
+// updates otos.lastUpdMs, and calls Odometry::correct() on the struct.
+//
+// This method provides the clean implementation for the otos-correct task slot
+// (ticket 005 wires this from the cooperative loop and removes the OTOS block
+// from DriveController::controlTick()).  Until ticket 005, the OTOS correction
+// in DriveController::controlTick() remains active.
+//
+// IMPORTANT: Do NOT call this from controlTick() until ticket 005 removes the
+// DriveController OTOS block — calling both would double-apply the correction.
+// ---------------------------------------------------------------------------
+
+void Robot::otosCorrect(uint32_t now_ms)
+{
+    if (!_otosPresent) return;
+
+    int16_t rx = 0, ry = 0, rh = 0;
+    _otos.getPositionRaw(rx, ry, rh);
+
+    constexpr float kPosMmPerLsb  = 0.305f;
+    constexpr float kHdgRadPerLsb = 0.00549f * (3.14159265f / 180.0f);
+
+    float xF = static_cast<float>(rx) * kPosMmPerLsb;
+    float yF = static_cast<float>(ry) * kPosMmPerLsb;
+    float hF = static_cast<float>(rh) * kHdgRadPerLsb;
+
+    if (_config.odomUpsideDown) {
+        xF = -xF;
+        yF = -yF;
+        hF = -hF;
+    }
+
+    float angRad = -_config.odomYawDeg * (3.14159265f / 180.0f);
+    float c = cosf(angRad);
+    float s = sinf(angRad);
+
+    _state.inputs.otosX = c * xF - s * yF - _config.odomOffX;
+    _state.inputs.otosY = s * xF + c * yF - _config.odomOffY;
+    _state.inputs.otosH = hF + _config.odomYawDeg * (3.14159265f / 180.0f);
+    _state.inputs.otos.lastUpdMs = now_ms;
+    _state.inputs.otos.valid     = true;
+
+    _odo.correct(_state.inputs,
+                 _state.inputs.otosX,
+                 _state.inputs.otosY,
+                 _state.inputs.otosH,
+                 _config.alphaPos, _config.alphaYaw, _config.otosGate);
+}
+
+// ---------------------------------------------------------------------------
 // telemetryTick — comms+telemetry fiber entry point (013-010).
 //
 // 1. Drain any pending EVT completions from DriveController (safety_stop,
@@ -258,10 +338,10 @@ void Robot::telemetryTick(uint32_t now_ms, ReplyFn fn, void* ctx)
     _mc.getEncoderPositions(encL, encR);
 
     // ----- 3. Read pose — always fused odometry (mm, mm, centidegrees) ------
-    // Raw OTOS LSB is available via the OP command for debug cross-check only.
+    // Authoritative pose now lives in _state.inputs.poseX/Y/Hrad (014-004).
     int32_t pose_x = 0, pose_y = 0, pose_h = 0;
     if (_config.tlmFields & TLM_FIELD_POSE) {
-        _odo.getPose(pose_x, pose_y, pose_h);
+        Odometry::getPose(_state.inputs, pose_x, pose_y, pose_h);
     }
 
     // ----- 4. Read line sensor (if present and field requested) --------------

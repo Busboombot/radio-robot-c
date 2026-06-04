@@ -63,6 +63,21 @@ public:
     void telemetryTick(uint32_t now_ms, ReplyFn fn, void* ctx);
 
     // ---------------------------------------------------------------------------
+    // Cooperative-loop task entry points (014-004).
+    //
+    //   odometryPredict() — apply midpoint dead-reckoning from _state.inputs.encLMm/R
+    //                       into _state.inputs.poseX/Y/Hrad.  Called once per
+    //                       odometry-predict task slot (ticket 006 wires the scheduler).
+    //   otosCorrect(now_ms) — read OTOS hardware, write _state.inputs.otosX/Y/H,
+    //                         apply complementary correction to pose.  Called at the
+    //                         slow cadence (100 ms) in the otos-correct task slot.
+    //                         Ticket 005 relocates the call site; this method provides
+    //                         the clean implementation used by that ticket.
+    // ---------------------------------------------------------------------------
+    void odometryPredict();
+    void otosCorrect(uint32_t now_ms);
+
+    // ---------------------------------------------------------------------------
     // Drive action methods — delegate to DriveController.
     // fn/ctx: originating reply sink captured for async completions.
     // ---------------------------------------------------------------------------

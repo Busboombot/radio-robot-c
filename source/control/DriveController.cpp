@@ -28,6 +28,7 @@ DriveController::DriveController(MotorController& mc, Odometry& odo, const Robot
     , _odo(odo)
     , _cfg(cfg)
     , _otos(otos)
+    , _hwState(nullptr)
     , _mode(DriveMode::IDLE)
     , _driveFn(nullptr)
     , _driveCtx(nullptr)
@@ -327,16 +328,17 @@ void DriveController::controlTick(uint32_t now_ms)
     _currentTimeMs  = now_ms;
 
     // Motor controller tick is now called by Robot::controlCollect() before
-    // DriveController::controlTick() is reached (014-003). Encoder positions
-    // are read from hardware directly via getEncoderPositions() for odometry.
-
-    int32_t encL, encR;
-    _mc.getEncoderPositions(encL, encR);
-    _odo.predict(static_cast<float>(encL), static_cast<float>(encR),
-                 _cfg.trackwidthMm);
+    // DriveController::controlTick() is reached (014-003).
+    //
+    // Odometry predict is now called by Robot::odometryPredict() which reads
+    // encLMm/R directly from HardwareState (014-004). DriveController no longer
+    // calls predict() here.
 
     // OTOS complementary correction (slow cadence: every kOtosSlowMs).
-    if (_otos != nullptr && (now_ms - _lastOtosMs) >= kOtosSlowMs) {
+    // NOTE: ticket 005 will move this block into Robot::otosCorrect().
+    // _hwState must be set via setHardwareState() before OTOS correction runs.
+    if (_otos != nullptr && _hwState != nullptr &&
+        (now_ms - _lastOtosMs) >= kOtosSlowMs) {
         _lastOtosMs = now_ms;
         int16_t rx = 0, ry = 0, rh = 0;
         _otos->getPositionRaw(rx, ry, rh);
@@ -360,7 +362,12 @@ void DriveController::controlTick(uint32_t now_ms)
         float y_mm = s * xF + c * yF - _cfg.odomOffY;
         float h_rad = hF + _cfg.odomYawDeg * (3.14159265f / 180.0f);
 
-        _odo.correct(x_mm, y_mm, h_rad,
+        // Write OTOS readings into HardwareState for telemetry / downstream tasks.
+        _hwState->otosX = x_mm;
+        _hwState->otosY = y_mm;
+        _hwState->otosH = h_rad;
+
+        _odo.correct(*_hwState, x_mm, y_mm, h_rad,
                      _cfg.alphaPos, _cfg.alphaYaw, _cfg.otosGate);
     }
 
@@ -467,8 +474,12 @@ void DriveController::fullStop(ReplyFn fn, void* ctx)
  * @param h_rad  Output: heading in radians
  */
 void DriveController::getPoseFloat(float& x, float& y, float& h_rad) const {
+    if (_hwState == nullptr) {
+        x = 0.0f; y = 0.0f; h_rad = 0.0f;
+        return;
+    }
     int32_t xi, yi, hi;
-    _odo.getPose(xi, yi, hi);
+    Odometry::getPose(*_hwState, xi, yi, hi);
     x     = static_cast<float>(xi);
     y     = static_cast<float>(yi);
     h_rad = static_cast<float>(hi) * (3.14159265f / 18000.0f);  // cdeg → rad

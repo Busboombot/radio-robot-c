@@ -1,12 +1,12 @@
 ---
 id: '004'
 title: Refactor Odometry onto RobotState structs
-status: open
+status: done
 use-cases:
-  - SUC-003
-  - SUC-004
+- SUC-003
+- SUC-004
 depends-on:
-  - '001'
+- '001'
 github-issue: ''
 issue: plan-single-cooperative-main-loop-abandon-fibers.md
 completes_issue: false
@@ -49,24 +49,24 @@ preferred for testability.
 
 ## Acceptance Criteria
 
-- [ ] `Odometry::predict(HardwareState& inputs, float trackwidth)` reads
+- [x] `Odometry::predict(HardwareState& inputs, float trackwidth)` reads
   `inputs.encLMm/R`, integrates midpoint dead-reckoning, and writes
   `inputs.poseX`, `inputs.poseY`, `inputs.poseHrad`. The midpoint integration
   math is unchanged.
-- [ ] `Odometry::correct(HardwareState& inputs, ...)` reads OTOS values
+- [x] `Odometry::correct(HardwareState& inputs, ...)` reads OTOS values
   (passed as parameters by the caller, who reads them from `inputs.otosX/Y/H`)
   and applies the complementary correction to `inputs.poseX/Y/Hrad`.
-- [ ] `Odometry` no longer has `_x`, `_y`, `_headingRad` private fields (they
+- [x] `Odometry` no longer has `_x`, `_y`, `_headingRad` private fields (they
   live in `HardwareState`).
-- [ ] `Robot::odometryPredict()` calls `_odo.predict(_state.inputs, cfg.trackwidthMm)`.
-- [ ] `Robot::otosCorrect(now_ms)` reads OTOS via `OtosSensor::getPositionRaw()`,
+- [x] `Robot::odometryPredict()` calls `_odo.predict(_state.inputs, cfg.trackwidthMm)`.
+- [x] `Robot::otosCorrect(now_ms)` reads OTOS via `OtosSensor::getPositionRaw()`,
   writes `_state.inputs.otosX/Y/H`, calls `_odo.correct(_state.inputs, ...)`.
-- [ ] `getPose(int32_t& x, int32_t& y, int32_t& h)` is updated to read from
+- [x] `getPose(int32_t& x, int32_t& y, int32_t& h)` is updated to read from
   `HardwareState.pose*` (or removed — callers may use `Robot::getPose()` which
   reads the struct).
-- [ ] `uv run --with pytest python -m pytest` passes — specifically
+- [x] `uv run --with pytest python -m pytest` passes — specifically
   `test_odometry_midpoint.py`, `test_otos_fusion.py`.
-- [ ] Firmware builds cleanly.
+- [x] Firmware builds cleanly.
 
 ## Implementation Plan
 

@@ -4,6 +4,7 @@
 #include <stddef.h>
 #include "Config.h"
 #include "Protocol.h"
+#include "RobotState.h"
 
 class MotorController;
 class Odometry;
@@ -39,6 +40,12 @@ public:
 
     // Set or clear the OTOS sensor pointer (called by Robot after hardware probe).
     void setOtos(OtosSensor* otos) { _otos = otos; }
+
+    // Bind the authoritative HardwareState (called by Robot after state init,
+    // before the first tick).  Required so Odometry::correct() can write the
+    // struct-based pose fields (014-004).  Ticket 005 moves correct() into
+    // Robot::otosCorrect() and removes this dependency.
+    void setHardwareState(HardwareState* s) { _hwState = s; }
 
     // Entry points — called from Robot drive methods.
     // Each captures fn/ctx as the originating reply sink for async completions.
@@ -77,7 +84,8 @@ private:
     MotorController&   _mc;
     Odometry&          _odo;
     const RobotConfig& _cfg;
-    OtosSensor*        _otos;  // nullable; nullptr when OTOS not connected
+    OtosSensor*        _otos;     // nullable; nullptr when OTOS not connected
+    HardwareState*     _hwState;  // authoritative state for Odometry::correct() (014-004)
 
     // Drive mode
     DriveMode _mode;
