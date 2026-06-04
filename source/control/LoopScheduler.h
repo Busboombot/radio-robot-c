@@ -112,12 +112,18 @@ private:
     // Private helpers that implement the split-phase control logic.
     // ---------------------------------------------------------------------------
 
-    // Phase 1 of the control task: collect the pending encoder, compute
-    // velocity, run per-wheel PID, write PWM.
-    // Skips collect if _pendingWheel == 0 (first iteration).
+    // Control task: for the current _pendingWheel, issue the full vendor
+    // timing: 4ms pre-write idle → requestEncoder() → 4ms post-write settle →
+    // collectEncoder(), all atomic within this tick, then run per-wheel PID and
+    // write PWM.  Skips the read if _pendingWheel == 0 (first iteration).
     void controlCollect(uint32_t now_ms);
 
-    // Phase 2 of the control task: fire the encoder request for the OTHER
-    // wheel (alternates L/R based on _pendingWheel).
+    // Advance _pendingWheel for the NEXT iteration (L → R → L alternation).
+    // Called at the end of each tick after the sensor sweep.
+    void _advancePendingWheel();
+
+    // Retained for API compatibility — fires an encoder request for the given
+    // wheel via Robot::controlFireRequest().  No longer called by run() since
+    // the request is now issued atomically at the top of the tick.
     void controlFireRequest();
 };

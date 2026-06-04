@@ -92,7 +92,62 @@ void Motor::resetEncoder()
 {
     // Mirror TypeScript resetRelAngleValue(): snapshot the current raw
     // angle into the software offset so that subsequent reads return zero.
-    _encOffset += readEncoderRaw();
+    //
+    // Use the atomic read path (request → 4 ms busy-wait → collect) to
+    // guarantee a valid reading.  readEncoderRaw() issues write+immediate-read
+    // with no inter-transaction delay and returns a stale/garbage value on the
+    // cooperative single-loop firmware (fix[014]: atomic encoder reset).
+    _encOffset += readEncoderAtomic();
+}
+
+int32_t Motor::readEncoderAtomic() const
+{
+    // Atomic single-wheel encoder read using the full vendor pxt-nezha2
+    // readAngle() timing (matches sprint 013 readEncoderRaw()):
+    //   4 ms pre-write bus-idle → 0x46 write → 4 ms post-write settle → read 4 bytes.
+    //
+    // Both delays are required:
+    //   - pre-write: allows the I2C bus to idle after the previous transaction.
+    //   - post-write: allows the chip to prepare its 4-byte response.
+    // Busy-wait is used (NOT fiber_sleep) so the CODAL scheduler cannot dispatch
+    // a competing I2C transaction during the window.
+    //
+    // Cost: ~8 ms per call — acceptable for one-off operations.
+    static constexpr uint32_t kDelayUs = 4000;  // 4 ms each phase
+
+    // Pre-write bus-idle delay.
+    {
+        uint64_t deadline = system_timer_current_time_us() + kDelayUs;
+        while (system_timer_current_time_us() < deadline) {}
+    }
+
+    uint8_t cmd[8] = {
+        0xFF, 0xF9,
+        _motorId,
+        0x00, 0x46,
+        0x00, 0xF5,
+        0x00
+    };
+    _i2c.write((ADDR << 1), (uint8_t*)cmd, 8, false);
+
+    // Post-write settle: chip prepares the 4-byte encoder response.
+    {
+        uint64_t deadline = system_timer_current_time_us() + kDelayUs;
+        while (system_timer_current_time_us() < deadline) {}
+    }
+
+    uint8_t resp[4] = {0, 0, 0, 0};
+    _i2c.read((ADDR << 1), (uint8_t*)resp, 4, false);
+
+    int32_t raw = (int32_t)(
+        ((uint32_t)resp[3] << 24) |
+        ((uint32_t)resp[2] << 16) |
+        ((uint32_t)resp[1] <<  8) |
+        ((uint32_t)resp[0])
+    );
+
+    // Subtract the software offset captured at last resetEncoder() call.
+    return raw - _encOffset;
 }
 
 // ---------------------------------------------------------------------------
@@ -122,12 +177,9 @@ void Motor::requestEncoder()
 {
     // Phase 1: Issue the 0x46 encoder command write and return immediately.
     //
-    // The vendor chip requires a delay between the write and the subsequent
-    // read (previously implemented as a 4 ms busy-wait). In the cooperative
-    // loop, the required delay is guaranteed by the loop period: the
-    // LoopScheduler alternates wheels across ticks, so at least one full loop
-    // period elapses between requestEncoder() and collectEncoder(). No
-    // busy-wait or fiber_sleep is needed here.
+    // NOTE: repeated=false (STOP after write) is used here. The read is done
+    // via collectEncoder() as a separate transaction. If repeated-start is needed,
+    // use readEncoderAtomic() which keeps the bus held.
     uint8_t cmd[8] = {
         0xFF, 0xF9,
         _motorId,
@@ -158,6 +210,15 @@ int32_t Motor::collectEncoder() const
 
     // Subtract the software offset captured at last resetEncoder() call.
     return raw - _encOffset;
+}
+
+float Motor::readEncoderMmFAtomic(const RobotConfig& cfg) const
+{
+    // Atomic read in mm (float). Same conversion as readEncoderMmF() but using
+    // readEncoderAtomic() so it is safe outside the control tick.
+    float mmPerDeg = (_motorId == 2) ? cfg.mmPerDegL : cfg.mmPerDegR;
+    int32_t raw = readEncoderAtomic();  // tenths of degrees minus offset
+    return (raw / 10.0f) * mmPerDeg * (float)_fwdSign;
 }
 
 int32_t Motor::readEncoderRaw() const

@@ -610,6 +610,110 @@ class TestDriveStreamResend:
 
 
 # ===========================================================================
+# Tests: drive stream VEL output and --secs auto-stop
+# ===========================================================================
+
+_TLM_ENC_VEL = "TLM t=1500 enc=256,244 vel=198,202"
+
+
+class TestDriveStreamVelAndSecs:
+    """rogo drive stream prints VEL and --secs N causes auto-stop."""
+
+    def _run_stream_capture_output(self, extra_kw=None, tlm_line=_TLM_ENC_VEL,
+                                   n_frames=3):
+        """Run cmd_drive stream mode and return stdout text."""
+        import io
+        from contextlib import redirect_stdout, redirect_stderr
+        from robot_radio.io.cli import cmd_drive
+
+        frame_count = [0]
+
+        class _MultiFrame:
+            """Generator that yields n_frames TLM responses then stops."""
+            def __init__(self, **kwargs):
+                pass
+
+            def __iter__(self):
+                while frame_count[0] < n_frames:
+                    resp = MagicMock()
+                    resp.tag = "TLM"
+                    resp.raw = tlm_line
+                    frame_count[0] += 1
+                    yield resp
+
+            def close(self):
+                pass
+
+        kw = dict(port=None, verbose=False, left=200, right=200,
+                  stream_kw="stream", ms=None, mm=None, ez=False,
+                  min_speed=None, resend=150, secs=None)
+        if extra_kw:
+            kw.update(extra_kw)
+        args = _NS(**kw)
+
+        conn = _make_mock_conn()
+        stdout_buf = io.StringIO()
+        stderr_buf = io.StringIO()
+
+        patches = _patches(conn)
+        for p in patches:
+            p.__enter__()
+        try:
+            with patch("robot_radio.io.cli.Nezha.stream_drive",
+                       side_effect=lambda speeds, **kw: _MultiFrame(**kw)):
+                with redirect_stdout(stdout_buf), redirect_stderr(stderr_buf):
+                    try:
+                        cmd_drive(args)
+                    except (SystemExit, KeyboardInterrupt):
+                        pass
+        finally:
+            _exit_patches(patches)
+
+        return stdout_buf.getvalue()
+
+    def test_stream_prints_vel(self):
+        """Stream output includes VEL after ENC when vel= is in TLM."""
+        out = self._run_stream_capture_output()
+        # Live stream lines contain both ENC and VEL (e.g. "ENC 256 244  VEL 198 202").
+        # The final summary line printed by _print_enc_dist contains only "ENC".
+        # Filter to lines that have both ENC and VEL.
+        enc_vel_lines = [ln for ln in out.splitlines() if "ENC" in ln and "VEL" in ln]
+        assert len(enc_vel_lines) > 0, (
+            f"No 'ENC ... VEL ...' live stream lines in output:\n{out!r}"
+        )
+
+    def test_stream_vel_values(self):
+        """VEL values from TLM vel= field are printed correctly."""
+        out = self._run_stream_capture_output()
+        enc_vel_lines = [ln for ln in out.splitlines() if "ENC" in ln and "VEL" in ln]
+        assert enc_vel_lines, "No ENC+VEL lines"
+        # _TLM_ENC_VEL has vel=198,202
+        assert "198" in enc_vel_lines[0], f"Left velocity 198 missing: {enc_vel_lines[0]!r}"
+        assert "202" in enc_vel_lines[0], f"Right velocity 202 missing: {enc_vel_lines[0]!r}"
+
+    def test_stream_vel_zero_when_no_vel_field(self):
+        """VEL is printed as 0 0 when TLM has no vel= field."""
+        out = self._run_stream_capture_output(tlm_line=_TLM_ENC)
+        enc_lines = [ln for ln in out.splitlines() if "ENC" in ln]
+        assert enc_lines, "No ENC lines"
+        assert "VEL 0 0" in enc_lines[0], f"Expected 'VEL 0 0': {enc_lines[0]!r}"
+
+    def test_secs_stops_stream(self):
+        """--secs N causes the stream loop to exit after N seconds."""
+        import time as _time
+
+        # Run with secs=0.0 (deadline already past) — loop should exit immediately.
+        # We provide many frames but the deadline check should break after 0.
+        out = self._run_stream_capture_output(extra_kw={"secs": 0.0}, n_frames=100)
+        # With secs=0.0 the deadline fires immediately; 0 or very few ENC lines expected.
+        enc_lines = [ln for ln in out.splitlines() if "ENC" in ln]
+        # May print 0 lines (deadline before first frame) or 1 (race).
+        assert len(enc_lines) <= 2, (
+            f"Expected 0-2 ENC lines with secs=0, got {len(enc_lines)}: {out!r}"
+        )
+
+
+# ===========================================================================
 # Tests: v1 verb grep — no v1 verbs in the CLI module's executed code paths
 # ===========================================================================
 

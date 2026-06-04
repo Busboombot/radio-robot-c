@@ -932,21 +932,28 @@ def cmd_drive(args):
         left_enc, right_enc = robot.speed_for_time(args.left, args.right, args.ms)
         _print_enc_dist(initial, (left_enc, right_enc))
     elif args.stream_mode:
-        # Stream mode: rogo drive <L> <R> stream [--resend MS]
+        # Stream mode: rogo drive <L> <R> stream [--resend MS] [--secs N]
         # --resend controls the S keepalive cadence sent to the firmware.
         # stream_drive(watchdog_ms=...) uses keepalive_s = watchdog_ms * 0.30 / 1000.
         # To achieve a resend cadence of resend_ms, set watchdog_ms = resend_ms / 0.30.
         # Example: resend_ms=150, watchdog_ms=500 → keepalive = 500*0.30 = 150 ms.
+        # --secs N: auto-stop after N seconds (None = run until Ctrl-C).
         watchdog_ms = int(resend_ms / 0.30)  # keepalive = watchdog_ms * 0.30
         _log(f"stream mode: resend={resend_ms}ms → watchdog_ms={watchdog_ms}ms")
+        secs = getattr(args, "secs", None)
+        deadline = (time.monotonic() + secs) if secs is not None else None
         left_enc, right_enc = initial
         speeds = [args.left, args.right]
         try:
             for resp in robot.stream_drive(speeds, period_ms=40, watchdog_ms=watchdog_ms):
+                if deadline is not None and time.monotonic() >= deadline:
+                    break
                 tlm = parse_tlm(resp.raw) if resp.tag == "TLM" else None
                 if tlm and tlm.enc:
                     left_enc, right_enc = tlm.enc
-                    print(f"ENC {left_enc} {right_enc}")
+                    vl = tlm.vel[0] if tlm.vel else 0
+                    vr = tlm.vel[1] if tlm.vel else 0
+                    print(f"ENC {left_enc} {right_enc}  VEL {vl} {vr}")
         except KeyboardInterrupt:
             print("\nCtrl-C caught, stopping...", file=sys.stderr)
         _log("sending STOP")
@@ -1960,6 +1967,11 @@ def main():
         "--min-speed", type=int, default=None,
         help=f"Crawl-mode threshold in mm/s (default: {DEFAULT_MIN_SPEED_MMS}, "
              "or $ROGO_MIN_SPEED if set).",
+    )
+    p_drive.add_argument(
+        "--secs", type=float, default=None,
+        help="Stream mode only: auto-stop after N seconds (STOP + exit). "
+             "Without this flag, stream runs until Ctrl-C.",
     )
 
     # turn: in-place rotation by N degrees using the calibrated rotation model

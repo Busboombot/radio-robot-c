@@ -335,24 +335,39 @@ void Robot::controlFireRequest(int pendingWheel)
 
 void Robot::controlCollectSplitPhase(uint32_t now_ms, int pendingWheel)
 {
-    // Collect the encoder that was requested at the END of the previous iteration.
-    // The non-requested wheel retains its value from the prior tick (zero-order-hold).
-    // On pendingWheel == 0 (first iteration) there is no pending request, so skip.
+    // Atomic per-tick encoder read (fix[014]: restores closed-loop velocity).
+    //
+    // Root cause: the split-phase design fired requestEncoder() at the END of
+    // tick N, slept ~10 ms (the control period), then called collectEncoder()
+    // at the TOP of tick N+1.  The Nezha V2 chip's 0x46 response window is only
+    // ~4 ms (vendor-documented); the ~10 ms cross-iteration gap causes
+    // collectEncoder() to always return a stale/zero value, leaving enc=0,0
+    // throughout a drive and saturating the velocity PID to constant PWM.
+    //
+    // Fix: call readEncoderMmFAtomic() which uses the full vendor timing:
+    //   4ms pre-write bus-idle → 0x46 write → 4ms post-write settle → read 4B
+    // (matches sprint 013 readEncoderRaw() which had both delays and worked).
+    //
+    // Cost: ~8 ms per tick.  controlPeriodMs must be ≥ 10 ms.  Alternating L/R
+    // refreshes each wheel at half the control rate (~5 Hz at 10 ms).
+    //
+    // On pendingWheel == 0 (first iteration): no read; encoders remain
+    // 0-initialised and refreshedWheel=0 suppresses velocity update.
+
     if (pendingWheel == 1) {
-        // Left wheel was requested last iteration: collect it now.
-        // readEncoderMmF internally calls collectEncoder() — the I2C read.
-        _state.inputs.encLMm = _motorL.readEncoderMmF(_config);
+        // Refresh left wheel using the full atomic read (pre-delay + write +
+        // post-delay + read), matching the sprint 013 readEncoderRaw() timing.
+        _state.inputs.encLMm = _motorL.readEncoderMmFAtomic(_config);
     } else if (pendingWheel == 2) {
-        // Right wheel was requested last iteration: collect it now.
-        _state.inputs.encRMm = _motorR.readEncoderMmF(_config);
+        // Refresh right wheel.
+        _state.inputs.encRMm = _motorR.readEncoderMmFAtomic(_config);
     }
-    // pendingWheel == 0: first iteration — skip collect; encoder fields remain
-    // 0-initialised from defaultInputs(). PID runs with ZOH velocity = 0 on
-    // first tick (refreshedWheel=0 suppresses velocity update).
+    // pendingWheel == 0: first iteration — skip; encoder fields remain
+    // 0-initialised from defaultInputs(). PID runs with ZOH velocity = 0.
 
     _lastControlMs = now_ms;
 
-    // Pass the pendingWheel that was just COLLECTED as refreshedWheel so that
+    // Pass the pendingWheel that was just READ as refreshedWheel so that
     // MotorController updates that wheel's per-wheel velocity using the correct
     // elapsed time since the last collect for that wheel.
     _mc.controlTick(_state.inputs, _state.commands, now_ms, pendingWheel);

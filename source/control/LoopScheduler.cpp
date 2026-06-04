@@ -236,32 +236,41 @@ void LoopScheduler::controlCollect(uint32_t now_ms)
 }
 
 // ---------------------------------------------------------------------------
-// controlFireRequest — private.
+// _advancePendingWheel — advance the L/R alternation cursor.
 //
-// Fires the encoder request for the OTHER wheel (alternates L/R).
-// Updates _pendingWheel for the next iteration's collect phase.
-//
-// This is called LAST before the idle sleep, keeping the motor's
-// pending-read window free of competing I2C from sensor tasks.
+// Called at the END of each tick (after the sensor sweep) to set up which
+// wheel will be atomically read at the TOP of the next tick.
 //
 // Alternation:
-//   _pendingWheel == 0 (first): fire left → set _pendingWheel = 1
-//   _pendingWheel == 1 (left):  fire right → set _pendingWheel = 2
-//   _pendingWheel == 2 (right): fire left  → set _pendingWheel = 1
+//   _pendingWheel == 0 (first iter): advance to 1 (left)
+//   _pendingWheel == 1 (left just read): advance to 2 (right)
+//   _pendingWheel == 2 (right just read): advance to 1 (left)
+// ---------------------------------------------------------------------------
+
+void LoopScheduler::_advancePendingWheel()
+{
+    if (_pendingWheel == 1) {
+        _pendingWheel = 2;
+    } else {
+        // Either first iteration (0) or right was just read (2): next = left.
+        _pendingWheel = 1;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// controlFireRequest — retained for API compatibility.
+//
+// The encoder request is now issued atomically at the TOP of the tick inside
+// controlCollect(), so this method is no longer called by run().  Retained
+// to avoid breaking Robot::controlFireRequest() linkage.
 // ---------------------------------------------------------------------------
 
 void LoopScheduler::controlFireRequest()
 {
-    // Alternation:
-    //   pendingWheel == 0 (first iter): fire left  → pendingWheel = 1
-    //   pendingWheel == 1 (left just collected):  fire right → pendingWheel = 2
-    //   pendingWheel == 2 (right just collected): fire left  → pendingWheel = 1
     if (_pendingWheel == 1) {
-        // Left was just collected; fire right next.
         _robot.controlFireRequest(2);
         _pendingWheel = 2;
     } else {
-        // Either first iteration (0) or right was just collected (2): fire left.
         _robot.controlFireRequest(1);
         _pendingWheel = 1;
     }
@@ -270,10 +279,15 @@ void LoopScheduler::controlFireRequest()
 // ---------------------------------------------------------------------------
 // run — the cooperative main loop. Never returns.
 //
-// Iteration structure:
+// Iteration structure (fix[014]: atomic per-tick encoder read):
 //
 //   1. HARD TASK (always first):
-//      a. Collect the pending encoder (split-phase collect).
+//      a. Atomic encoder read for the pending wheel, using full vendor timing:
+//           4ms pre-write idle → requestEncoder(wheel) → 4ms post-write settle
+//           → collectEncoder(wheel).
+//         Both delays match the sprint 013 readEncoderRaw() pattern (vendor
+//         pxt-nezha2 readAngle()). Pre-write allows the bus to idle; post-write
+//         allows the chip to prepare its response. Cost: ~8 ms/tick.
 //      b. PID runs; PWM written to motors.
 //      c. Set controlDeadline = now + controlPeriodMs.
 //
@@ -285,14 +299,14 @@ void LoopScheduler::controlFireRequest()
 //        d. Post-task deadline re-check: if (systemTime() >= controlDeadline) break.
 //      The cursor persists — next iteration resumes where this one left off.
 //
-//   3. ENCODER REQUEST (last I2C op before idle):
-//      controlFireRequest() fires the encoder request for the alternate wheel.
-//      Ordering rule: this is always AFTER all sensor-I2C tasks in the sweep.
+//   3. ADVANCE WHEEL CURSOR:
+//      _advancePendingWheel() sets up which wheel will be read next tick (L/R alt).
+//      No I2C here — the request is now issued at the TOP of the tick.
 //
 //   4. IDLE SLEEP:
 //      uBit.sleep(controlDeadline - now) — the program's only sleep.
-//      The sleep provides the required ≥ one-loop-period delay between
-//      requestEncoder() and the collectEncoder() at the top of the next iteration.
+//      With the 8 ms encoder cost moved into step 1, the idle sleep is ~2 ms
+//      at a 10 ms control period.  Raise controlPeriodMs if the sweep needs room.
 // ---------------------------------------------------------------------------
 
 void LoopScheduler::run()
@@ -356,11 +370,14 @@ void LoopScheduler::run()
         }
 
         // ------------------------------------------------------------------
-        // 3. ENCODER REQUEST — LAST I2C op before idle.
-        //    Fires for the alternate wheel; the idle sleep below provides
-        //    the ≥ one-loop-period delay before the next collect.
+        // 3. Advance _pendingWheel for the NEXT iteration's collect.
+        //    (The encoder read is now done atomically at the TOP of the
+        //    tick via request → 4 ms busy-wait → collect, so no separate
+        //    fire-request step is needed here.  We only advance the wheel
+        //    alternation cursor so controlCollect() knows which wheel to
+        //    refresh next tick.)
         // ------------------------------------------------------------------
-        controlFireRequest();
+        _advancePendingWheel();
 
         // ------------------------------------------------------------------
         // 4. IDLE SLEEP until the control deadline.

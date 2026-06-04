@@ -186,6 +186,35 @@ public:
      */
     bool readVersion(uint8_t& maj, uint8_t& min, uint8_t& patch);
 
+    /**
+     * readEncoderAtomic — safe single-shot encoder read (raw tenths-of-degrees).
+     *
+     * Implements the full vendor pxt-nezha2 readAngle() timing (sprint 013
+     * readEncoderRaw() pattern):
+     *   4 ms pre-write bus-idle → 0x46 write → 4 ms post-write settle → read 4 bytes.
+     *
+     * Both delays are required (confirmed by sprint 013 bench):
+     *   - pre-write: allows the I2C bus to idle after the previous transaction.
+     *   - post-write: allows the chip to prepare its 4-byte response.
+     * Busy-wait is used (NOT fiber_sleep) so the CODAL scheduler cannot
+     * dispatch a competing I2C transaction during the window.
+     *
+     * Returns raw tenths-of-degrees minus the software offset (_encOffset).
+     *
+     * Use for: resetEncoder(), any one-off read outside the control tick.
+     * Cost: ~8 ms (two 4ms delays).
+     */
+    int32_t readEncoderAtomic() const;
+
+    /**
+     * readEncoderMmFAtomic — safe single-shot encoder read in mm (float).
+     *
+     * Same as readEncoderAtomic() but converts to mm using calibration from cfg.
+     * Use for: startDrive(), startDriveClean(), stop() — any position snapshot
+     * outside the normal control tick.  Cost: ~8 ms.
+     */
+    float readEncoderMmFAtomic(const RobotConfig& cfg) const;
+
 private:
     MicroBitI2C& _i2c;
     uint8_t      _motorId;  // 1=M1/right, 2=M2/left
@@ -206,9 +235,8 @@ private:
     void    writeMotorCmd(uint8_t direction, uint8_t speed);
 
     // Legacy synchronous encoder read (write + immediate read, no busy-wait).
-    // Retained for resetEncoder() and any callers not yet on the split-phase
-    // requestEncoder()/collectEncoder() API. Ticket 003 will migrate all
-    // callers; this method can be removed after that.
+    // No longer used by resetEncoder() (replaced by readEncoderAtomic()).
+    // Retained for reference; can be removed once confirmed unnecessary.
     int32_t readEncoderRaw() const;
 
     // Read raw speed from chip register 0x47 (uint16 LE, unsigned magnitude).

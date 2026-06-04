@@ -38,8 +38,10 @@ void MotorController::startDriveClean(float leftMms, float rightMms)
     float fasterAbs = _fasterIsRight ? fabsf(rightMms) : fabsf(leftMms);
     float slowerAbs = _fasterIsRight ? fabsf(leftMms)  : fabsf(rightMms);
     _cmdRatio = (slowerAbs > 0.0f) ? (fasterAbs / slowerAbs) : 1.0f;
-    _cmdEncStartL = _motorL.readEncoderMmF(_cal);
-    _cmdEncStartR = _motorR.readEncoderMmF(_cal);
+    // Use atomic reads (request → 4 ms wait → collect) so the snapshots are
+    // valid when called outside the split-phase control tick.
+    _cmdEncStartL = _motorL.readEncoderMmFAtomic(_cal);
+    _cmdEncStartR = _motorR.readEncoderMmFAtomic(_cal);
     _pid.reset();
     _vcL.reset();
     _vcR.reset();
@@ -57,8 +59,9 @@ void MotorController::startDrive(float leftMms, float rightMms)
     float newSlowerAbs = newFasterIsRight ? fabsf(leftMms)  : fabsf(rightMms);
     float newRatio = (newSlowerAbs > 0.0f) ? (newFasterAbs / newSlowerAbs) : 1.0f;
 
-    float curL = _motorL.readEncoderMmF(_cal);
-    float curR = _motorR.readEncoderMmF(_cal);
+    // Use atomic reads for valid position snapshots outside the control tick.
+    float curL = _motorL.readEncoderMmFAtomic(_cal);
+    float curR = _motorR.readEncoderMmFAtomic(_cal);
     float curFaster   = newFasterIsRight ? curR : curL;
     float curSlower   = newFasterIsRight ? curL : curR;
     float startFaster = newFasterIsRight ? _cmdEncStartR : _cmdEncStartL;
@@ -92,8 +95,9 @@ void MotorController::stop()
     _pid.reset();
     _vcL.reset();
     _vcR.reset();
-    _cmdEncStartL = _motorL.readEncoderMmF(_cal);
-    _cmdEncStartR = _motorR.readEncoderMmF(_cal);
+    // Use atomic reads for valid position snapshots outside the control tick.
+    _cmdEncStartL = _motorL.readEncoderMmFAtomic(_cal);
+    _cmdEncStartR = _motorR.readEncoderMmFAtomic(_cal);
     _motorL.setSpeed(0);
     _motorR.setSpeed(0);
 }
@@ -191,12 +195,10 @@ void MotorController::getVelocitySourceFlags(bool& leftChip, bool& rightChip) co
 
 void MotorController::getEncoderPositions(int32_t& leftMm, int32_t& rightMm) const
 {
-    // Read directly from the motor hardware. These are synchronous I2C reads
-    // (legacy blocking path, same as before the split-phase API). Used by
-    // DriveController for D-mode distance tracking until ticket 007 migrates
-    // that path to HardwareState.
-    leftMm  = _motorL.readEncoder(_cal);
-    rightMm = _motorR.readEncoder(_cal);
+    // Use atomic reads (request → 4 ms wait → collect) to ensure valid readings
+    // outside the split-phase control tick.
+    leftMm  = static_cast<int32_t>(_motorL.readEncoderMmFAtomic(_cal));
+    rightMm = static_cast<int32_t>(_motorR.readEncoderMmFAtomic(_cal));
 }
 
 void MotorController::resetEncoderAccumulators()
