@@ -63,6 +63,32 @@ public:
     void telemetryTick(uint32_t now_ms, ReplyFn fn, void* ctx);
 
     // ---------------------------------------------------------------------------
+    // Split-phase encoder control API (014-006 — used by LoopScheduler).
+    //
+    //   controlCollect(now_ms)
+    //     Collects encoder readings (using the synchronous stub path; the
+    //     LoopScheduler adds the inter-iteration delay via idle sleep), computes
+    //     dt_s, then calls _mc.controlTick() to run PID and write PWM.
+    //     Exposed public so LoopScheduler can drive the control task.
+    //
+    //   controlFireRequest(pendingWheel)
+    //     Fires the encoder request for the wheel identified by pendingWheel
+    //     (1 = left, 2 = right). Called LAST before the idle sleep to keep the
+    //     motor's pending-read window free of other I2C.
+    //     Returns the wheel that was just requested (same as pendingWheel).
+    //
+    //   controlCollectSplitPhase(now_ms, pendingWheel)
+    //     Proper split-phase collect: reads back the encoder from the wheel
+    //     identified by pendingWheel (1=left, 2=right), writes
+    //     _state.inputs.enc{L,R}Mm, then calls _mc.controlTick().
+    //     Skipped if pendingWheel == 0 (first-iteration guard — no request
+    //     has been fired yet so there is nothing to collect).
+    // ---------------------------------------------------------------------------
+    void controlCollect(uint32_t now_ms);
+    void controlFireRequest(int pendingWheel);
+    void controlCollectSplitPhase(uint32_t now_ms, int pendingWheel);
+
+    // ---------------------------------------------------------------------------
     // Cooperative-loop task entry points (014-004 / 014-005).
     //
     //   odometryPredict() — apply midpoint dead-reckoning from _state.inputs.encLMm/R
@@ -122,6 +148,7 @@ public:
     // MotorCommands::tgt*/pwm* are written each tick by MotorController::controlTick().
     // ---------------------------------------------------------------------------
     const RobotStateContainer& state() const { return _state; }
+    RobotStateContainer&       stateMut()    { return _state; }  // mutable accessor for LoopScheduler tasks
 
     // Component accessors — used by CommandProcessor and main.cpp.
     // ---------------------------------------------------------------------------
@@ -139,7 +166,7 @@ public:
 
 private:
     // Reference to the CODAL singleton — used by drive action helpers for systemTime().
-    MicroBit& _uBit;
+    MicroBit&  _uBit;
 
     // Gripper angle tracking (owned here so CommandProcessor is stateless)
     int32_t _currentGripperAngle;
@@ -186,10 +213,5 @@ private:
     static constexpr uint32_t kOtosSlowMs = 100;  // 10 Hz OTOS correction cadence
     uint32_t _lastOtosMs;
 
-    // ---------------------------------------------------------------------------
-    // controlCollect — collect encoder readings, convert to mm, write
-    // _state.inputs.enc*, then call _mc.controlTick(_state.inputs, _state.commands, dt_s).
-    // Called from controlTick() in the cooperative-loop path (014-003).
-    // ---------------------------------------------------------------------------
-    void controlCollect(uint32_t now_ms);
+    // (controlCollect is now public — see the split-phase encoder control API above.)
 };

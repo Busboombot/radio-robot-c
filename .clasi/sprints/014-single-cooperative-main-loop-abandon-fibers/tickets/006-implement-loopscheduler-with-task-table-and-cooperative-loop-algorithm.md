@@ -1,15 +1,15 @@
 ---
 id: '006'
 title: Implement LoopScheduler with task table and cooperative loop algorithm
-status: open
+status: done
 use-cases:
-  - SUC-001
-  - SUC-002
-  - SUC-004
+- SUC-001
+- SUC-002
+- SUC-004
 depends-on:
-  - '003'
-  - '004'
-  - '005'
+- '003'
+- '004'
+- '005'
 github-issue: ''
 issue: plan-single-cooperative-main-loop-abandon-fibers.md
 completes_issue: false
@@ -50,26 +50,26 @@ updated to include the two new files).
 
 ## Acceptance Criteria
 
-- [ ] `LoopScheduler.h` defines `Task { name, periodMs, lastRunMs, estCostMs,
+- [x] `LoopScheduler.h` defines `Task { name, periodMs, lastRunMs, estCostMs,
   due(*this, now), run(*this, now) }` exactly as described in the architecture
   and the design issue.
-- [ ] `LoopScheduler::run()` implements the loop algorithm with:
+- [x] `LoopScheduler::run()` implements the loop algorithm with:
   - Control task (not in the rotated table) runs first every iteration.
   - Round-robin low-priority sweep with persistent cursor.
   - Budget gate (`now + estCostMs > controlDeadline`) before each task start.
   - Post-task deadline re-check with break.
   - `controlFireRequest()` called last before sleep.
   - Single `uBit.sleep(deadline - now)` per iteration.
-- [ ] The task table includes all eight low-priority tasks in priority order:
+- [x] The task table includes all eight low-priority tasks in priority order:
   comms-in, drive-advance, odometry-predict, otos-correct, line-read,
   color-read, ports-read, telemetry-emit — with correct `periodMs` and
   `estCostMs` values (see architecture-update.md table).
-- [ ] `pendingWheel` alternates L/R per iteration; first-iteration guard
+- [x] `pendingWheel` alternates L/R per iteration; first-iteration guard
   (skip collect if no request has been fired yet).
-- [ ] Reply-sink adapters `serialReply` and `radioReply` are defined in
+- [x] Reply-sink adapters `serialReply` and `radioReply` are defined in
   `LoopScheduler.cpp` (moved from `main.cpp`).
-- [ ] Firmware builds cleanly with the new files added to the build.
-- [ ] `uv run --with pytest python -m pytest` passes.
+- [x] Firmware builds cleanly with the new files added to the build.
+- [x] `uv run --with pytest python -m pytest` passes.
 
 ## Implementation Plan
 

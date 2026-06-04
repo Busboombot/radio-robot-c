@@ -333,6 +333,63 @@ void Robot::otosCorrect(uint32_t now_ms)
 }
 
 // ---------------------------------------------------------------------------
+// controlFireRequest — fire the encoder request for the specified wheel (014-006).
+//
+// pendingWheel: 1 = left (M2), 2 = right (M1).
+// Called by LoopScheduler as the LAST I2C operation before the idle sleep,
+// keeping the motor's pending-read window free of other I2C traffic.
+// ---------------------------------------------------------------------------
+
+void Robot::controlFireRequest(int pendingWheel)
+{
+    if (pendingWheel == 1) {
+        _motorL.requestEncoder();
+    } else if (pendingWheel == 2) {
+        _motorR.requestEncoder();
+    }
+}
+
+// ---------------------------------------------------------------------------
+// controlCollectSplitPhase — split-phase COLLECT for the cooperative loop (014-006).
+//
+// Reads back the encoder from the wheel indicated by pendingWheel (1=left,
+// 2=right) using Motor::collectEncoder() + conversion, writes the result into
+// _state.inputs.enc{L,R}Mm, then calls _mc.controlTick() for PID + PWM.
+//
+// If pendingWheel == 0 (first iteration, no prior request has been fired),
+// the collect step is skipped — only the PID/PWM path runs so the motor
+// controllers are warm before the first valid encoder reading arrives.
+//
+// The idle sleep in LoopScheduler::run() supplies the ≥ one-loop-period delay
+// required between the requestEncoder() write and this collectEncoder() read.
+// ---------------------------------------------------------------------------
+
+void Robot::controlCollectSplitPhase(uint32_t now_ms, int pendingWheel)
+{
+    // Collect the encoder that was requested at the END of the previous iteration.
+    // The non-requested wheel retains its value from the prior tick (zero-order-hold).
+    // On pendingWheel == 0 (first iteration) there is no pending request, so skip.
+    if (pendingWheel == 1) {
+        // Left wheel was requested last iteration: collect it now.
+        // readEncoderMmF internally calls collectEncoder() — the I2C read.
+        _state.inputs.encLMm = _motorL.readEncoderMmF(_config);
+    } else if (pendingWheel == 2) {
+        // Right wheel was requested last iteration: collect it now.
+        _state.inputs.encRMm = _motorR.readEncoderMmF(_config);
+    }
+    // pendingWheel == 0: first iteration — skip collect; encoder fields remain
+    // 0-initialised from defaultInputs(). PID still runs (warm-up on zero delta).
+
+    float dt_s = 0.0f;
+    if (_lastControlMs != 0) {
+        dt_s = static_cast<float>(now_ms - _lastControlMs) / 1000.0f;
+    }
+    _lastControlMs = now_ms;
+
+    _mc.controlTick(_state.inputs, _state.commands, dt_s);
+}
+
+// ---------------------------------------------------------------------------
 // telemetryTick — comms+telemetry path (013-010 / 014-005).
 //
 // Assembles and emits one unified TLM frame when the configured period has
