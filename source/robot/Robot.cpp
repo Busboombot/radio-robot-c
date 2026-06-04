@@ -5,23 +5,6 @@
 #include <cstdio>
 #include <cmath>
 
-// ---------------------------------------------------------------------------
-// DIAGNOSTIC TOGGLE (Sprint 014) — color <-> OTOS I2C bus-conflict test.
-//
-// When set to 1, the firmware NEVER drives any I2C traffic to the color
-// sensor: boot detection (ColorSensor::begin, which probes 0x43 then the
-// APDS 0x39 fallback) is skipped and _colorPresent is forced false, and the
-// runtime color-read poll early-returns before any I2C transaction.  The
-// color sensor can stay physically on the bus while remaining completely
-// untouched by firmware, so we can isolate whether ACTIVE color reads (vs a
-// passive electrical conflict) are what break encoder reads when the color
-// sensor (0x43) and OTOS (0x17) are connected together.
-//
-// Leave OTOS, line, encoders, ports, etc. fully active.  Set back to 0 to
-// restore normal color-sensor behaviour.
-// ---------------------------------------------------------------------------
-#define DISABLE_COLOR_SENSOR 1
-
 Robot::Robot(MicroBitI2C&    i2c,
              NRF52Serial&    serial,
              MicroBitRadio&  radio,
@@ -79,12 +62,7 @@ Robot::Robot(MicroBitI2C&    i2c,
     }
 
     _linePresent  = _line.readValues(nullptr);  // probe: returns false on I2C error
-#if DISABLE_COLOR_SENSOR
-    // Diagnostic: skip color detection entirely — no I2C probe of 0x43/0x39.
-    _colorPresent = false;
-#else
     _colorPresent = _color.begin();
-#endif
     _gripperPresent = true;  // servo always available on P1
 
     // Bind authoritative HardwareState into DriveController so getPoseFloat()
@@ -420,10 +398,6 @@ void Robot::lineRead()
 
 void Robot::colorRead()
 {
-#if DISABLE_COLOR_SENSOR
-    // Diagnostic: never issue color-sensor I2C from the runtime poll task.
-    return;
-#endif
     if (!_colorPresent) return;
     if (_color.pollRGBC(_state.inputs.colorR,
                         _state.inputs.colorG,
