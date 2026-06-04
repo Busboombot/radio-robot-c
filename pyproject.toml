@@ -1,6 +1,6 @@
 [project]
 name = "microbit-v2-samples-tools"
-version = "0.20260604.5"
+version = "0.20260604.6"
 description = "Utility scripts for building and deploying microbit-v2-samples"
 readme = "README.md"
 requires-python = ">=3.10"
