@@ -1732,11 +1732,20 @@ def _snap_tlm(conn: SerialConnection):
     sends SNAP and reads the TLM frame from the response window.
     """
     from robot_radio.robot.protocol import parse_tlm as _parse_tlm
-    result = conn.send("SNAP", read_ms=400)
-    for raw in result.get("responses", []):
-        frame = _parse_tlm(raw)
-        if frame is not None:
-            return frame
+    # SNAP makes the firmware emit one TLM frame on its NEXT tick; over the lossy
+    # radio relay that frame can take >0.5 s to arrive (the "OK snap" ack comes
+    # first, the TLM after) and is sometimes dropped entirely. Read a generous
+    # window and RETRY a few times until a frame with data arrives.
+    for _attempt in range(4):
+        result = conn.send("SNAP", read_ms=700)
+        for raw in result.get("responses", []):
+            frame = _parse_tlm(raw)
+            if frame is None and "TLM" in raw:
+                # The RAW250 relay can concatenate replies WITHOUT newline
+                # separators ("OK snapTLM t=..."); re-parse from "TLM".
+                frame = _parse_tlm(raw[raw.index("TLM"):])
+            if frame is not None and (frame.enc is not None or frame.pose is not None):
+                return frame
     return None
 
 
