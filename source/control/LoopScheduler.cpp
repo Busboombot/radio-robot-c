@@ -315,9 +315,16 @@ void LoopScheduler::run()
         // ------------------------------------------------------------------
         // 2. LOW-PRIORITY SWEEP (round-robin, persistent cursor).
         // ------------------------------------------------------------------
-        // Sync telemetry-emit period from config each iteration (the STREAM
-        // command can change tlmPeriodMs at runtime).
-        _table[7].periodMs = (uint32_t)_robot.config().tlmPeriodMs;
+        // Sync task periods from config each iteration so that SET lag.* and
+        // STREAM commands take effect without a reboot.
+        // _table indices: 3=otos-correct, 4=line-read, 5=color-read, 6=ports-read,
+        //                 7=telemetry-emit.
+        const RobotConfig& cfg = _robot.config();
+        _table[3].periodMs = cfg.lagOtosMs;
+        _table[4].periodMs = cfg.lagLineMs;
+        _table[5].periodMs = cfg.lagColorMs;
+        _table[6].periodMs = cfg.lagPortsMs;
+        _table[7].periodMs = (uint32_t)cfg.tlmPeriodMs;
 
         int swept = 0;
         while (swept < kNumTasks) {

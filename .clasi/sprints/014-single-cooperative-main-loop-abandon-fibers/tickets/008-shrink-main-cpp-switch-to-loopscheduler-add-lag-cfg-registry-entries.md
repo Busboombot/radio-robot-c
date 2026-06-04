@@ -1,14 +1,14 @@
 ---
-id: '008'
+id: 008
 title: 'Shrink main.cpp: switch to LoopScheduler; add lag CFG registry entries'
-status: open
+status: done
 use-cases:
-  - SUC-001
-  - SUC-005
-  - SUC-006
+- SUC-001
+- SUC-005
+- SUC-006
 depends-on:
-  - '006'
-  - '007'
+- '006'
+- '007'
 github-issue: ''
 issue: plan-single-cooperative-main-loop-abandon-fibers.md
 completes_issue: false
@@ -40,21 +40,21 @@ running to preserve build continuity; this ticket completes the transition.
 
 ## Acceptance Criteria
 
-- [ ] `main.cpp` no longer contains `controlFiberFn`, `gRobot`, `create_fiber`,
+- [x] `main.cpp` no longer contains `controlFiberFn`, `gRobot`, `create_fiber`,
   or the comms `while(true)` loop.
-- [ ] `main()` body is: `uBit.init()`, display boot icon, construct `Robot`,
+- [x] `main()` body is: `uBit.init()`, display boot icon, construct `Robot`,
   construct `CommandProcessor`, construct `LoopScheduler`, emit HELLO,
   `sched.run()`.
-- [ ] `CommandProcessor`'s `kRegistry[]` contains entries for `lag.otos`,
+- [x] `CommandProcessor`'s `kRegistry[]` contains entries for `lag.otos`,
   `lag.line`, `lag.color`, `lag.ports` mapping to the corresponding
   `RobotConfig` fields.
-- [ ] `SET lag.otos 200` writes `200` to `cfg.lagOtosMs`; `GET lag.otos`
+- [x] `SET lag.otos 200` writes `200` to `cfg.lagOtosMs`; `GET lag.otos`
   returns `200`.
-- [ ] Default lag values confirmed via `GET lag.*` immediately after boot:
+- [x] Default lag values confirmed via `GET lag.*` immediately after boot:
   otos=100, line=50, color=100, ports=50.
-- [ ] Firmware builds cleanly with no references to `controlTick` or
+- [x] Firmware builds cleanly with no references to `controlTick` or
   `telemetryTick` remaining in `main.cpp`.
-- [ ] `uv run --with pytest python -m pytest` passes — full suite.
+- [x] `uv run --with pytest python -m pytest` passes — full suite.
 
 ## Implementation Plan
 

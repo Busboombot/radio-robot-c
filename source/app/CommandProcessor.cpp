@@ -101,6 +101,12 @@ static const ConfigEntry kRegistry[] = {
     CFG_I("tick",         tickMs),
     CFG_I("ctrlPeriod",   controlPeriodMs),
     CFG_I("tlmPeriod",    tlmPeriodMs),
+    // Sensor lag budgets (ms) for the cooperative scheduler's low-priority tasks.
+    // SET lag.* N updates cfg.lag*Ms; LoopScheduler syncs task periodMs live.
+    CFG_I("lag.otos",     lagOtosMs),
+    CFG_I("lag.line",     lagLineMs),
+    CFG_I("lag.color",    lagColorMs),
+    CFG_I("lag.ports",    lagPortsMs),
     // OTOS calibration and turn asymmetry (Sprint 012)
     CFG_F("otosLinSc",    otosLinearScale),
     CFG_F("otosAngSc",    otosAngularScale),
