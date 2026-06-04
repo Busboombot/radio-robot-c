@@ -1,16 +1,17 @@
 ---
-id: '009'
-title: 'Hardware bench verification: single-loop firmware end-to-end (closes sprint 013 deferred gate)'
-status: open
+id: 009
+title: 'Hardware bench verification: single-loop firmware end-to-end (closes sprint
+  013 deferred gate)'
+status: in-progress
 use-cases:
-  - SUC-001
-  - SUC-002
-  - SUC-004
-  - SUC-005
-  - SUC-006
-  - SUC-007
+- SUC-001
+- SUC-002
+- SUC-004
+- SUC-005
+- SUC-006
+- SUC-007
 depends-on:
-  - '008'
+- 008
 github-issue: ''
 issue: plan-single-cooperative-main-loop-abandon-fibers.md
 completes_issue: true
