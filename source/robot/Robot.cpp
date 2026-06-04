@@ -5,6 +5,24 @@
 #include <cstdio>
 #include <cmath>
 
+// ---------------------------------------------------------------------------
+// DIAGNOSTIC TOGGLE (Sprint 014) — OTOS <-> color I2C bus-conflict test.
+//
+// When set to 1, the firmware NEVER drives any I2C traffic to the OTOS:
+// boot detection (OtosSensor::begin, which reads REG_PRODUCT_ID at 0x17) is
+// skipped and _otosPresent is forced false, so init/setLinearScalar/
+// setAngularScalar never run; and Robot::otosCorrect() early-returns before
+// any I2C transaction (getPositionRaw at 0x17).  The OTOS can stay physically
+// on the bus while remaining completely untouched by firmware, so we can
+// isolate whether our ACTIVE OTOS reads (vs a passive electrical conflict)
+// are what wedge the bus / break encoder reads when the color sensor (0x43)
+// and OTOS (0x17) are connected together.
+//
+// Leave color, line, encoders, motors, ports, etc. fully active.  Set back
+// to 0 to restore normal OTOS behaviour.
+// ---------------------------------------------------------------------------
+#define DISABLE_OTOS_SENSOR 1
+
 Robot::Robot(MicroBitI2C&    i2c,
              NRF52Serial&    serial,
              MicroBitRadio&  radio,
@@ -42,7 +60,12 @@ Robot::Robot(MicroBitI2C&    i2c,
     _radio.begin();
 
     // Probe optional sensors; mark absent if hardware not connected.
+#if DISABLE_OTOS_SENSOR
+    // Diagnostic: skip OTOS detection entirely — no I2C probe/read of 0x17.
+    _otosPresent = false;
+#else
     _otosPresent = _otos.begin();
+#endif
     if (_otosPresent) {
         _otos.init();
         // OTOS correction is handled by Robot::otosCorrect() exclusively (014-005).
@@ -260,6 +283,12 @@ void Robot::driveAdvance(uint32_t now_ms)
 
 void Robot::otosCorrect(uint32_t now_ms)
 {
+#if DISABLE_OTOS_SENSOR
+    // Diagnostic: never issue OTOS I2C (getPositionRaw at 0x17) from the
+    // runtime correction task.
+    (void)now_ms;
+    return;
+#endif
     if (!_otosPresent) return;
 
     // Slow cadence gate: run correction at ~10 Hz (every kOtosSlowMs ms).
