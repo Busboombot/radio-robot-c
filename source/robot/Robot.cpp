@@ -30,9 +30,10 @@ Robot::Robot(MicroBitI2C&    i2c,
       _portio(io),
       _mc(_motorL, _motorR, _config),
       _odo(),
-      _dc(_mc, _odo, _config),  // OTOS pointer set below after hardware probe
+      _dc(_mc, _odo, _config),
       _state(defaultInputs(_config)),
-      _lastControlMs(0)
+      _lastControlMs(0),
+      _lastOtosMs(0)
 {
     // uBit.init() was called by main.cpp before constructing Robot.
     // All CODAL peripherals are ready; begin subsystem initialisation now.
@@ -44,7 +45,8 @@ Robot::Robot(MicroBitI2C&    i2c,
     _otosPresent = _otos.begin();
     if (_otosPresent) {
         _otos.init();
-        _dc.setOtos(&_otos);  // wire OTOS into DriveController for fusion
+        // OTOS correction is handled by Robot::otosCorrect() exclusively (014-005).
+        // DriveController no longer holds the OtosSensor pointer.
 
         // Apply calibration scalars from config at boot.
         // Formula: scalar = clamp(round((scale - 1.0) / 0.001), -127, 127).
@@ -63,10 +65,8 @@ Robot::Robot(MicroBitI2C&    i2c,
     _colorPresent = _color.begin();
     _gripperPresent = true;  // servo always available on P1
 
-    // Bind authoritative HardwareState into DriveController so it can call
-    // Odometry::correct() with the struct-based API (014-004).
-    // Ticket 005 will move correct() into Robot::otosCorrect() and remove
-    // this coupling.
+    // Bind authoritative HardwareState into DriveController so getPoseFloat()
+    // can read pose fields (Odometry::getPose reads the struct).
     _dc.setHardwareState(&_state.inputs);
 
     // Unified TLM frame assembled in Robot::tick() — Sprint 009 ticket 005.
@@ -86,31 +86,36 @@ void Robot::stop()
 
 void Robot::streamDrive(int32_t leftMms, int32_t rightMms, ReplyFn fn, void* ctx)
 {
-    _dc.beginStream((float)leftMms, (float)rightMms, _uBit.systemTime(), fn, ctx);
+    _dc.beginStream((float)leftMms, (float)rightMms, _uBit.systemTime(),
+                    _state.target, fn, ctx);
 }
 
 void Robot::velocityDrive(float v_mms, float omega_rads, ReplyFn fn, void* ctx,
                            const char* corr_id)
 {
-    _dc.beginVelocity(v_mms, omega_rads, _uBit.systemTime(), fn, ctx, corr_id);
+    _dc.beginVelocity(v_mms, omega_rads, _uBit.systemTime(),
+                      _state.target, fn, ctx, corr_id);
 }
 
 void Robot::timedDrive(int32_t leftMms, int32_t rightMms, uint32_t durationMs,
                        ReplyFn fn, void* ctx, const char* corr_id)
 {
-    _dc.beginTimed((float)leftMms, (float)rightMms, durationMs, _uBit.systemTime(), fn, ctx, corr_id);
+    _dc.beginTimed((float)leftMms, (float)rightMms, durationMs, _uBit.systemTime(),
+                   _state.target, fn, ctx, corr_id);
 }
 
 void Robot::distanceDrive(int32_t leftMms, int32_t rightMms, int32_t targetMm,
                           ReplyFn fn, void* ctx, const char* corr_id)
 {
-    _dc.beginDistance((float)leftMms, (float)rightMms, targetMm, _uBit.systemTime(), fn, ctx, corr_id);
+    _dc.beginDistance((float)leftMms, (float)rightMms, targetMm, _uBit.systemTime(),
+                      _state.target, fn, ctx, corr_id);
 }
 
 void Robot::goTo(float tx, float ty, float speedMms, ReplyFn fn, void* ctx,
                  const char* corr_id)
 {
-    _dc.beginGoTo(tx, ty, speedMms, _uBit.systemTime(), fn, ctx, corr_id);
+    _dc.beginGoTo(tx, ty, speedMms, _uBit.systemTime(),
+                  _state.target, fn, ctx, corr_id);
 }
 
 // ---------------------------------------------------------------------------
@@ -160,25 +165,39 @@ Robot::Pose Robot::getPose() const
 }
 
 // ---------------------------------------------------------------------------
-// controlTick — control fiber entry point (013-010).
+// controlTick — control fiber entry point (013-010 / 014-005).
 //
 // Runs at a fixed period (RobotConfig::controlPeriodMs, default 10 ms).
-// Only the PID/motor/odometry path runs here.  No serial/radio I/O.
+// Only the PID/motor/odometry path runs here.  No serial/radio I/O except
+// the inline EVT completions emitted by driveAdvance() — safe in the single
+// cooperative main loop (no fiber boundary).
+//
+// Phase order:
+//   1. controlCollect  — encoder I2C reads + PID
+//   2. odometryPredict — dead-reckoning from encoder delta
+//   3. otosCorrect     — OTOS complementary correction at slow cadence
+//      (sole OTOS correction path; DriveController no longer has this block)
+//   4. driveAdvance    — S/T/D/G state machines + inline EVT emission
+//
+// The cooperative-loop split (ticket 006) will later call these as separate
+// LoopScheduler task slots.
 // ---------------------------------------------------------------------------
 
 void Robot::controlTick(uint32_t now_ms)
 {
-    // Collect encoder readings + run motor PID.
+    // 1. Collect encoder readings + run motor PID.
     controlCollect(now_ms);
 
-    // Dead-reckoning update: reads encLMm/R from _state.inputs, writes poseX/Y/Hrad.
-    // (014-004: odometry predict moved from DriveController to Robot.)
+    // 2. Dead-reckoning update: reads encLMm/R from _state.inputs,
+    //    writes poseX/Y/Hrad.
     odometryPredict();
 
-    // Advance drive-mode state machines (S/T/D/G + OTOS correction).
-    // The cooperative-loop split (ticket 006) will later call these from the
-    // LoopScheduler at the correct phase.
-    _dc.controlTick(now_ms);
+    // 3. OTOS complementary correction (slow cadence, 100 ms).
+    //    This is the sole OTOS correction path (014-005).
+    otosCorrect(now_ms);
+
+    // 4. Advance drive-mode state machines; emit EVT completions inline.
+    driveAdvance(now_ms);
 }
 
 // ---------------------------------------------------------------------------
@@ -244,24 +263,41 @@ void Robot::odometryPredict()
 }
 
 // ---------------------------------------------------------------------------
-// otosCorrect — OTOS complementary correction task entry point (014-004).
+// driveAdvance — drive state machine task entry point (014-005).
+//
+// Delegates to DriveController::driveAdvance(), passing the authoritative
+// state structs.  EVT completions (done T/D/G, safety_stop) are emitted
+// inline via _state.target.replyFn / replyCtx / corrId.
+// ---------------------------------------------------------------------------
+
+void Robot::driveAdvance(uint32_t now_ms)
+{
+    _dc.driveAdvance(_state.inputs, _state.commands, _state.target, now_ms);
+}
+
+// ---------------------------------------------------------------------------
+// otosCorrect — OTOS complementary correction task entry point (014-004/005).
 //
 // If OTOS is present, reads raw position from hardware, converts LSB → mm/rad,
 // applies the mounting-offset transform, writes _state.inputs.otosX/Y/H,
 // updates otos.lastUpdMs, and calls Odometry::correct() on the struct.
 //
-// This method provides the clean implementation for the otos-correct task slot
-// (ticket 005 wires this from the cooperative loop and removes the OTOS block
-// from DriveController::controlTick()).  Until ticket 005, the OTOS correction
-// in DriveController::controlTick() remains active.
-//
-// IMPORTANT: Do NOT call this from controlTick() until ticket 005 removes the
-// DriveController OTOS block — calling both would double-apply the correction.
+// This is the SOLE OTOS correction path (014-005).  DriveController no longer
+// has an OTOS block — it was removed in ticket 005.
+// Called from controlTick() at the slow cadence (every ~100 ms via the
+// kOtosSlowMs gate inside this method).  Ticket 006 will move it to a
+// dedicated LoopScheduler task slot.
 // ---------------------------------------------------------------------------
 
 void Robot::otosCorrect(uint32_t now_ms)
 {
     if (!_otosPresent) return;
+
+    // Slow cadence gate: run correction at ~10 Hz (every kOtosSlowMs ms).
+    // When called from a dedicated LoopScheduler slot (ticket 006), the
+    // scheduler enforces the cadence and this gate can be removed.
+    if ((now_ms - _lastOtosMs) < kOtosSlowMs) return;
+    _lastOtosMs = now_ms;
 
     int16_t rx = 0, ry = 0, rh = 0;
     _otos.getPositionRaw(rx, ry, rh);
@@ -297,12 +333,13 @@ void Robot::otosCorrect(uint32_t now_ms)
 }
 
 // ---------------------------------------------------------------------------
-// telemetryTick — comms+telemetry fiber entry point (013-010).
+// telemetryTick — comms+telemetry path (013-010 / 014-005).
 //
-// 1. Drain any pending EVT completions from DriveController (safety_stop,
-//    done T/D/G) and emit them via fn/ctx.
-// 2. Assemble and emit one unified TLM frame when the configured period has
-//    elapsed, or immediately if a SNAP was requested.
+// Assembles and emits one unified TLM frame when the configured period has
+// elapsed, or immediately if a SNAP was requested.
+//
+// EVT completions (done T/D/G, safety_stop) are now emitted inline by
+// driveAdvance() via the captured per-drive reply sink — no drain step here.
 //
 // Reads only cached encoder/velocity snapshots from MotorController (which
 // the control fiber updates).  Line/color I2C is safe here because Motor
@@ -311,10 +348,7 @@ void Robot::otosCorrect(uint32_t now_ms)
 
 void Robot::telemetryTick(uint32_t now_ms, ReplyFn fn, void* ctx)
 {
-    // 1. Drain EVT completions enqueued by the control fiber.
-    _dc.drainEvents(fn, ctx);
-
-    // 2. TLM assembly ---------------------------------------------------------
+    // TLM assembly ---------------------------------------------------------
     // Emit one unified TLM frame when the configured period has elapsed, or
     // immediately if a SNAP was requested.  t= is stamped at sensor-read time,
     // not at snprintf time, to avoid send-latency bias.

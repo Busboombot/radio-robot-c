@@ -1,15 +1,16 @@
 ---
 id: '005'
-title: 'Refactor DriveController: remove EVT ring, add task entry points, inline EVT emit'
-status: open
+title: 'Refactor DriveController: remove EVT ring, add task entry points, inline EVT
+  emit'
+status: done
 use-cases:
-  - SUC-003
-  - SUC-004
-  - SUC-005
+- SUC-003
+- SUC-004
+- SUC-005
 depends-on:
-  - '001'
-  - '003'
-  - '004'
+- '001'
+- '003'
+- '004'
 github-issue: ''
 issue: plan-single-cooperative-main-loop-abandon-fibers.md
 completes_issue: false
@@ -54,19 +55,19 @@ be removed.
 
 ## Acceptance Criteria
 
-- [ ] `DriveController` has no `_evtQueue`, `_evtHead`, `_evtTail`,
+- [x] `DriveController` has no `_evtQueue`, `_evtHead`, `_evtTail`,
   `enqueueEvt`, `drainEvents`, `_otos`, `_lastOtosMs` members.
-- [ ] `DriveController::driveAdvance(HardwareState&, MotorCommands&, TargetState&, uint32_t)`
+- [x] `DriveController::driveAdvance(HardwareState&, MotorCommands&, TargetState&, uint32_t)`
   advances all S/T/D/G state machines and emits completions inline via
   `target.replyFn(msg, target.replyCtx)`.
-- [ ] `DriveController::controlTick()` (old signature) is removed.
-- [ ] `DriveController::setOtos()` and the OTOS-correct code path are removed
+- [x] `DriveController::controlTick()` (old signature) is removed.
+- [x] `DriveController::setOtos()` and the OTOS-correct code path are removed
   (handled by `Robot::otosCorrect()` from ticket 004).
-- [ ] `begin*()` methods are updated to write `mode`, `deadline`, goal, and
+- [x] `begin*()` methods are updated to write `mode`, `deadline`, goal, and
   captured sink into `TargetState`.
-- [ ] Firmware builds cleanly; `main.cpp` / `Robot::controlTick()` continue
+- [x] Firmware builds cleanly; `main.cpp` / `Robot::controlTick()` continue
   to compile.
-- [ ] `uv run --with pytest python -m pytest` passes — specifically
+- [x] `uv run --with pytest python -m pytest` passes — specifically
   `test_motion_verbs_v2.py`, `test_pursuit_arc_steering.py`,
   `test_tlm_stream.py`.
 

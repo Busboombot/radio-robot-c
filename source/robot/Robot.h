@@ -63,19 +63,21 @@ public:
     void telemetryTick(uint32_t now_ms, ReplyFn fn, void* ctx);
 
     // ---------------------------------------------------------------------------
-    // Cooperative-loop task entry points (014-004).
+    // Cooperative-loop task entry points (014-004 / 014-005).
     //
     //   odometryPredict() — apply midpoint dead-reckoning from _state.inputs.encLMm/R
     //                       into _state.inputs.poseX/Y/Hrad.  Called once per
     //                       odometry-predict task slot (ticket 006 wires the scheduler).
     //   otosCorrect(now_ms) — read OTOS hardware, write _state.inputs.otosX/Y/H,
     //                         apply complementary correction to pose.  Called at the
-    //                         slow cadence (100 ms) in the otos-correct task slot.
-    //                         Ticket 005 relocates the call site; this method provides
-    //                         the clean implementation used by that ticket.
+    //                         slow cadence (100 ms).  Sole OTOS correction path —
+    //                         DriveController no longer has an OTOS block (014-005).
+    //   driveAdvance(now_ms) — advance S/T/D/G state machines; emit EVT completions
+    //                          inline via the captured per-drive reply sink.
     // ---------------------------------------------------------------------------
     void odometryPredict();
     void otosCorrect(uint32_t now_ms);
+    void driveAdvance(uint32_t now_ms);
 
     // ---------------------------------------------------------------------------
     // Drive action methods — delegate to DriveController.
@@ -178,6 +180,11 @@ private:
 
     // Timestamp of the most recent controlCollect() call, used to compute dt_s.
     uint32_t _lastControlMs;
+
+    // Slow-cadence OTOS polling: run otosCorrect() every kOtosSlowMs milliseconds.
+    // Matches the cadence previously tracked by DriveController::_lastOtosMs (014-005).
+    static constexpr uint32_t kOtosSlowMs = 100;  // 10 Hz OTOS correction cadence
+    uint32_t _lastOtosMs;
 
     // ---------------------------------------------------------------------------
     // controlCollect — collect encoder readings, convert to mm, write
