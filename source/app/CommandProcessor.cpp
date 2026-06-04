@@ -793,27 +793,6 @@ void CommandProcessor::process(const char* line, ReplyFn replyFn, void* ctx)
         return;
     }
 
-    // ── VS — per-tick velocity statistics (throb diagnosis) ───────────────────
-    // VS 0  → reset accumulators → OK vs reset
-    // VS    → OK vs n=<N> mL=<mean> sL=<sd> minL=<> maxL=<> mR=<> sR=<> minR=<> maxR=<>
-    // All integers (mm/s) — measured at the real loop rate, no radio aliasing.
-    if (strcmp(verb, "VS") == 0) {
-        if (ntok >= 2 && atoi(tokens[1]) == 0) {
-            _robot.motor().resetVelStats();
-            replyOK(rbuf, sizeof(rbuf), "vs", "reset", corr_id, replyFn, ctx);
-            return;
-        }
-        int32_t n, mL, sL, lL, hL, mR, sR, lR, hR;
-        _robot.motor().getVelStats(n, mL, sL, lL, hL, mR, sR, lR, hR);
-        char body[128];
-        snprintf(body, sizeof(body),
-                 "n=%d mL=%d sL=%d minL=%d maxL=%d mR=%d sR=%d minR=%d maxR=%d",
-                 (int)n, (int)mL, (int)sL, (int)lL, (int)hL,
-                 (int)mR, (int)sR, (int)lR, (int)hR);
-        replyOK(rbuf, sizeof(rbuf), "vs", body, corr_id, replyFn, ctx);
-        return;
-    }
-
     // ── S — streaming velocity ────────────────────────────────────────────────
     // S <l> <r>  → OK drive l=<l> r=<r>
     // Watchdog reset is implicit: DriveController::beginStream() updates _lastSMs.
