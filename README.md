@@ -4,6 +4,43 @@
 
 This repository provides the necessary tooling to compile a C/C++ CODAL program for the micro:bit V2 and generate a HEX file that can be downloaded to the device.
 
+## Python host library — robot_radio
+
+`host/robot_radio/` is the **canonical, tested Python library** for all
+host-side robot interaction (protocol v2).  It provides a layered architecture:
+
+- **`NezhaProtocol`** (`robot/protocol.py`) — serial port owner; all v2 wire I/O
+- **`Nezha`** (`robot/nezha.py`) — high-level driver: motion, config, sensors
+- **`sensors/`** — OTOS, encoders, camera tracker, color, odometry
+- **`nav/`, `path/`, `controllers/`** — navigation, path planning, path controllers
+- **`kinematics/`** — differential-drive kinematics
+
+All robot interaction goes through this library.  Tests live in `host/tests/`
+(library, 409 tests) and `tests/` (firmware-logic, ~600 tests).
+
+**Run the full suite** (1012 tests, ~1 s):
+
+```sh
+uv run --with pytest python -m pytest -q
+```
+
+**Smooth-driving quick reference**:
+- Discrete moves: `nezha.speed_for_distance(left, right, mm)` — blocking `D`
+  command; no watchdog; waits for `EVT done D`.
+- Continuous driving: `nezha.stream_drive(speeds, duration_s=N)` — generator;
+  sends periodic `S` keepalives; firmware watchdog window is 500 ms (default).
+
+**Calibration tool** (bench, hardware required):
+
+```sh
+uv run python tests/calibrate/calibrate_linear.py
+```
+
+Run from the repo root; `aprilcam` is provided by the `calibrate` uv dep group
+(included in `default-groups` — no extra flags needed).
+
+Full library documentation: **[host/robot_radio/README.md](host/robot_radio/README.md)**
+
 ## Raising Issues
 Any issues regarding the micro:bit are gathered on the [lancaster-university/codal-microbit-v2](https://github.com/lancaster-university/codal-microbit-v2) repository. Please raise yours there too.
 

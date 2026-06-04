@@ -48,7 +48,15 @@ DriveController::DriveController(MotorController& mc, Odometry& odo, const Robot
     , _lastTickMs(0)
     , _currentTimeMs(0)
     , _lastOtosMs(0)
+    , _evtHead(0)
+    , _evtTail(0)
 {
+    // Zero-initialise the ring buffer entries.
+    for (int i = 0; i < kEvtQueueCap; ++i) {
+        _evtQueue[i].msg[0] = '\0';
+        _evtQueue[i].fn  = nullptr;
+        _evtQueue[i].ctx = nullptr;
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -227,14 +235,92 @@ void DriveController::stop(uint32_t now_ms, ReplyFn fn, void* ctx)
 }
 
 // ---------------------------------------------------------------------------
-// tick
+// enqueueEvt — called from the control fiber to record a completion event.
+//
+// Builds the full EVT string (with " #<corr_id>" suffix if set) and stores
+// it in the ring buffer together with the per-drive reply sink.  The comms
+// fiber drains the queue via drainEvents().
+//
+// CONCURRENCY: CODAL is cooperative — a fiber switch happens only at
+// explicit yield points.  controlTick() never yields, so this is
+// effectively atomic from the control fiber's perspective.
 // ---------------------------------------------------------------------------
 
-void DriveController::tick(uint32_t now_ms, ReplyFn fn, void* ctx)
+void DriveController::enqueueEvt(const char* base)
 {
-    // Throttle to tickMs cadence
-    int32_t tickMs = _cfg.tickMs;
-    if ((now_ms - _lastTickMs) < (uint32_t)tickMs) return;
+    int next = (_evtHead + 1) % kEvtQueueCap;
+    if (next == _evtTail) {
+        // Ring full — drop the oldest entry to make room (overwrite tail).
+        _evtTail = (_evtTail + 1) % kEvtQueueCap;
+    }
+    EvtEntry& e = _evtQueue[_evtHead];
+    if (_corrId[0] != '\0') {
+        snprintf(e.msg, sizeof(e.msg), "%s #%s", base, _corrId);
+    } else {
+        // strncpy-equivalent: safe copy with guaranteed null terminator.
+        int i = 0;
+        while (base[i] && i < (int)sizeof(e.msg) - 1) {
+            e.msg[i] = base[i];
+            ++i;
+        }
+        e.msg[i] = '\0';
+    }
+    e.fn  = _driveFn  ? _driveFn  : nullptr;
+    e.ctx = _driveFn  ? _driveCtx : nullptr;
+    _evtHead = next;
+
+    _corrId[0] = '\0';  // clear after enqueuing
+}
+
+// ---------------------------------------------------------------------------
+// drainEvents — called from the comms+telemetry fiber.
+//
+// Pops all pending EVT entries and emits them via the supplied fallback
+// fn/ctx.  If the entry has a captured per-drive sink, that is used
+// instead (preserves the "reply to originating channel" invariant).
+// ---------------------------------------------------------------------------
+
+int DriveController::drainEvents(ReplyFn fn, void* ctx)
+{
+    int count = 0;
+    while (_evtTail != _evtHead) {
+        EvtEntry& e = _evtQueue[_evtTail];
+        ReplyFn  efn = e.fn  ? e.fn  : fn;
+        void*    ect = e.fn  ? e.ctx : ctx;
+        if (efn && e.msg[0] != '\0') {
+            efn(e.msg, ect);
+        }
+        e.msg[0] = '\0';
+        e.fn  = nullptr;
+        e.ctx = nullptr;
+        _evtTail = (_evtTail + 1) % kEvtQueueCap;
+        ++count;
+    }
+    return count;
+}
+
+// ---------------------------------------------------------------------------
+// controlTick — control-fiber entry point (013-010).
+//
+// Runs at a fixed period set by RobotConfig::controlPeriodMs (default 10 ms).
+// Executes the deterministic path only:
+//   1. MotorController::tick() — encoder I2C reads + PID + Motor::setSpeed()
+//   2. Odometry::predict() — dead-reckoning update from encoder delta
+//   3. OTOS correction (slow cadence, 10 Hz)
+//   4. Drive-mode state machines (STREAMING watchdog, T/D/G termination)
+//   5. Enqueue any EVT completions into the ring buffer (no I/O here)
+//
+// Does NOT call any reply fn and does NOT yield (no fiber_sleep inside).
+// The Motor I2C transactions are now busy-wait, so no scheduler switch
+// occurs during encoder reads.
+// ---------------------------------------------------------------------------
+
+void DriveController::controlTick(uint32_t now_ms)
+{
+    // Throttle to controlPeriodMs cadence.
+    // We still honour the cadence check so that if controlTick is called
+    // more frequently than the configured period, extra calls are no-ops.
+    if ((now_ms - _lastTickMs) < (uint32_t)_cfg.controlPeriodMs) return;
 
     float dt_s      = (float)(now_ms - _lastTickMs) / 1000.0f;
     _lastTickMs     = now_ms;
@@ -242,8 +328,6 @@ void DriveController::tick(uint32_t now_ms, ReplyFn fn, void* ctx)
 
     // Run motor controller and update odometry (fast cadence: every tick).
     // Always runs — even at IDLE — so encoder caches and odometry are never stale.
-    // MotorController::tick() already no-ops motor commands when targets are zero
-    // (_tgtLMms == 0 && _tgtRMms == 0 → setSpeed(0); return), so no motor twitch.
     _mc.tick(dt_s);
 
     int32_t encL, encR;
@@ -252,10 +336,6 @@ void DriveController::tick(uint32_t now_ms, ReplyFn fn, void* ctx)
                  _cfg.trackwidthMm);
 
     // OTOS complementary correction (slow cadence: every kOtosSlowMs).
-    // OtosSensor conversion constants (from OtosSensor.h register map comments):
-    //   Position: 1 LSB = 0.305 mm  → x_mm = raw_x * 0.305
-    //   Heading:  1 LSB = 0.00549°  → θ_rad = raw_h * 0.00549 * (π/180)
-    // Runs even when IDLE so that the pose is corrected during pauses.
     if (_otos != nullptr && (now_ms - _lastOtosMs) >= kOtosSlowMs) {
         _lastOtosMs = now_ms;
         int16_t rx = 0, ry = 0, rh = 0;
@@ -263,141 +343,97 @@ void DriveController::tick(uint32_t now_ms, ReplyFn fn, void* ctx)
         constexpr float kPosMmPerLsb  = 0.305f;
         constexpr float kHdgRadPerLsb = 0.00549f * (3.14159265f / 180.0f);
 
-        // OTOS chip-frame → robot-center frame transform (012-007).
-        // Mirrors poseRobotFrame() from the prior TypeScript system (src/otos.ts).
-        //
-        // Step 1: Scale raw LSBs to chip-frame engineering units.
         float xF = static_cast<float>(rx) * kPosMmPerLsb;
         float yF = static_cast<float>(ry) * kPosMmPerLsb;
         float hF = static_cast<float>(rh) * kHdgRadPerLsb;
 
-        // Step 2: If chip is mounted upside-down (Z-axis flipped), negate x, y, heading.
         if (_cfg.odomUpsideDown) {
             xF = -xF;
             yF = -yF;
             hF = -hF;
         }
 
-        // Step 3: Rotate chip frame by -odomYawDeg into robot frame, then subtract
-        // the mounting offset so the reported pose is the robot rotation center.
-        // At defaults (yaw=0, offX=0, offY=0): identity — x_mm=xF, y_mm=yF.
         float angRad = -_cfg.odomYawDeg * (3.14159265f / 180.0f);
         float c = cosf(angRad);
         float s = sinf(angRad);
         float x_mm = c * xF - s * yF - _cfg.odomOffX;
         float y_mm = s * xF + c * yF - _cfg.odomOffY;
-
-        // Step 4: Heading correction — chip heading + yaw offset gives robot heading.
         float h_rad = hF + _cfg.odomYawDeg * (3.14159265f / 180.0f);
 
         _odo.correct(x_mm, y_mm, h_rad,
                      _cfg.alphaPos, _cfg.alphaYaw, _cfg.otosGate);
     }
 
-    // Convenience: drive sink (for async completions) vs active sink (for streaming).
-    // _driveFn/_driveCtx: captured when the drive began — routes completions to
-    // the channel that originated the command.
-    // fn/ctx: the active channel sink — used for streaming telemetry only.
-    ReplyFn  dfn = _driveFn  ? _driveFn  : fn;
-    void*    dct = _driveFn  ? _driveCtx : ctx;
-
-    // Helper: build an EVT line, appending " #<id>" when _corrId is set.
-    // Uses a local buffer on the stack; safe because dfn() is called inline.
-    auto emitEvt = [&](const char* base) {
-        if (_corrId[0] != '\0') {
-            char evtBuf[64];
-            snprintf(evtBuf, sizeof(evtBuf), "%s #%s", base, _corrId);
-            dfn(evtBuf, dct);
-        } else {
-            dfn(base, dct);
-        }
-        _corrId[0] = '\0';  // clear after emitting
-    };
-
-    // S-mode watchdog
+    // S-mode watchdog — enqueue EVT safety_stop when keepalive times out.
     if (_mode == DriveMode::STREAMING) {
         if ((now_ms - _lastSMs) > (uint32_t)_cfg.sTimeoutMs) {
-            fullStop(dfn, dct);
-            emitEvt("EVT safety_stop");
+            fullStop(nullptr, nullptr);
+            enqueueEvt("EVT safety_stop");
         }
     }
 
-    // T-mode: stop when deadline reached
+    // T-mode: stop when deadline reached.
     if (_mode == DriveMode::TIMED && now_ms >= _tEndMs) {
-        fullStop(dfn, dct);
-        emitEvt("EVT done T");
+        fullStop(nullptr, nullptr);
+        enqueueEvt("EVT done T");
     }
 
-    // D-mode: stop when average encoder travel >= target, or on timeout
+    // D-mode: stop when average encoder travel >= target, or on timeout.
     if (_mode == DriveMode::DISTANCE) {
         int32_t l, r;
         _mc.getEncoderPositions(l, r);
         int32_t traveled = (abs(l - _dEncStartL) + abs(r - _dEncStartR)) / 2;
         if (traveled >= _dTargetMm || now_ms >= _dTimeoutMs) {
-            fullStop(dfn, dct);
-            emitEvt("EVT done D");
+            fullStop(nullptr, nullptr);
+            enqueueEvt("EVT done D");
         }
     }
 
-    // G-mode: advance go-to state machine
+    // G-mode: advance go-to state machine.
     if (_mode == DriveMode::GO_TO) {
         if (_gPhase == GPhase::PRE_ROTATE) {
-            // Continuously re-check the robot-frame bearing to the world-frame goal.
-            // Exit to PURSUE when the bearing falls within the gate threshold.
             float x, y, h_rad;
             getPoseFloat(x, y, h_rad);
             float dxW  = _gTargetXWorld - x;
             float dyW  = _gTargetYWorld - y;
-            // World → robot frame
             float dx_rf =  dxW * cosf(h_rad) + dyW * sinf(h_rad);
             float dy_rf = -dxW * sinf(h_rad) + dyW * cosf(h_rad);
             float bearing = fabsf(atan2f(dy_rf, dx_rf));
             float gateRad = _cfg.turnInPlaceGate * (3.14159265f / 180.0f);
 
             if (bearing <= gateRad) {
-                // Bearing is now within threshold — transition to PURSUE.
-                // Reset _vRamped so the accel ramp starts fresh from zero.
                 _vRamped = 0.0f;
                 _gPhase  = GPhase::PURSUE;
-                // PURSUE tick will set correct wheel speeds on next iteration.
             }
-            // else: keep spinning (wheel setpoints set at beginGoTo() remain active).
         }
 
         if (_gPhase == GPhase::PURSUE) {
             float x, y, h_rad;
             getPoseFloat(x, y, h_rad);
 
-            // World-frame offset → robot frame
             float dxW = _gTargetXWorld - x;
             float dyW = _gTargetYWorld - y;
-            float dx  =  dxW * cosf(h_rad) + dyW * sinf(h_rad);  // forward in robot frame
-            float dy  = -dxW * sinf(h_rad) + dyW * cosf(h_rad);  // left in robot frame
+            float dx  =  dxW * cosf(h_rad) + dyW * sinf(h_rad);
+            float dy  = -dxW * sinf(h_rad) + dyW * cosf(h_rad);
 
             float d2          = dx * dx + dy * dy;
-            float d_remaining = sqrtf(d2);  // one sqrt per tick; used for decel cap and arrival
+            float d_remaining = sqrtf(d2);
 
-            // Arrival detection: stop and emit completion when within tolerance.
             if (d_remaining < _cfg.arriveTolMm) {
-                fullStop(dfn, dct);
+                fullStop(nullptr, nullptr);
                 _gPhase = GPhase::IDLE;
-                emitEvt("EVT done G");
-                return;   // skip further PURSUE logic this tick
+                enqueueEvt("EVT done G");
+                return;
             }
 
-            // Trapezoidal speed shaper (kinematics-model.md §1.6):
-            //   1. Ramp up _vRamped toward _gSpeed at aMax per second.
-            //   2. Cap by decel curve: v_cap = sqrt(2 * aDecel * d_remaining).
-            //   3. v = min(_vRamped, v_cap, _gSpeed) — three-way min.
             _vRamped += _cfg.aMax * dt_s;
-            if (_vRamped > _gSpeed) _vRamped = _gSpeed;   // clamp to user-commanded max
+            if (_vRamped > _gSpeed) _vRamped = _gSpeed;
 
             float v_cap = sqrtf(2.0f * _cfg.aDecel * d_remaining);
-            if (v_cap < _vRamped) _vRamped = v_cap;       // clamp ramped speed to decel cap
+            if (v_cap < _vRamped) _vRamped = v_cap;
 
-            float v     = _vRamped;   // v ≤ _gSpeed and v ≤ v_cap
-
-            float kappa = (d2 > 0.1f) ? (2.0f * dy / d2) : 0.0f;  // κ = 2dy/(dx²+dy²)
+            float v     = _vRamped;
+            float kappa = (d2 > 0.1f) ? (2.0f * dy / d2) : 0.0f;
             float omega = v * kappa;
 
             float vL, vR;

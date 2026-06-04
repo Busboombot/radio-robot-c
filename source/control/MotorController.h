@@ -101,8 +101,8 @@ private:
     float _tgtRMms;
 
     // Cached encoder readings from the most recent tick() call.
-    int32_t _prevEncL;   // mm at start of last tick
-    int32_t _prevEncR;
+    float   _prevEncL;   // mm at start of last tick (float — high-res for velocity)
+    float   _prevEncR;
     float   _actualVelL; // mm/s computed in tick()
     float   _actualVelR;
     float   _encLMm;     // current encoder position (mm), updated in tick()

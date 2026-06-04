@@ -1,5 +1,8 @@
 ---
-status: pending
+status: in-progress
+sprint: '013'
+tickets:
+- 013-001
 ---
 
 # Plan: Port & v2-update the `robot_radio` package (new sprint)

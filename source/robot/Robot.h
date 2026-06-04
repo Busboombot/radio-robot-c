@@ -47,11 +47,19 @@ public:
           MessageBus&     messageBus,
           MicroBit&       uBit);
 
-    // Advance all subsystems by one tick. Call from main loop each iteration.
-    // now_ms: current system time (uBit.systemTime()).
-    // fn/ctx: reply sink for the active channel (used for streaming telemetry).
-    // Per-drive async completions use the sink captured when the drive began.
-    void tick(uint32_t now_ms, ReplyFn fn, void* ctx);
+    // ---------------------------------------------------------------------------
+    // Two-fiber split (013-010):
+    //   controlTick  — run from the high-priority control fiber only.
+    //                  Executes encoder reads → PID → setSpeed + drive-mode
+    //                  state machines.  No serial/radio I/O.
+    //   telemetryTick — run from the comms+telemetry fiber.  Drains pending
+    //                  EVT completions from DriveController, then assembles
+    //                  and emits the unified TLM frame.  Reads only cached
+    //                  encoder/velocity values; line/color I2C is safe here
+    //                  because Motor I2C is now atomic (busy-wait).
+    // ---------------------------------------------------------------------------
+    void controlTick(uint32_t now_ms);
+    void telemetryTick(uint32_t now_ms, ReplyFn fn, void* ctx);
 
     // ---------------------------------------------------------------------------
     // Drive action methods — delegate to DriveController.

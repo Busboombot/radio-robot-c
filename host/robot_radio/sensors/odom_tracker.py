@@ -1,23 +1,33 @@
-"""Odometry tracker: converts firmware readings to world-frame positions.
+"""Odometry tracker: converts firmware TLM frames to world-frame positions.
 
-Contains two parsers:
-- ``parse_so()`` — legacy v1 SO stream format (kept for compatibility).
-- ``parse_tlm()`` — v2 TLM ``pose=x,y,h`` format (primary, heading in cdeg).
+Primary interface (v2):
+- ``parse_tlm()`` — delegates to the v2 protocol module; returns a dict.
+- ``OdomTracker.update_from_tlm(frame)`` — feed a ``TLMFrame`` directly.
 
-For new code, use ``parse_tlm()`` which delegates to the v2 protocol module.
+Legacy (kept for backward compatibility only, NOT on the v2 hot path):
+- ``parse_so()`` — v1 SO stream format parser.  Marked ``@deprecated``.
+  No internal v2 code calls this function.
 
-Usage:
-    tracker = OdomTracker(world_pos_cm, world_yaw_rad)
-    tracker.anchor(conn)           # block until first SO arrives
-    tracker.drain(conn, ms=40)     # read available SO, grow path
-    print(tracker.world_pos)       # latest world position in cm
-    print(tracker.path)            # full path in world cm
+Usage (v2)::
+
+    from robot_radio.robot.protocol import parse_tlm as proto_parse_tlm, TLMFrame
+    from robot_radio.sensors.odom_tracker import OdomTracker
+
+    tracker = OdomTracker(world_pos_mm=(0.0, 0.0), world_yaw_rad=0.0)
+    # Feed a TLMFrame (obtained from NezhaProtocol or parse_tlm):
+    tracker.update_from_tlm(tlm_frame)
+    print(tracker.x_mm, tracker.y_mm, tracker.heading_cdeg)
 """
 
 from __future__ import annotations
 
 import math
+import warnings
 
+
+# ---------------------------------------------------------------------------
+# v2 TLM parse helper (delegates to protocol module)
+# ---------------------------------------------------------------------------
 
 def parse_tlm(line: str) -> dict | None:
     """Parse a v2 TLM line and return a dict with sensor fields, or None.
@@ -55,8 +65,17 @@ def parse_tlm(line: str) -> dict | None:
     return out if out else {}   # empty dict (not None) for bare "TLM" line
 
 
+# ---------------------------------------------------------------------------
+# Legacy v1 SO parser — DEPRECATED, not used on the v2 hot path
+# ---------------------------------------------------------------------------
+
 def parse_so(line) -> tuple | None:
-    """Parse 'SO+1234-0567+090' → (x_mm, y_mm, h_deg) or None."""
+    """[DEPRECATED] Parse 'SO+1234-0567+090' → (x_mm, y_mm, h_deg) or None.
+
+    This is the v1 SO stream format.  In v2 the SO stream does not exist.
+    Kept for backward compatibility only — do not use in new code.
+    Use ``parse_tlm()`` or ``OdomTracker.update_from_tlm()`` instead.
+    """
     s = str(line).lstrip("<# ").strip()
     if not s.startswith("SO"):
         return None
@@ -79,45 +98,226 @@ def parse_so(line) -> tuple | None:
     return None
 
 
-class OdomTracker:
-    """Converts firmware SO readings to world-frame positions in cm.
+# ---------------------------------------------------------------------------
+# OdomTracker — v2 primary interface
+# ---------------------------------------------------------------------------
 
-    The firmware emits SO values in robot frame (chip-mounting reflection
-    and translation offset are baked in via the OO command).  This class
-    rotates robot-frame deltas into camera world coordinates using the
-    camera-derived yaw captured at anchor time.
+class OdomTracker:
+    """Tracks robot pose from v2 TLMFrame.pose (x_mm, y_mm, heading_cdeg).
+
+    The primary update path is :meth:`update_from_tlm`, which accepts a
+    ``TLMFrame`` from the v2 protocol layer.
+
+    World-frame conversion is computed from the pose at anchor time.
+    Units: all millimetres and centidegrees internally; the ``world_pos``
+    property converts to cm for legacy callers.
+
+    Constructor accepts either a ``RobotConfig`` instance (``config=``)
+    or bare keyword args (``trackwidth_mm``, ``mm_per_deg_l``,
+    ``mm_per_deg_r``) for the kinematic parameters.  If neither is
+    supplied the tracker operates in a simple pose-forwarding mode without
+    wheel-based dead-reckoning.
+
+    Parameters
+    ----------
+    world_pos_mm:
+        Initial world position in mm (x_mm, y_mm).  Defaults to (0, 0).
+    world_yaw_rad:
+        Initial world heading in radians (CW-positive).  Defaults to 0.
+    config:
+        Optional ``RobotConfig``.  When supplied, ``trackwidth_mm``,
+        ``mm_per_deg_l``, and ``mm_per_deg_r`` are read from it.
+    trackwidth_mm:
+        Track width in mm (overrides config if supplied directly).
+    mm_per_deg_l:
+        Left-wheel mm per encoder degree (calibration param).
+    mm_per_deg_r:
+        Right-wheel mm per encoder degree (calibration param).
     """
 
-    MIN_MOVE_CM = 0.3
+    # Minimum movement (mm) before a new world position is appended to path.
+    MIN_MOVE_MM = 3.0
 
-    def __init__(self, world_pos_cm: tuple, world_yaw_rad: float):
-        self._ref_world = world_pos_cm
-        self._ref_yaw = world_yaw_rad
-        self._ref_otos: tuple | None = None
-        self._last: tuple | None = None
-        self.path: list[tuple] = []
+    def __init__(
+        self,
+        world_pos_mm: tuple[float, float] = (0.0, 0.0),
+        world_yaw_rad: float = 0.0,
+        *,
+        config=None,
+        trackwidth_mm: float | None = None,
+        mm_per_deg_l: float | None = None,
+        mm_per_deg_r: float | None = None,
+    ) -> None:
+        self._ref_world_mm: tuple[float, float] = world_pos_mm
+        self._ref_yaw: float = world_yaw_rad
+
+        # Kinematic parameters (optional; sourced from RobotConfig when supplied)
+        if config is not None:
+            tw = getattr(config, "trackwidth", None)
+            self.trackwidth_mm: float | None = float(tw) if tw is not None else trackwidth_mm
+            cal = getattr(config, "calibration", None)
+            if cal is not None:
+                self.mm_per_deg_l: float | None = getattr(cal, "mm_per_wheel_deg_left", None)
+                self.mm_per_deg_r: float | None = getattr(cal, "mm_per_wheel_deg_right", None)
+            else:
+                self.mm_per_deg_l = mm_per_deg_l
+                self.mm_per_deg_r = mm_per_deg_r
+        else:
+            self.trackwidth_mm = trackwidth_mm
+            self.mm_per_deg_l = mm_per_deg_l
+            self.mm_per_deg_r = mm_per_deg_r
+
+        # State from TLM
+        self._ref_pose: tuple[int, int, int] | None = None   # (x_mm, y_mm, cdeg) at anchor
+        self._last_pose: tuple[int, int, int] | None = None  # (x_mm, y_mm, cdeg) latest
+
+        # Path in world mm (list of (x_mm, y_mm))
+        self.path: list[tuple[float, float]] = []
+
+    # ------------------------------------------------------------------
+    # Primary v2 update path
+    # ------------------------------------------------------------------
+
+    def update_from_tlm(self, frame) -> bool:
+        """Update pose from a ``TLMFrame``.
+
+        Parameters
+        ----------
+        frame:
+            A ``TLMFrame`` object (from ``robot_radio.robot.protocol``).
+            Must have a ``pose`` field ``(x_mm, y_mm, heading_cdeg)``.
+
+        Returns
+        -------
+        bool
+            ``True`` if the frame contained a ``pose`` field and state was
+            updated; ``False`` otherwise.
+        """
+        pose = getattr(frame, "pose", None)
+        if pose is None:
+            return False
+        self._last_pose = pose  # (x_mm, y_mm, heading_cdeg)
+
+        # Auto-anchor on first pose received
+        if not self.anchored:
+            self.anchor_pose(pose)
+            return True
+
+        w = self._to_world_mm(pose)
+        if w is not None:
+            if (not self.path or
+                    math.hypot(w[0] - self.path[-1][0],
+                               w[1] - self.path[-1][1]) > self.MIN_MOVE_MM):
+                self.path.append(w)
+        return True
+
+    def anchor_pose(self, pose: tuple[int, int, int]) -> None:
+        """Set the reference pose (anchor point).
+
+        Parameters
+        ----------
+        pose:
+            ``(x_mm, y_mm, heading_cdeg)`` from a ``TLMFrame``.
+        """
+        self._ref_pose = pose
+        self._last_pose = pose
+        w0 = self._to_world_mm(pose)
+        if w0 is not None and not self.path:
+            self.path.append(w0)
+
+    # ------------------------------------------------------------------
+    # Properties
+    # ------------------------------------------------------------------
 
     @property
     def anchored(self) -> bool:
-        return self._ref_otos is not None
+        """True once the tracker has received its first pose."""
+        return self._ref_pose is not None
 
     @property
-    def world_pos(self) -> tuple | None:
-        if not self.anchored or self._last is None:
+    def x_mm(self) -> int | None:
+        """Raw x position from the latest TLM frame (mm)."""
+        return self._last_pose[0] if self._last_pose is not None else None
+
+    @property
+    def y_mm(self) -> int | None:
+        """Raw y position from the latest TLM frame (mm)."""
+        return self._last_pose[1] if self._last_pose is not None else None
+
+    @property
+    def heading_cdeg(self) -> int | None:
+        """Raw heading from the latest TLM frame (centidegrees)."""
+        return self._last_pose[2] if self._last_pose is not None else None
+
+    @property
+    def heading_deg(self) -> float | None:
+        """Heading in degrees (centidegrees / 100)."""
+        if self._last_pose is None:
             return None
-        return self._to_world(self._last)
+        return self._last_pose[2] / 100.0
+
+    @property
+    def heading_rad(self) -> float | None:
+        """Heading in radians."""
+        if self._last_pose is None:
+            return None
+        return math.radians(self._last_pose[2] / 100.0)
+
+    @property
+    def world_pos(self) -> tuple[float, float] | None:
+        """Current world position in **cm** (legacy unit; use x_mm/y_mm for mm)."""
+        if not self.anchored or self._last_pose is None:
+            return None
+        w = self._to_world_mm(self._last_pose)
+        if w is None:
+            return None
+        return (w[0] / 10.0, w[1] / 10.0)
 
     @property
     def world_yaw(self) -> float | None:
-        """Current robot heading in world frame (CW-positive radians)."""
-        if not self.anchored or self._last is None:
+        """Current heading in world frame (CW-positive radians)."""
+        if not self.anchored or self._last_pose is None:
             return None
-        # SO heading is CCW-positive degrees; world yaw is CW-positive radians.
-        # A CW turn increases world_yaw and decreases SO h_deg.
-        return self._ref_yaw - math.radians(self._last[2] - self._ref_otos[2])
+        assert self._ref_pose is not None
+        # TLM heading is CCW-positive centidegrees.
+        # Delta in radians (CCW positive), then flip sign for CW world convention.
+        delta_rad = math.radians((self._last_pose[2] - self._ref_pose[2]) / 100.0)
+        return self._ref_yaw - delta_rad
+
+    # ------------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------------
+
+    def _to_world_mm(self, pose: tuple[int, int, int]) -> tuple[float, float] | None:
+        """Convert a TLM pose to world-frame mm using the anchor pose."""
+        if self._ref_pose is None:
+            return None
+        # TLM: x = right, y = forward (robot frame at anchor time)
+        fwd_mm = pose[1] - self._ref_pose[1]
+        right_mm = pose[0] - self._ref_pose[0]
+        # Rotate from robot-anchor-frame to world frame.
+        # a = world yaw at anchor time (CW-positive radians)
+        # Robot body Y=forward, X=right → world transform:
+        #   world_x = cos(a)*fwd - sin(a)*right
+        #   world_y = -sin(a)*fwd - cos(a)*right   (CW rotation convention)
+        a = self._ref_yaw - math.radians(self._ref_pose[2] / 100.0)
+        c, s = math.cos(a), math.sin(a)
+        rx_mm = c * fwd_mm - s * right_mm
+        ry_mm = -s * fwd_mm - c * right_mm
+        return (
+            self._ref_world_mm[0] + rx_mm,
+            self._ref_world_mm[1] + ry_mm,
+        )
+
+    # ------------------------------------------------------------------
+    # Legacy SO-based interface (v1 hot path — DEPRECATED, no v2 callers)
+    # ------------------------------------------------------------------
 
     def anchor(self, conn, timeout_s: float = 1.0) -> bool:
-        """Block until a SO reading arrives and use it as the reference.
+        """[DEPRECATED] Block until a SO reading arrives and use it as the reference.
+
+        This method uses the v1 SO stream and is preserved for backward
+        compatibility only.  In v2, use ``update_from_tlm()`` instead.
 
         Returns True if anchored within timeout, False otherwise.
         """
@@ -126,42 +326,32 @@ class OdomTracker:
         while time.monotonic() < deadline:
             for line in conn.read_lines(duration_ms=100):
                 v = parse_so(line)
-               
                 if v is not None:
-                    self._ref_otos = v
-                    self._last = v
-                    w0 = self._to_world(v)
-                    if w0 is not None:
-                        self.path.append(w0)
+                    # Convert SO (mm) to TLM-like pose for anchoring.
+                    # SO heading is in integer degrees; store as cdeg.
+                    pose_cdeg = (v[0], v[1], v[2] * 100)
+                    self.anchor_pose(pose_cdeg)
                     return True
         return False
 
     def drain(self, conn, duration_ms: int = 40) -> None:
-        """Read all available SO lines and append new world positions to path."""
+        """[DEPRECATED] Read all available SO lines (v1 legacy path)."""
         self.feed(conn.read_lines(duration_ms=duration_ms))
 
     def feed(self, lines) -> None:
-        """Process an already-read iterable of lines (same logic as drain without the read)."""
+        """[DEPRECATED] Process SO lines (v1 legacy path).
+
+        For v2, feed TLMFrame objects via ``update_from_tlm()`` instead.
+        """
         for line in lines:
             v = parse_so(line)
             if v is not None:
-                self._last = v
-                w = self._to_world(v)
+                # SO: (x_mm, y_mm, h_deg); convert heading to cdeg
+                pose_cdeg = (v[0], v[1], v[2] * 100)
+                self._last_pose = pose_cdeg
+                w = self._to_world_mm(pose_cdeg)
                 if w is not None:
                     if (not self.path or
                             math.hypot(w[0] - self.path[-1][0],
-                                       w[1] - self.path[-1][1]) > self.MIN_MOVE_CM):
+                                       w[1] - self.path[-1][1]) > self.MIN_MOVE_MM):
                         self.path.append(w)
-
-    def _to_world(self, o: tuple) -> tuple | None:
-        if self._ref_otos is None:
-            return None
-        fwd_mm   = o[1] - self._ref_otos[1]   # SO y = forward
-        right_mm = o[0] - self._ref_otos[0]   # SO x = right
-        a = self._ref_yaw - math.radians(self._ref_otos[2])
-        c, s = math.cos(a), math.sin(a)
-        # CW-positive yaw, body Y=forward X=right: body→world is [[c,-s],[-s,-c]]
-        rx_mm = c * fwd_mm - s * right_mm
-        ry_mm = -s * fwd_mm - c * right_mm
-        return (self._ref_world[0] + rx_mm / 10.0,
-                self._ref_world[1] + ry_mm / 10.0)

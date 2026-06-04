@@ -52,6 +52,11 @@ public:
     // Uses mmPerDegL if motorId==LEFT_MOTOR, mmPerDegR otherwise.
     int32_t readEncoder(const RobotConfig& cfg) const;
 
+    // High-resolution variant: cumulative encoder in mm as float (NOT truncated
+    // to whole mm). Used by the velocity loop so the encoder-delta velocity
+    // estimate isn't quantized to ±1 mm/tick (a throb source on the inner loop).
+    float   readEncoderMmF(const RobotConfig& cfg) const;
+
     // Zero this motor's encoder accumulator (software offset reset,
     // matches chip TypeScript resetRelAngleValue() behaviour).
     void    resetEncoder();

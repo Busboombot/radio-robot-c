@@ -21,6 +21,12 @@
 # DEALINGS IN THE SOFTWARE.
 cmake_minimum_required(VERSION 3.6)
 
+# Always emit build/compile_commands.json so VSCode IntelliSense (cpptools)
+# uses the exact build flags/include paths instead of guessing. Without this,
+# standard headers (stdint.h etc.) aren't found and every uint32_t/size_t shows
+# a bogus "expected a ';'" squiggle.
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+
 # include additional cmake
 include(utils/cmake/JSONParser.cmake)
 include(utils/cmake/util.cmake)

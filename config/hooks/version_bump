@@ -1,24 +1,47 @@
 #!/usr/bin/env bash
 # dotconfig version_bump hook.
 #
-# Fires after `dotconfig version bump` writes the new project version. Keeps the
-# firmware-reported version (source/types/Protocol.h FIRMWARE_VERSION) in sync
-# with the dotconfig/package version, so the robot's ID / VER / DEVICE banner
-# always reports the real build version instead of a hand-edited stale string.
+# Fires after `dotconfig version bump` writes the new project version. Keeps ALL
+# versioned artifacts in this repo in lockstep with the dotconfig/package
+# version, so every component reports the same build:
+#   - root            pyproject.toml          (microbit-v2-samples-tools)
+#   - host library    host/pyproject.toml     (robot_radio)
+#   - mbdeploy        mbdeploy/pyproject.toml
+#   - firmware        source/types/Protocol.h (FIRMWARE_VERSION)
 #
 # Args (from dotconfig): <project_dir> <old_version> <new_version>
 set -euo pipefail
 
 PROJECT_DIR="$1"
 NEW_VERSION="$3"
+
+# Replace ONLY the first `version = "..."` line (the [project].version) in a
+# pyproject.toml, in place. awk so we never touch dependency version specifiers
+# or anything below the first match.
+sync_toml_version() {
+    local file="$1"
+    [ -f "$file" ] || return 0
+    local tmp
+    tmp="$(mktemp)"
+    awk -v v="$NEW_VERSION" '
+        !done && /^[[:space:]]*version[[:space:]]*=[[:space:]]*"/ {
+            sub(/"[^"]*"/, "\"" v "\""); done = 1
+        }
+        { print }
+    ' "$file" > "$tmp" && mv "$tmp" "$file"
+    echo "version_bump hook: version -> \"$NEW_VERSION\" in ${file#$PROJECT_DIR/}"
+}
+
+# pyproject.toml files — explicit list, never glob (avoids .venv/vendor copies).
+sync_toml_version "$PROJECT_DIR/pyproject.toml"
+sync_toml_version "$PROJECT_DIR/host/pyproject.toml"
+sync_toml_version "$PROJECT_DIR/mbdeploy/pyproject.toml"
+
+# Firmware version string in the C++ header.
 HEADER="$PROJECT_DIR/source/types/Protocol.h"
-
-[ -f "$HEADER" ] || exit 0
-
-# Replace the quoted version in the `FIRMWARE_VERSION = "..."` line, in place,
-# portably (no GNU/BSD `sed -i` divergence).
-tmp="$(mktemp)"
-sed -E "s/(FIRMWARE_VERSION[[:space:]]*=[[:space:]]*\")[^\"]*(\")/\1${NEW_VERSION}\2/" \
-    "$HEADER" > "$tmp" && mv "$tmp" "$HEADER"
-
-echo "version_bump hook: FIRMWARE_VERSION -> \"$NEW_VERSION\" in source/types/Protocol.h"
+if [ -f "$HEADER" ]; then
+    tmp="$(mktemp)"
+    sed -E "s/(FIRMWARE_VERSION[[:space:]]*=[[:space:]]*\")[^\"]*(\")/\1${NEW_VERSION}\2/" \
+        "$HEADER" > "$tmp" && mv "$tmp" "$HEADER"
+    echo "version_bump hook: FIRMWARE_VERSION -> \"$NEW_VERSION\" in source/types/Protocol.h"
+fi

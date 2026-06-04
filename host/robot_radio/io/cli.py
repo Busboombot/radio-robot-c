@@ -12,6 +12,7 @@ import time
 
 from robot_radio.io.serial_conn import SerialConnection, list_serial_ports, DEFAULT_PORT
 from robot_radio.robot import QBotPro, Nezha, NezhaProtocol, Cutebot
+from robot_radio.robot.protocol import parse_tlm
 from robot_radio.sensors.color import nezha_classifier
 from robot_radio.config.robot_config import get_robot_config, match_robot_by_id
 
@@ -200,7 +201,7 @@ def _make_robot(args) -> tuple[QBotPro, SerialConnection, dict]:
 
     Calibration freshness check (warm-path speedup):
     After connecting, reads the firmware's current OL register via
-    ``proto.query_ol()`` (one fast round-trip, ~tens of ms) and compares it
+    ``proto.otos_get_linear_scalar()`` (one fast round-trip, ~tens of ms) and compares it
     against the config-derived expected value.  If they match, calibration
     was already pushed this session and the push is skipped.  If they don't
     match (including ``None`` on timeout, which happens when the robot was
@@ -330,13 +331,13 @@ def _make_robot(args) -> tuple[QBotPro, SerialConnection, dict]:
     # Query firmware's current OL value via proto (fast round-trip).
     proto = getattr(robot, "_proto", None)
     if proto is not None and expected_ol is not None:
-        actual_ol = proto.query_ol()
+        actual_ol = proto.otos_get_linear_scalar()
         _log(f"freshness check: firmware OL={actual_ol}, expected OL={expected_ol}")
         if actual_ol is None:
             # First query returned None — transient miss (port not fully settled
             # after a cache-hit open, or relay garbling).  Retry once before
             # concluding the firmware is uncalibrated and re-pushing.
-            actual_ol = proto.query_ol()
+            actual_ol = proto.otos_get_linear_scalar()
             _log(f"freshness check retry: firmware OL={actual_ol}, expected OL={expected_ol}")
         if actual_ol != expected_ol:
             # Mismatch (including None after retry): firmware was power-cycled
@@ -530,22 +531,19 @@ def cmd_sync_pose(args):
     h_deg = round(_math.degrees(yaw_rad) + 90.0)
 
     robot, conn, _ = _make_robot(args)
-    proto = getattr(robot, "_proto", None)
-    if not isinstance(proto, NezhaProtocol):
+    if not isinstance(robot, Nezha):
         conn.disconnect()
-        sys.exit("Error: rogo sync pose requires a Nezha robot with NezhaProtocol.")
+        sys.exit("Error: rogo sync pose requires a Nezha robot.")
 
-    result = proto.set_world_pose(x_mm, y_mm, h_deg)
+    # v2: use OV command via Nezha.set_world_pose(x_mm, y_mm, h_cdeg).
+    # Heading is in degrees here; OV expects centi-degrees.
+    h_cdeg = round(h_deg * 100)
+    robot.set_world_pose(x_mm, y_mm, h_cdeg)
     print(
         f"sync pose: daemon=({x_cm:.1f}cm, {y_cm:.1f}cm, "
         f"{_math.degrees(yaw_rad):.1f}°)  "
-        f"sent SI{x_mm:+d}{y_mm:+d}{h_deg:+d}"
+        f"sent OV {x_mm} {y_mm} {h_cdeg}  (v2, OV command)"
     )
-    for line in result.get("responses", []):
-        s = str(line).lstrip("<# ")
-        if "ACK" in s or "ERR" in s:
-            print(f"  firmware: {s}")
-            break
     conn.disconnect()
 
 
@@ -857,13 +855,43 @@ def _print_enc_dist(initial: tuple[int, int] | None,
 
 
 def cmd_drive(args):
-    """Drive at speed. --ms for time, --mm for distance, neither for streaming.
+    """Drive at speed. --ms for time, --mm for distance, 'stream' for keepalive streaming.
 
     When |left| or |right| is below the configured crawl threshold,
     drive falls back to crawl mode (pulse-train).  Threshold comes from
     --min-speed, then $ROGO_MIN_SPEED, else DEFAULT_MIN_SPEED_MMS.
     Crawl requires --mm and symmetric wheel speeds (left == right).
+
+    Stream mode (rogo drive <L> <R> stream [--resend MS]) sends S keepalives
+    at the specified cadence and streams encoder readings until Ctrl-C.
     """
+    # Validate and resolve the optional 'stream' keyword positional.
+    stream_kw = getattr(args, "stream_kw", None)
+    if stream_kw is not None and stream_kw != "stream":
+        print(
+            f"Error: unexpected positional argument '{stream_kw}'. "
+            "Did you mean 'stream'?",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    args.stream_mode = (stream_kw == "stream")
+
+    # Validate --resend.
+    # Note: do not use `or 150` here — that would silently convert 0 to 150.
+    resend_ms = getattr(args, "resend", None)
+    if resend_ms is None:
+        resend_ms = 150
+    if args.stream_mode and resend_ms <= 0:
+        print(f"Error: --resend must be > 0, got {resend_ms}", file=sys.stderr)
+        sys.exit(1)
+
+    if args.stream_mode and (args.ms is not None or args.mm is not None):
+        print(
+            "Error: 'stream' is mutually exclusive with --ms and --mm.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
     robot, conn, _ = _make_robot(args)
     _maybe_zero(robot, args)
     initial = robot.read_encoders()
@@ -903,6 +931,32 @@ def cmd_drive(args):
     elif args.ms is not None:
         left_enc, right_enc = robot.speed_for_time(args.left, args.right, args.ms)
         _print_enc_dist(initial, (left_enc, right_enc))
+    elif args.stream_mode:
+        # Stream mode: rogo drive <L> <R> stream [--resend MS]
+        # --resend controls the S keepalive cadence sent to the firmware.
+        # stream_drive(watchdog_ms=...) uses keepalive_s = watchdog_ms * 0.30 / 1000.
+        # To achieve a resend cadence of resend_ms, set watchdog_ms = resend_ms / 0.30.
+        # Example: resend_ms=150, watchdog_ms=500 → keepalive = 500*0.30 = 150 ms.
+        watchdog_ms = int(resend_ms / 0.30)  # keepalive = watchdog_ms * 0.30
+        _log(f"stream mode: resend={resend_ms}ms → watchdog_ms={watchdog_ms}ms")
+        left_enc, right_enc = initial
+        speeds = [args.left, args.right]
+        try:
+            for resp in robot.stream_drive(speeds, period_ms=40, watchdog_ms=watchdog_ms):
+                tlm = parse_tlm(resp.raw) if resp.tag == "TLM" else None
+                if tlm and tlm.enc:
+                    left_enc, right_enc = tlm.enc
+                    print(f"ENC {left_enc} {right_enc}")
+        except KeyboardInterrupt:
+            print("\nCtrl-C caught, stopping...", file=sys.stderr)
+        _log("sending STOP")
+        robot.stop()
+        _log("waiting for motors to stop")
+        lines = conn.read_lines(duration_ms=500)
+        for line in lines:
+            _log(f"RX: {line}")
+        _log("disconnecting")
+        _print_enc_dist(initial, (left_enc, right_enc))
     else:
         left_enc, right_enc = initial
         try:
@@ -910,10 +964,10 @@ def cmd_drive(args):
                 print(f"ENC {left_enc} {right_enc}")
         except KeyboardInterrupt:
             print("\nCtrl-C caught, stopping...", file=sys.stderr)
-        _log("sending X")
+        _log("sending STOP")
         robot.stop()
         _log("waiting for motors to stop")
-        # Give firmware time to process X and confirm
+        # Give firmware time to process STOP and confirm
         lines = conn.read_lines(duration_ms=500)
         for line in lines:
             _log(f"RX: {line}")
@@ -936,10 +990,10 @@ def cmd_drive_stream(args):
 
 
 def cmd_stop(args):
-    """Stop motors."""
+    """Stop motors (v2 STOP command)."""
     robot, conn, _ = _make_robot(args)
     robot.stop()
-    print("X")
+    print("STOP")
     conn.disconnect()
 
 
@@ -1078,7 +1132,8 @@ def _spin_to_world_yaw(proto, field, tag_id, target_deg, speed, tol_deg):
     print(f"current={cur_deg:+.1f}°  target={target_deg:+.1f}°  "
           f"need={diff:+.1f}° ({'CCW' if diff > 0 else 'CW'})")
 
-    proto.set_watchdog(WATCHDOG_MS)
+    # v2: no set_watchdog verb; use SET sTimeout=<ms> to configure firmware watchdog.
+    proto.set_config(sTimeout=WATCHDOG_MS)
     prev_cam = cur_yaw_rad
     prev_time = time.monotonic()
     total_cam_deg = 0.0
@@ -1229,7 +1284,8 @@ def _daemon_spin_to_yaw(proto, read_pose, target_deg, speed, tol_deg,
         return None
     cur_deg = _math.degrees(p[2])
     diff = ((target_deg - cur_deg + 180.0) % 360.0) - 180.0
-    proto.set_watchdog(500)
+    # v2: no set_watchdog verb; use SET sTimeout=<ms> to configure firmware watchdog.
+    proto.set_config(sTimeout=500)
     prev_cam = p[2]
     prev_t = time.monotonic()
     total = 0.0
@@ -1345,7 +1401,8 @@ def cmd_goto(args):
             print(f"Already within {arrive_cm:.1f}cm (dist={d0:.1f}cm); done.")
             return
 
-        proto.set_watchdog(WATCHDOG_MS)
+        # v2: no set_watchdog verb; use SET sTimeout=<ms> to configure firmware watchdog.
+        proto.set_config(sTimeout=WATCHDOG_MS)
         t_start = time.monotonic()
 
         while True:
@@ -1472,62 +1529,48 @@ def _wheel_arg(s: str):
 
 
 def cmd_rotate(args):
-    """Rotate each wheel by a relative angle (PR command).
+    """Rotate each wheel by a relative angle.
 
-    Two positional args (L, R) — signed degrees from current position.
-    Use 'x' (or '-' or '.') for either wheel to skip it.  Returns
-    immediately after the firmware ACKs; the motor controller runs the
-    move autonomously.
+    NOTE: This command is not supported in v2 firmware.  The v1 PR (relative
+    rotate) servo verb has been removed.  Use 'rogo drive --ms' or 'rogo turn'
+    for equivalent motion.
 
-        rogo rotate 360 360 --speed 30      # both wheels one revolution
-        rogo rotate 360 -360 --speed 30     # in-place spin
-        rogo rotate 360 x --speed 30        # only left wheel rotates
+    The command accepts its arguments for backward compatibility with scripts
+    but exits immediately with a clear message rather than crashing.
     """
-    robot, conn, _ = _make_robot(args)
-    _maybe_zero(robot, args)
-    l_str = "skip" if args.left is None else f"{args.left:+.1f}°"
-    r_str = "skip" if args.right is None else f"{args.right:+.1f}°"
-
-    _log(f"rotate L={l_str} R={r_str} at {args.speed}% speed")
-    result = robot.rotate(args.left, args.right, args.speed)
-    for line in result.get("responses", []):
-        s = str(line).lstrip("<# ")
-        if s.startswith("ACK:") or s.startswith("ERR"):
-            print(s)
-            break
-
-
-    conn.disconnect()
+    # v2 decision: the PR servo verb was Cutebot-only and is not implemented in
+    # the v2 Nezha firmware.  The Nezha driver has no rotate() method.
+    # Route through rogo turn <deg> for closed-loop rotation, or
+    # rogo drive --ms for open-loop timed spin.
+    print(
+        "Error: 'rogo rotate' is not supported on v2 firmware (no PR verb).\n"
+        "Use 'rogo turn <deg>' for closed-loop rotation, or\n"
+        "'rogo drive -<speed> <speed> --ms <ms>' for open-loop timed spin.",
+        file=sys.stderr,
+    )
+    sys.exit(1)
 
 
 def cmd_angle(args):
-    """Drive each wheel to an absolute angle (PA command).
+    """Drive each wheel to an absolute angle.
 
-    Two positional args (L, R) — 0..360°.  Use 'x' (or '-' or '.') for
-    either wheel to skip it.  --cw / --ccw force a direction; default
-    is the shortest path.  Returns immediately after the firmware ACKs.
+    NOTE: This command is not supported in v2 firmware.  The v1 PA (absolute
+    angle) servo verb has been removed.  Use 'rogo turn <deg>' for equivalent
+    rotation, or 'rogo drive --ms' for timed motion.
 
-        rogo angle 0 0 --speed 20           # park both at 0° (shortest)
-        rogo angle 0 x --speed 20           # only left wheel moves
-        rogo angle 90 270 --cw --speed 20   # asymmetric, CW only
+    The command accepts its arguments for backward compatibility with scripts
+    but exits immediately with a clear message rather than crashing.
     """
-    if args.cw and args.ccw:
-        print("Error: --cw and --ccw are mutually exclusive", file=sys.stderr)
-        sys.exit(1)
-    mode = 1 if args.cw else 2 if args.ccw else 3
-    robot, conn, _ = _make_robot(args)
-    _maybe_zero(robot, args)
-    l_str = "skip" if args.left is None else f"{args.left:.1f}°"
-    r_str = "skip" if args.right is None else f"{args.right:.1f}°"
-    mode_name = "CW" if mode == 1 else "CCW" if mode == 2 else "SHORTEST"
-    _log(f"angle L={l_str} R={r_str} {mode_name} at {args.speed}% speed")
-    result = robot.angle(args.left, args.right, mode, args.speed)
-    for line in result.get("responses", []):
-        s = str(line).lstrip("<# ")
-        if s.startswith("ACK:") or s.startswith("ERR"):
-            print(s)
-            break
-    conn.disconnect()
+    # v2 decision: the PA servo verb was Cutebot-only and is not implemented in
+    # the v2 Nezha firmware.  The Nezha driver has no angle() method.
+    # Route through rogo turn <deg> for closed-loop rotation.
+    print(
+        "Error: 'rogo angle' is not supported on v2 firmware (no PA verb).\n"
+        "Use 'rogo turn <deg>' for closed-loop rotation, or\n"
+        "'rogo drive -<speed> <speed> --ms <ms>' for open-loop timed spin.",
+        file=sys.stderr,
+    )
+    sys.exit(1)
 
 
 def cmd_port(args):
@@ -1615,10 +1658,41 @@ def cmd_grip(args):
 
 
 def cmd_enc(args):
-    """Read encoder positions (mm)."""
+    """Read encoder positions (mm) via v2 SNAP → TLM."""
     robot, conn, _ = _make_robot(args)
-    left_enc, right_enc = robot.read_encoders()
+    # v2: read fresh encoder values via SNAP → TLM (not cached state).
+    # The Nezha driver's read_encoders() returns cached state; SNAP requests
+    # a live TLM frame from the firmware with current enc= values.
+    frame = _snap_tlm(conn)
+    if frame is not None and frame.enc is not None:
+        left_enc, right_enc = frame.enc
+    else:
+        # Fallback: cached state from any prior streaming (may be stale on fresh connect).
+        left_enc, right_enc = robot.read_encoders()
     print(f"ENC {left_enc} {right_enc}")
+    conn.disconnect()
+
+
+def cmd_opos(args):
+    """Read robot OTOS fused pose via v2 SNAP → TLM.
+
+    Outputs: POSE <x_mm> <y_mm> <h_deg> where h_deg is the heading in degrees
+    (converted from the firmware's centi-degrees).
+
+    v2 firmware does not support the v1 SO (Sensor Output) verb.  Fused pose
+    is read via SNAP → TLM pose= field (x_mm, y_mm, h_cdeg).
+    """
+    robot, conn, _ = _make_robot(args)
+    # v2: use SNAP → TLM to read OTOS fused pose; v1 SO verb is not supported.
+    frame = _snap_tlm(conn)
+    if frame is None or frame.pose is None:
+        print("Error: no pose data in TLM frame (SNAP returned no pose= field)",
+              file=sys.stderr)
+        conn.disconnect()
+        sys.exit(1)
+    x_mm, y_mm, h_cdeg = frame.pose
+    h_deg = h_cdeg / 100.0
+    print(f"POSE {x_mm} {y_mm} {h_deg:.1f}")
     conn.disconnect()
 
 
@@ -1651,21 +1725,51 @@ def _find_response(responses: list[str], prefix: str) -> str | None:
     return None
 
 
+def _snap_tlm(conn: SerialConnection):
+    """Send SNAP and return the parsed TLMFrame, or None if not received.
+
+    v2 firmware responds to SNAP with an immediate TLM frame.  This helper
+    sends SNAP and reads the TLM frame from the response window.
+    """
+    from robot_radio.robot.protocol import parse_tlm as _parse_tlm
+    # SNAP makes the firmware emit one TLM frame on its NEXT tick; over the lossy
+    # radio relay that frame can take >0.5 s to arrive (the "OK snap" ack comes
+    # first, the TLM after) and is sometimes dropped entirely. Read a generous
+    # window and RETRY a few times until a frame with data arrives.
+    for _attempt in range(4):
+        result = conn.send("SNAP", read_ms=700)
+        for raw in result.get("responses", []):
+            frame = _parse_tlm(raw)
+            if frame is None and "TLM" in raw:
+                # The RAW250 relay can concatenate replies WITHOUT newline
+                # separators ("OK snapTLM t=..."); re-parse from "TLM".
+                frame = _parse_tlm(raw[raw.index("TLM"):])
+            if frame is not None:
+                return frame
+    return None
+
+
 def cmd_line(args):
-    """Read the 4-channel line sensor: 'LS g1 g2 g3 g4' (0..255 each)."""
+    """Read the 4-channel line sensor via v2 SNAP → TLM (grayscale 0..255 each).
+
+    v2 firmware does not support the v1 LS verb.  SNAP requests an immediate
+    TLM frame; the line= field contains the four grayscale channels.
+    """
     robot, conn, _ = _make_robot(args)
-    result = robot.send("LS", read_ms=300)
-    line = _find_response(result.get("responses", []), "LS ")
-    if line is None:
-        print("Error: no LS response from robot", file=sys.stderr)
+    # v2: use SNAP → TLM to read line sensor; v1 LS verb is not supported.
+    frame = _snap_tlm(conn)
+    if frame is None or frame.line is None:
+        print("Error: no line sensor data in TLM frame (SNAP returned no line= field)",
+              file=sys.stderr)
         conn.disconnect()
         sys.exit(1)
-    print(line)
+    g1, g2, g3, g4 = frame.line
+    print(f"LS {g1} {g2} {g3} {g4}")
     conn.disconnect()
 
 
 def cmd_color(args):
-    """Read the color sensor.
+    """Read the color sensor via v2 SNAP → TLM.
 
     Default output: HSL (hue 0..360, sat 0..100, light 0..100), computed
     from the *white-balanced* RGB so it matches what the classifier sees.
@@ -1673,6 +1777,9 @@ def cmd_color(args):
     formats, or ``--raw`` to dump raw RGBC counts.  Pass
     ``--calibrate-white`` to install a fresh white reference (otherwise
     the Nezha factory default is used).
+
+    v2 firmware does not support the v1 CS verb.  Color data is read via
+    SNAP → TLM color= field (r,g,b,c).
     """
     import colorsys
 
@@ -1682,12 +1789,11 @@ def cmd_color(args):
     if args.calibrate_white:
         from robot_radio.sensors.color import calibrate_white as _do_calibrate
         def _read():
-            res = robot.send("CS", read_ms=400)
-            ln = _find_response(res.get("responses", []), "CS ")
-            if not ln:
+            # v2: use SNAP → TLM to read color sensor; v1 CS verb not supported.
+            frame = _snap_tlm(conn)
+            if frame is None or frame.color is None:
                 return None
-            p = ln.split()
-            return (int(p[1]), int(p[2]), int(p[3]), int(p[4]))
+            return frame.color
         try:
             wr = _do_calibrate(clf, _read)
             print(f"# white ref: R={wr[0]} G={wr[1]} B={wr[2]} C={wr[3]}",
@@ -1697,20 +1803,16 @@ def cmd_color(args):
             conn.disconnect()
             sys.exit(1)
 
-    result = robot.send("CS", read_ms=600)
-    line = _find_response(result.get("responses", []), "CS ")
-    if line is None:
-        print("Error: no CS response from robot", file=sys.stderr)
+    # v2: use SNAP → TLM to read color sensor; v1 CS verb is not supported.
+    frame = _snap_tlm(conn)
+    if frame is None or frame.color is None:
+        print("Error: no color sensor data in TLM frame (SNAP returned no color= field)",
+              file=sys.stderr)
         conn.disconnect()
         sys.exit(1)
     conn.disconnect()
 
-    parts = line.split()
-    if len(parts) < 5:
-        print(f"Error: malformed CS response: {line}", file=sys.stderr)
-        sys.exit(1)
-    r_raw, g_raw, b_raw, c_raw = (int(parts[1]), int(parts[2]),
-                                  int(parts[3]), int(parts[4]))
+    r_raw, g_raw, b_raw, c_raw = frame.color
 
     if args.raw:
         print(f"CS {r_raw} {g_raw} {b_raw} {c_raw}")
@@ -1840,8 +1942,19 @@ def main():
     )
     p_drive.add_argument("left", type=int, help="Left speed (mm/s)")
     p_drive.add_argument("right", type=int, help="Right speed (mm/s)")
+    p_drive.add_argument(
+        "stream_kw", nargs="?", default=None, metavar="stream",
+        help="Optional literal 'stream' to enable keepalive streaming mode "
+             "(sends S command at the --resend cadence; Ctrl-C to stop).",
+    )
     p_drive.add_argument("--ms", type=int, default=None, help="Duration in ms (blocking)")
     p_drive.add_argument("--mm", type=int, default=None, help="Distance in mm (blocking)")
+    p_drive.add_argument(
+        "--resend", type=int, default=150,
+        help="Keepalive S resend interval in ms for stream mode (default 150; "
+             "must be > 0). Lower values reduce motor throbbing risk; "
+             "30%% of the firmware sTimeout (500 ms) = 150 ms is the recommended default.",
+    )
     p_drive.add_argument("--ez", action="store_true", help="Zero encoders before driving")
     p_drive.add_argument(
         "--min-speed", type=int, default=None,
@@ -1980,9 +2093,10 @@ def main():
     p_grip = sub.add_parser("grip", help="Control gripper: rogo grip open|close|<angle>")
     p_grip.add_argument("value", help="'open', 'close', or servo angle (0-180)")
 
-    sub.add_parser("enc", help="Read encoder positions (mm)")
+    sub.add_parser("enc", help="Read encoder positions (mm) via v2 SNAP → TLM")
+    sub.add_parser("opos", help="Read robot OTOS fused pose (x_mm, y_mm, h_deg) via v2 SNAP → TLM")
     sub.add_parser("ez", help="Zero encoders")
-    sub.add_parser("line", help="Read 4-channel line sensor (grayscale 0..255)")
+    sub.add_parser("line", help="Read 4-channel line sensor (grayscale 0..255) via v2 SNAP → TLM")
     p_color = sub.add_parser(
         "color",
         help="Read color sensor. Default: HSL. --rgb, --hsv, or --name for other forms.",
@@ -1991,7 +2105,7 @@ def main():
     p_color_fmt.add_argument("--rgb", action="store_true", help="Output display RGB (0..255)")
     p_color_fmt.add_argument("--hsv", action="store_true", help="Output HSV (hue 0..360, S/V 0..100)")
     p_color_fmt.add_argument("--name", action="store_true", help="Output a single colour label")
-    p_color_fmt.add_argument("--raw", action="store_true", help="Output raw 'CS r g b c' line from firmware")
+    p_color_fmt.add_argument("--raw", action="store_true", help="Output raw 'CS r g b c' (RGBC counts from TLM frame)")
     p_color.add_argument("--calibrate-white", action="store_true",
                          help="Sample over white first to install a fresh "
                               "white reference for this call.")
@@ -2027,7 +2141,8 @@ def main():
 
     sync_sub.add_parser(
         "cal",
-        help="Push full calibration to firmware (KML, KMR, OL, OA, OI, OO, OK). "
+        help="Push full calibration to firmware using v2 verbs "
+             "(SET ml/mr/tw, OI, OL, OA, SET odomOff*). "
              "Run once after power-up or after editing the robot config. "
              "Robot must be stationary during the ~700 ms IMU bias window.",
     )
@@ -2038,8 +2153,8 @@ def main():
              "of session or after repositioning). Requires the aprilcam daemon "
              "running from the AprilTags project directory with a calibrated "
              "playfield. Reads tag.world_xy (cm, A1-centred) and tag.yaw (rad) "
-             "from the daemon, converts to mm/degrees, and sends SI<x><y><h> "
-             "to firmware. The firmware heading = degrees(tag.yaw) + 90° "
+             "from the daemon, converts to mm/centi-degrees, and sends OV "
+             "to firmware (v2 OV command). The firmware heading = degrees(tag.yaw) + 90° "
              "(the robot's drive-forward direction in world frame).",
     )
 
@@ -2112,6 +2227,7 @@ def main():
         "stop": cmd_stop,
         "grip": cmd_grip,
         "enc": cmd_enc,
+        "opos": cmd_opos,
         "ez": cmd_ez,
         "send": cmd_send,
         "line": cmd_line,

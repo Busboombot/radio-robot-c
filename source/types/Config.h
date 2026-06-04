@@ -116,6 +116,12 @@ struct RobotConfig {
     int32_t tickMs;
     int32_t sTimeoutMs;
 
+    // Control fiber period in ms.  The control fiber (encoder reads → PID →
+    // setSpeed) sleeps this many ms between iterations.  Distinct from tickMs
+    // so the control rate can be tuned independently of the legacy tick cadence.
+    // Default 10 ms → target ~100 Hz; actual rate depends on I2C busy-wait cost.
+    int32_t controlPeriodMs;
+
     // Telemetry streaming period in ms (0 = off). Set via STREAM command.
     int32_t tlmPeriodMs;
 
@@ -176,7 +182,8 @@ inline RobotConfig defaultRobotConfig() {
     p.turnScale       = 1.07f;
     p.minSpeedMms     = 50;
     p.tickMs          = 20;
-    p.sTimeoutMs      = 200;
+    p.sTimeoutMs      = 500;   // 500 ms: allows relay-link jitter without cutting motors
+    p.controlPeriodMs = 10;    // 10 ms → ~100 Hz control rate (actual rate = 10 ms + I2C time)
     p.tlmPeriodMs     = 0;
     p.tlmFields       = 0xFF;
     p.tlmSnapPending  = false;

@@ -1,11 +1,16 @@
 [project]
 name = "robot-radio"
-version = "0.20260602.1"
-requires-python = ">=3.11"
+version = "0.20260603.12"
+requires-python = ">=3.10"
 dependencies = [
     "pydantic>=2.13.4",
     "pyserial>=3.5",
 ]
+
+# `rogo` CLI entry point (relay-aware robot control: drive, turn, goto, config,
+# calibrate, sync). Installed on PATH when robot-radio is synced into the venv.
+[project.scripts]
+rogo = "robot_radio.io.cli:main"
 
 [build-system]
 requires = ["hatchling"]

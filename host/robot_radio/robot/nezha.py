@@ -51,6 +51,10 @@ from robot_radio.robot.robot import Robot
 from robot_radio.robot.protocol import NezhaProtocol, TLMFrame, ParsedResponse, parse_tlm
 
 
+class RobotNotFoundError(ConnectionError):
+    """Raised when the robot does not respond to liveness preflight (PING/ID)."""
+
+
 class Nezha(Robot):
     """Driver for the DFRobot Nezha2 via serial running protocol v2 firmware.
 
@@ -92,6 +96,24 @@ class Nezha(Robot):
 
     def is_connected(self) -> bool:
         return self._proto.is_open
+
+    def connect(self) -> dict[str, str]:
+        """Run liveness preflight: PING then ID.
+
+        Returns the robot identity kv dict on success.
+        Raises RobotNotFoundError if either step times out or returns no response.
+        """
+        ping_result = self._proto.ping()
+        if ping_result is None:
+            raise RobotNotFoundError(
+                "Robot did not respond to PING — check cable, relay, and power."
+            )
+        id_result = self._proto.get_id()
+        if id_result is None:
+            raise RobotNotFoundError(
+                "Robot did not respond to ID — relay may be present but robot is silent."
+            )
+        return id_result
 
     # ------------------------------------------------------------------
     # Robot interface — motion

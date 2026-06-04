@@ -70,6 +70,16 @@ int32_t Motor::readEncoder(const RobotConfig& cfg) const
     return (int32_t)mmF;
 }
 
+float Motor::readEncoderMmF(const RobotConfig& cfg) const
+{
+    // Same as readEncoder() but returns full float resolution (no truncation to
+    // whole mm). The velocity loop differentiates position, so 1 mm truncation
+    // becomes ±~17 mm/s quantization noise at the ~58 ms loop rate.
+    float mmPerDeg = (_motorId == 2) ? cfg.mmPerDegL : cfg.mmPerDegR;
+    int32_t raw = readEncoderRaw();   // tenths of degrees
+    return (raw / 10.0f) * mmPerDeg * (float)_fwdSign;
+}
+
 void Motor::resetEncoder()
 {
     // Mirror TypeScript resetRelAngleValue(): snapshot the current raw
@@ -100,7 +110,19 @@ int32_t Motor::readEncoderRaw() const
 {
     // Vendor pxt-nezha2 readAngle() requires a 4ms delay before and after
     // the write command before reading; omitting these causes corrupt reads.
-    fiber_sleep(4);
+    //
+    // IMPORTANT: Use busy-wait spins (system_timer_current_time_us deadline
+    // loop) rather than fiber_sleep(4).  fiber_sleep() yields control to the
+    // CODAL scheduler, which can dispatch another fiber that issues its own
+    // I2C write mid-transaction — exactly the interleave the vendor warns
+    // against (see the comment at moveToAngle()).  With two fibers (control
+    // fiber + comms fiber), fiber_sleep here would allow the comms fiber to
+    // corrupt an in-flight encoder read.  Busy-wait keeps the CPU spinning
+    // for the full delay with no scheduler yield.
+    {
+        uint64_t deadline = system_timer_current_time_us() + 4000;  // 4 ms
+        while (system_timer_current_time_us() < deadline) {}
+    }
     uint8_t cmd[8] = {
         0xFF, 0xF9,
         _motorId,
@@ -109,7 +131,10 @@ int32_t Motor::readEncoderRaw() const
         0x00
     };
     _i2c.write((ADDR << 1), (uint8_t*)cmd, 8, false);
-    fiber_sleep(4);
+    {
+        uint64_t deadline = system_timer_current_time_us() + 4000;  // 4 ms
+        while (system_timer_current_time_us() < deadline) {}
+    }
 
     // Read 4 bytes (signed int32, little-endian).
     uint8_t resp[4] = {0, 0, 0, 0};
@@ -153,10 +178,17 @@ int32_t Motor::readSpeedRaw() const
     //   If source flag shows 'C' with plausible values (~200 mm/s), the fix is confirmed.
     //   The Part-A plausibility gate (stuck-low rejection) provides a safety net
     //   during this hardware confirmation phase.
-    static constexpr uint32_t kPreWriteDelayMs  = 4;
-    static constexpr uint32_t kPostWriteDelayMs = 8;  // increased from 4 ms (012-004)
+    // IMPORTANT: Use busy-wait spins rather than fiber_sleep — same rationale
+    // as readEncoderRaw(): fiber_sleep() yields to the CODAL scheduler and
+    // allows the comms fiber to issue an I2C write mid-transaction, corrupting
+    // the speed register read.  Busy-wait keeps the transaction atomic.
+    static constexpr uint32_t kPreWriteDelayUs  = 4000;   // 4 ms
+    static constexpr uint32_t kPostWriteDelayUs = 8000;   // 8 ms (increased from 4 ms, 012-004)
 
-    fiber_sleep(kPreWriteDelayMs);
+    {
+        uint64_t deadline = system_timer_current_time_us() + kPreWriteDelayUs;
+        while (system_timer_current_time_us() < deadline) {}
+    }
     uint8_t cmd[8] = {
         0xFF, 0xF9,
         _motorId,
@@ -165,7 +197,10 @@ int32_t Motor::readSpeedRaw() const
         0x00
     };
     int writeResult = _i2c.write((ADDR << 1), (uint8_t*)cmd, 8, false);
-    fiber_sleep(kPostWriteDelayMs);
+    {
+        uint64_t deadline = system_timer_current_time_us() + kPostWriteDelayUs;
+        while (system_timer_current_time_us() < deadline) {}
+    }
 
     if (writeResult != MICROBIT_OK) {
         return -1;  // I2C error sentinel

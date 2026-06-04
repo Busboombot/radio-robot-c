@@ -124,7 +124,7 @@ DEFAULT_GET_LINE = (
     "pid.max=30.000 vel.kP=0.300 vel.kI=0.050 vel.kFF=0.150 "
     "minWheelMms=20.000 vWheelMax=400.000 steerHeadroom=20.000 "
     "turnThr=50 doneTol=5 distScale=0.940 turnScale=1.070 "
-    "minSpeed=50 sTimeout=200 tick=20 tlmPeriod=0 "
+    "minSpeed=50 sTimeout=500 tick=20 tlmPeriod=0 "
     "aMax=300.000 aDecel=250.000 turnGate=45 arriveTol=5 "
     "otosLinSc=1.050 otosAngSc=0.987 rotGainPos=1.000 rotGainNeg=1.170 "
     "rotOffPos=0.000 rotOffNeg=0.000 rotSlip=0.740 "
@@ -205,7 +205,7 @@ class TestGetResponseFormat:
 
     def test_default_sTimeout_value(self) -> None:
         kv = parse_cfg(DEFAULT_GET_LINE)
-        assert kv["sTimeout"] == "200"
+        assert kv["sTimeout"] == "500"
 
     def test_default_tick_value(self) -> None:
         kv = parse_cfg(DEFAULT_GET_LINE)

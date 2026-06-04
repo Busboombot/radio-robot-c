@@ -1,15 +1,18 @@
 """Python wrapper for the SparkFun OTOS (Optical Tracking Odometry Sensor).
 
-Communicates with the robot firmware via short command names:
+Communicates with the robot firmware via v2 command names only:
 
     O   — status: ``O <conn> <pid> <hw> <fw> <status>``
     OI  — init (enable signal processing): ``ACK:OI <spcfg>``
-    OK  — calibrate IMU: ``ACK:OK 255``
     OZ  — zero tracked position: ``ACK:OZ``
     OR  — reset tracking: ``ACK:OR``
     OC  — config dump: ``OC <spcfg> <self_test>``
     OP  — pose: ``OP <x_mm> <y_mm> <h_deg>``
     OV  — velocity: ``OV <vx_mms> <vy_mms> <vh_dps>``
+    OL  — set linear scalar: ``OL <n>``
+    OA  — set angular scalar: ``OA <n>``
+
+Note: ``OK`` (v1 OTOS IMU calibrate ack) is a v1 verb and is NOT used here.
 
 All firmware values are already in engineering units (mm, deg, mm/s, deg/s).
 This module converts to the world-frame convention used by the rest of the stack:
@@ -120,17 +123,6 @@ class Otos:
         line = _find_line(result.get("responses", []), "ACK:OI")
         if line is None:
             return {"error": "No ACK:OI reply", "raw": result}
-        return {"ack": line}
-
-    def calibrate_imu(self) -> dict[str, Any]:
-        """Send ``OK`` (calibrate IMU; robot must be still).
-
-        Reply: ``ACK:OK 255``
-        """
-        result = self._send("OK", read_ms=2000)
-        line = _find_line(result.get("responses", []), "ACK:OK")
-        if line is None:
-            return {"error": "No ACK:OK reply", "raw": result}
         return {"ack": line}
 
     def zero(self) -> dict[str, Any]:

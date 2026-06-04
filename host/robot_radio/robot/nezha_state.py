@@ -19,6 +19,7 @@ Usage (async):
 
 from __future__ import annotations
 
+import math
 import threading
 import time
 
@@ -53,6 +54,8 @@ class NezhaState:
         self.encoders: tuple[int, int] = (0, 0)
         # otos_pose stores (x_mm, y_mm, h_cdeg) — centi-degrees for heading
         self.otos_pose: tuple[float, float, float] = (0.0, 0.0, 0.0)
+        # heading_rad: CCW-positive heading in radians, derived from TLM pose cdeg
+        self.heading_rad: float = 0.0
         self.line_sensor: tuple[int, int, int, int] = (255, 255, 255, 255)
         self.color: tuple[int, int, int, int] = (0, 0, 0, 0)
         self.last_tlm_t: int | None = None   # robot clock of last TLM frame (ms)
@@ -115,6 +118,8 @@ class NezhaState:
                 if tlm.pose is not None:
                     x_mm, y_mm, h_cdeg = tlm.pose
                     self.otos_pose = (float(x_mm), float(y_mm), float(h_cdeg))
+                    # Convert centidegrees to radians: cdeg / 18000.0 * math.pi
+                    self.heading_rad = h_cdeg / 18000.0 * math.pi
                 if tlm.line is not None:
                     self.line_sensor = tlm.line
                 if tlm.color is not None:
@@ -152,7 +157,8 @@ class NezhaState:
         h_cdeg = int(round(h_deg * 100))
         self._proto.otos_set_position(xi, yi, h_cdeg)
         with self._lock:
-            self.otos_pose = (float(xi), float(yi), float(h_deg * 100))
+            self.otos_pose = (float(xi), float(yi), float(h_cdeg))
+            self.heading_rad = h_cdeg / 18000.0 * math.pi
 
     def enable_stream(self, period_ms: int = 40) -> None:
         """Enable TLM streaming at the given period (STREAM <ms>)."""

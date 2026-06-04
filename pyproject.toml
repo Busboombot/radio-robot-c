@@ -1,11 +1,12 @@
 [project]
 name = "microbit-v2-samples-tools"
-version = "0.20260603.1"
+version = "0.20260603.13"
 description = "Utility scripts for building and deploying microbit-v2-samples"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
     "pyserial>=3.5",
+    "robot-radio",
 ]
 
 [dependency-groups]
@@ -23,8 +24,26 @@ default-groups = ["calibrate"]
 
 [tool.uv.sources]
 aprilcam = { path = "/Volumes/Proj/proj/RobotProjects/AprilTags", editable = true }
+robot-radio = { path = "host", editable = true }
 
 [tool.uv.workspace]
 members = [
     "mbdeploy",
+]
+
+[tool.pytest.ini_options]
+# Pin where tests live. Without this, a bare `pytest` from the repo root
+# recursively collects EVERYTHING — including vendor/PythonRobotics (90+
+# matplotlib/numpy path-planning *simulation* test files), whose collection
+# imports modules that allocate huge grids and open animation loops. That can
+# exhaust memory on a small machine. Keep collection scoped and never descend
+# into vendored sims, the build tree, or the venv.
+# host/tests (library) + tests/ (firmware-logic suite, 600+ tests). Excludes
+# mbdeploy, a workspace member with its own test setup (run via mbdeploy/.venv);
+# collecting it from the repo root collides on the duplicate `tests` package
+# name. vendor/ sims are excluded via norecursedirs below.
+testpaths = ["host/tests", "tests"]
+norecursedirs = [
+    "vendor", "build", ".venv", "node_modules",
+    "*.egg", ".*", "dist", "{arch}", "__pycache__",
 ]

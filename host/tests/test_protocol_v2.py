@@ -798,3 +798,391 @@ class TestTLMFrameEdgeCases:
         frame = parse_tlm("TLM t=100 pose=-200,-50,-9000")
         assert frame is not None
         assert frame.pose == (-200, -50, -9000)
+
+
+# ===========================================================================
+# T002 — ticket-required new tests
+# Explicit assertions for v2 wire encodings, wait_for_evt_done paths,
+# TLM partial/full parsing, and liveness preflight.
+# ===========================================================================
+
+class TestPingEncoding:
+    """test_ping_encoding — PING command sends 'PING\n' on the wire."""
+
+    def test_ping_encoding(self) -> None:
+        """ping() must send the literal string 'PING' (no-arg form) via conn.send."""
+        proto, conn = _proto(["OK pong t=1"])
+        proto.ping()
+        called_cmd = conn.send.call_args[0][0]
+        assert called_cmd == "PING"
+
+    def test_ping_encoding_with_corr_id(self) -> None:
+        """ping(corr_id='3') must send 'PING #3' on the wire."""
+        proto, conn = _proto(["OK pong t=1 #3"])
+        proto.ping(corr_id="3")
+        called_cmd = conn.send.call_args[0][0]
+        assert called_cmd == "PING #3"
+
+
+class TestIdEncoding:
+    """test_id_encoding — ID command sends 'ID\n' on the wire."""
+
+    def test_id_encoding(self) -> None:
+        """get_id() must send the literal string 'ID' via conn.send."""
+        proto, conn = _proto(["ID model=Nezha2 name=TOVEZ serial=0 fw=2.0 proto=2"])
+        proto.get_id()
+        called_cmd = conn.send.call_args[0][0]
+        assert called_cmd == "ID"
+
+
+class TestVerEncoding:
+    """test_ver_encoding — VER command sends 'VER\n' on the wire."""
+
+    def test_ver_encoding(self) -> None:
+        """get_ver() must send the literal string 'VER' via conn.send."""
+        proto, conn = _proto(["OK ver fw=2.0 proto=2"])
+        result = proto.get_ver()
+        called_cmd = conn.send.call_args[0][0]
+        assert called_cmd == "VER"
+        assert result is not None
+        assert result["fw"] == "2.0"
+        assert result["proto"] == "2"
+
+    def test_ver_no_response_returns_none(self) -> None:
+        """get_ver() returns None when firmware gives no response."""
+        proto, conn = _proto([])
+        result = proto.get_ver()
+        assert result is None
+
+
+class TestDriveSpaceDelimited:
+    """test_drive_space_delimited — S command uses space-separated integers."""
+
+    def test_drive_space_delimited(self) -> None:
+        """drive(100, -50) must encode as 'S 100 -50' (space-separated, no sign prefix)."""
+        proto, conn = _proto()
+        proto.drive(100, -50)
+        cmd = conn.send_fast.call_args[0][0]
+        assert cmd == "S 100 -50"
+        assert "+" not in cmd
+        # Tokens: must be exactly 3 space-separated parts
+        parts = cmd.split()
+        assert parts == ["S", "100", "-50"]
+
+
+class TestTimedSpaceDelimited:
+    """test_timed_space_delimited — T command uses space-separated integers."""
+
+    def test_timed_space_delimited(self) -> None:
+        """timed(100, 100, 1000) must encode as 'T 100 100 1000'."""
+        proto, conn = _proto(["OK drive l=100 r=100 ms=1000"])
+        proto.timed(100, 100, 1000)
+        called_cmd = conn.send.call_args[0][0]
+        assert called_cmd == "T 100 100 1000"
+        parts = called_cmd.split()
+        assert parts == ["T", "100", "100", "1000"]
+
+
+class TestDistanceSpaceDelimited:
+    """test_distance_space_delimited — D command uses space-separated integers."""
+
+    def test_distance_space_delimited(self) -> None:
+        """distance(100, 100, 900) must encode as 'D 100 100 900'."""
+        proto, conn = _proto(["OK drive l=100 r=100 mm=900"])
+        proto.distance(100, 100, 900)
+        called_cmd = conn.send.call_args[0][0]
+        assert called_cmd == "D 100 100 900"
+        parts = called_cmd.split()
+        assert parts == ["D", "100", "100", "900"]
+
+
+class TestZeroEncoding:
+    """test_zero_enc / test_zero_pose — ZERO verb uses v2 sub-token format."""
+
+    def test_zero_enc(self) -> None:
+        """zero_encoders() must send 'ZERO enc' (not 'EZ' or 'ZERO ENC')."""
+        proto, conn = _proto()
+        proto.zero_encoders()
+        called_cmd = conn.send.call_args[0][0]
+        assert called_cmd == "ZERO enc"
+        assert "EZ" not in called_cmd
+
+    def test_zero_pose(self) -> None:
+        """zero_otos() must send 'ZERO pose' (not 'SZ' or 'ZERO POSE')."""
+        proto, conn = _proto()
+        proto.zero_otos()
+        called_cmd = conn.send.call_args[0][0]
+        assert called_cmd == "ZERO pose"
+        assert "SZ" not in called_cmd
+
+
+class TestWaitForEvtDonePaths:
+    """test_wait_for_evt_done_success / test_wait_for_evt_done_safety_stop."""
+
+    def test_wait_for_evt_done_success(self) -> None:
+        """wait_for_evt_done returns 'done' when EVT done T is received."""
+        proto, conn = _proto()
+        conn.read_lines.return_value = ["EVT done T"]
+        result = proto.wait_for_evt_done("T", timeout_ms=1000)
+        assert result == "done"
+
+    def test_wait_for_evt_done_safety_stop(self) -> None:
+        """wait_for_evt_done returns 'safety_stop' when EVT safety_stop is received."""
+        proto, conn = _proto()
+        conn.read_lines.return_value = ["EVT safety_stop"]
+        result = proto.wait_for_evt_done("T", timeout_ms=1000)
+        assert result == "safety_stop"
+
+    def test_wait_for_evt_done_wrong_verb_keeps_waiting(self) -> None:
+        """wait_for_evt_done('T') ignores EVT done D — only accepts matching verb."""
+        import itertools
+        proto, conn = _proto()
+        # Always return the wrong verb — should not match and we time out.
+        conn.read_lines.side_effect = itertools.repeat(["EVT done D"])
+        result = proto.wait_for_evt_done("T", timeout_ms=20)
+        assert result == "timeout"
+
+    def test_wait_for_evt_done_timeout_returns_timeout(self) -> None:
+        """wait_for_evt_done returns 'timeout' when no matching event arrives."""
+        proto, conn = _proto()
+        conn.read_lines.return_value = []
+        result = proto.wait_for_evt_done("T", timeout_ms=10)
+        assert result == "timeout"
+
+    def test_wait_for_evt_done_corr_id_success(self) -> None:
+        """wait_for_evt_done with corr_id accepts EVT done T #7 when id='7'."""
+        proto, conn = _proto()
+        conn.read_lines.return_value = ["EVT done T #7"]
+        result = proto.wait_for_evt_done("T", timeout_ms=1000, corr_id="7")
+        assert result == "done"
+
+    def test_wait_for_evt_done_corr_id_safety_stop(self) -> None:
+        """wait_for_evt_done with corr_id accepts EVT safety_stop #7 when id='7'."""
+        proto, conn = _proto()
+        conn.read_lines.return_value = ["EVT safety_stop #7"]
+        result = proto.wait_for_evt_done("T", timeout_ms=1000, corr_id="7")
+        assert result == "safety_stop"
+
+
+class TestParseTLMExtended:
+    """test_parse_tlm_partial / test_parse_tlm_full — explicit TLM parsing assertions."""
+
+    def test_parse_tlm_partial(self) -> None:
+        """TLM with only t= and enc= fields: pose must be None (partial frame)."""
+        frame = parse_tlm("TLM t=100 enc=10,10")
+        assert frame is not None
+        assert frame.t == 100
+        assert frame.enc == (10, 10)
+        assert frame.pose is None
+        assert frame.vel is None
+        assert frame.line is None
+        assert frame.color is None
+
+    def test_parse_tlm_full(self) -> None:
+        """Full TLM line: all fields must be populated."""
+        line = "TLM t=99999 mode=S enc=200,198 pose=500,100,18000 vel=150,148 line=10,20,30,40 color=5,10,15,80"
+        frame = parse_tlm(line)
+        assert frame is not None
+        assert frame.t == 99999
+        assert frame.mode == "S"
+        assert frame.enc == (200, 198)
+        assert frame.pose == (500, 100, 18000)
+        assert frame.vel == (150, 148)
+        assert frame.line == (10, 20, 30, 40)
+        assert frame.color == (5, 10, 15, 80)
+
+    def test_parse_tlm_enc_and_pose_no_vel(self) -> None:
+        """TLM with enc and pose but no vel: vel must be None."""
+        frame = parse_tlm("TLM t=1000 enc=50,48 pose=100,-20,3600")
+        assert frame is not None
+        assert frame.enc == (50, 48)
+        assert frame.pose == (100, -20, 3600)
+        assert frame.vel is None
+
+    def test_parse_tlm_mode_field_T(self) -> None:
+        """mode=T (timed drive in progress) is parsed correctly."""
+        frame = parse_tlm("TLM t=500 mode=T enc=100,100")
+        assert frame is not None
+        assert frame.mode == "T"
+
+    def test_parse_tlm_mode_field_D(self) -> None:
+        """mode=D (distance drive in progress) is parsed correctly."""
+        frame = parse_tlm("TLM t=500 mode=D enc=200,198 pose=300,0,0")
+        assert frame is not None
+        assert frame.mode == "D"
+
+
+class TestLivenessPreflight:
+    """test_liveness_preflight — ping + get_id sequence succeeds with canned responses."""
+
+    def test_liveness_preflight_success(self) -> None:
+        """Preflight sequence: ping() returns (t, rtt); get_id() returns robot identity."""
+        # Each method call uses conn.send separately, so configure side_effect.
+        conn = MagicMock()
+        conn.is_open = True
+        conn.mode = "relay"
+        conn.send.side_effect = [
+            {"sent": "PING", "mode": "relay", "responses": ["OK pong t=1"]},
+            {"sent": "ID", "mode": "relay", "responses": ["ID model=Nezha2 name=TOVEZ serial=0 fw=2.0 proto=2 caps=otos,line"]},
+        ]
+        conn.send_fast.return_value = None
+        conn.read_lines.return_value = []
+
+        proto = NezhaProtocol(conn)
+
+        # Step 1: ping
+        ping_result = proto.ping()
+        assert ping_result is not None
+        t_robot, rtt = ping_result
+        assert t_robot == 1
+        assert rtt >= 0.0
+
+        # Step 2: get_id
+        id_result = proto.get_id()
+        assert id_result is not None
+        assert id_result["model"] == "Nezha2"
+        assert id_result["name"] == "TOVEZ"
+        assert id_result["proto"] == "2"
+
+    def test_liveness_preflight_ping_failure(self) -> None:
+        """Preflight: ping() returns None when firmware gives no pong."""
+        conn = _mock_conn([])
+        proto = NezhaProtocol(conn)
+        result = proto.ping()
+        assert result is None
+
+    def test_liveness_preflight_id_failure(self) -> None:
+        """Preflight: get_id() returns None when firmware gives no ID line."""
+        conn = _mock_conn([])
+        proto = NezhaProtocol(conn)
+        result = proto.get_id()
+        assert result is None
+
+
+class TestStreamDriveKeepalive:
+    """stream_drive keepalive cadence: resend at ~30% of watchdog_ms."""
+
+    def test_stream_drive_resends_within_keepalive_window(self) -> None:
+        """stream_drive resends S command at <= 30% of watchdog_ms interval.
+
+        Uses a fake monotonic clock and a controlled read_lines to verify that
+        the keepalive fires before the watchdog_ms deadline.
+        """
+        import itertools
+
+        conn = MagicMock()
+        conn.is_open = True
+        conn.mode = "relay"
+        # MUST return a parseable line, NOT []. The real read_lines(duration_ms)
+        # BLOCKS ~50 ms on serial; a MagicMock returning [] returns instantly, so
+        # stream_drive's `while True` loop (which only exits on safety_stop) spins
+        # at full CPU and NEVER yields — next(gen) never returns. Each spin also
+        # records a MagicMock call in call_args_list, which grows without bound
+        # → multi-GB memory blow-up and a hung test. Returning a non-safety line
+        # makes the generator yield once per iteration so next(gen) returns.
+        conn.read_lines.return_value = ["TLM t=1 enc=0,0"]
+        conn.send.return_value = {"sent": "STREAM 40", "mode": "relay", "responses": ["OK stream period=40"]}
+        conn.send_fast.return_value = None
+
+        proto = NezhaProtocol(conn)
+
+        watchdog_ms = 500
+        keepalive_threshold_s = watchdog_ms * 0.30 / 1000.0  # 0.150 s
+
+        speeds = [100, 100]
+
+        # Collect all send_fast calls by iterating the generator for a limited
+        # number of steps, then close it.
+        gen = proto.stream_drive(speeds, period_ms=40, watchdog_ms=watchdog_ms)
+
+        # Let the generator run for just enough time to trigger at least one
+        # keepalive resend (sleep slightly longer than the keepalive threshold).
+        import threading
+
+        results: list[int] = []
+
+        def _run_gen() -> None:
+            try:
+                for _ in range(5):
+                    next(gen)
+            except StopIteration:
+                pass
+            finally:
+                gen.close()
+
+        # The real-time keepalive depends on wall clock, so we allow enough
+        # real time to elapse.  Use a short sleep between iterations via
+        # a patched monotonic that advances time quickly.
+        fake_time = [0.0]
+
+        original_monotonic = time.monotonic
+
+        def fake_monotonic() -> float:
+            fake_time[0] += 0.06  # advance 60 ms per call (> 30% of 500 ms after 3 calls)
+            return fake_time[0]
+
+        import robot_radio.robot.protocol as proto_mod
+
+        original = proto_mod.time.monotonic  # type: ignore[attr-defined]
+        proto_mod.time.monotonic = fake_monotonic  # type: ignore[attr-defined]
+        try:
+            _run_gen()
+        finally:
+            proto_mod.time.monotonic = original  # type: ignore[attr-defined]
+
+        # send_fast was called: first send (initial S) + at least one resend.
+        assert conn.send_fast.call_count >= 2, (
+            f"Expected >= 2 send_fast calls (initial + keepalive resend), "
+            f"got {conn.send_fast.call_count}"
+        )
+        # All calls to send_fast should be 'S 100 100' or 'STOP'.
+        for call in conn.send_fast.call_args_list:
+            cmd = call[0][0]
+            assert cmd.startswith("S ") or cmd == "STOP", f"Unexpected send_fast: {cmd!r}"
+
+    def test_stream_drive_sends_stop_on_close(self) -> None:
+        """stream_drive sends STOP when generator is closed."""
+        conn = _mock_conn([])
+        conn.send.return_value = {"sent": "STREAM 40", "mode": "relay", "responses": []}
+        # See note in test_stream_drive_resends_*: read_lines must yield a line,
+        # not [], or next(gen) spins forever (no yield) and the mock accumulates
+        # calls until OOM. One non-safety line lets next(gen) yield and return.
+        conn.read_lines.return_value = ["TLM t=1 enc=0,0"]
+        proto = NezhaProtocol(conn)
+
+        speeds = [200, 200]
+        gen = proto.stream_drive(speeds, period_ms=40, watchdog_ms=500)
+        # Start the generator, then immediately close it.
+        try:
+            next(gen)
+        except StopIteration:
+            pass
+        gen.close()
+
+        # STOP should have been sent on GeneratorExit.
+        fast_calls = [c[0][0] for c in conn.send_fast.call_args_list]
+        assert "STOP" in fast_calls, f"Expected STOP in send_fast calls: {fast_calls}"
+
+    def test_stream_drive_stops_on_safety_stop(self) -> None:
+        """stream_drive ends naturally when EVT safety_stop is received."""
+        import itertools
+
+        conn = MagicMock()
+        conn.is_open = True
+        conn.mode = "relay"
+        conn.send.return_value = {"sent": "STREAM 40", "mode": "relay", "responses": []}
+        conn.send_fast.return_value = None
+        # First call returns a safety_stop event; subsequent calls return nothing.
+        conn.read_lines.side_effect = itertools.chain(
+            [["EVT safety_stop"]],
+            itertools.repeat([]),
+        )
+
+        proto = NezhaProtocol(conn)
+        speeds = [100, 100]
+        gen = proto.stream_drive(speeds, period_ms=40, watchdog_ms=500)
+
+        frames = list(gen)  # Should terminate when safety_stop is seen.
+        # No frames yielded (safety_stop causes return before yield).
+        # The generator should have exited cleanly.
+        assert frames == []

@@ -152,16 +152,36 @@ Robot::Pose Robot::getPose() const
 }
 
 // ---------------------------------------------------------------------------
-// tick — advance all subsystems; no while loop inside.
-// fn/ctx: active reply sink (for streaming telemetry).
-// Per-drive async completions use the captured per-drive sink.
+// controlTick — control fiber entry point (013-010).
+//
+// Runs at a fixed period (RobotConfig::controlPeriodMs, default 10 ms).
+// Only the PID/motor/odometry path runs here.  No serial/radio I/O.
 // ---------------------------------------------------------------------------
 
-void Robot::tick(uint32_t now_ms, ReplyFn fn, void* ctx)
+void Robot::controlTick(uint32_t now_ms)
 {
-    _dc.tick(now_ms, fn, ctx);
+    _dc.controlTick(now_ms);
+}
 
-    // ---- TLM assembly -------------------------------------------------------
+// ---------------------------------------------------------------------------
+// telemetryTick — comms+telemetry fiber entry point (013-010).
+//
+// 1. Drain any pending EVT completions from DriveController (safety_stop,
+//    done T/D/G) and emit them via fn/ctx.
+// 2. Assemble and emit one unified TLM frame when the configured period has
+//    elapsed, or immediately if a SNAP was requested.
+//
+// Reads only cached encoder/velocity snapshots from MotorController (which
+// the control fiber updates).  Line/color I2C is safe here because Motor
+// I2C is now atomic (busy-wait prevents interleave).
+// ---------------------------------------------------------------------------
+
+void Robot::telemetryTick(uint32_t now_ms, ReplyFn fn, void* ctx)
+{
+    // 1. Drain EVT completions enqueued by the control fiber.
+    _dc.drainEvents(fn, ctx);
+
+    // 2. TLM assembly ---------------------------------------------------------
     // Emit one unified TLM frame when the configured period has elapsed, or
     // immediately if a SNAP was requested.  t= is stamped at sensor-read time,
     // not at snprintf time, to avoid send-latency bias.

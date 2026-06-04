@@ -23,7 +23,7 @@ MotorController::MotorController(Motor& left, Motor& right, const RobotConfig& c
 
 float MotorController::encoderMm(bool left)
 {
-    return static_cast<float>(left ? _motorL.readEncoder(_cal) : _motorR.readEncoder(_cal));
+    return left ? _motorL.readEncoderMmF(_cal) : _motorR.readEncoderMmF(_cal);
 }
 
 void MotorController::setTarget(float leftMms, float rightMms)
@@ -119,18 +119,23 @@ void MotorController::tick(float dt_s)
     _encRMm = encRMm;
 
     // Encoder-delta velocity (fallback / implausibility reference)
-    float encVelL = (encLMm - static_cast<float>(_prevEncL)) / dt_s;
-    float encVelR = (encRMm - static_cast<float>(_prevEncR)) / dt_s;
-    _prevEncL = static_cast<int32_t>(encLMm);
-    _prevEncR = static_cast<int32_t>(encRMm);
+    float encVelL = (encLMm - _prevEncL) / dt_s;
+    float encVelR = (encRMm - _prevEncR) / dt_s;
+    _prevEncL = encLMm;   // float — no 1 mm truncation (was a velocity-throb source)
+    _prevEncR = encRMm;
 
     // Chip-native velocity (primary source via register 0x47).
     // Falls back to encoder-delta if:
     //   (a) I2C read fails (readSpeed returns false), or
     //   (b) chip reading fails the two-sided plausibility gate (see below).
+    // THROB FIX (013): do NOT read the chip 0x47 speed register every tick.
+    // readSpeedRaw() blocks ~12 ms (fiber_sleep 4+8) per wheel AND the flaky
+    // register intermittently times out/retries, stalling the control loop for
+    // hundreds of ms -> motor refresh is starved -> visible pulsing. Use the
+    // encoder-delta velocity (computed above) as the sole feedback source.
     float chipVelL = 0.0f, chipVelR = 0.0f;
-    bool chipOkL = _motorL.readSpeed(chipVelL, _cal);
-    bool chipOkR = _motorR.readSpeed(chipVelR, _cal);
+    bool chipOkL = false;
+    bool chipOkR = false;
 
     // Implausibility gate: reject chip reading if it is more than 2× encoder velocity
     // (too-high / noise) OR less than 0.5× encoder velocity when the wheel is clearly

@@ -259,7 +259,7 @@ Examples:
 
 ```
 GET
-CFG ml=0.487 mr=0.481 kff=0.150 klf=1.000 klb=1.000 krf=1.000 krb=1.000 adjThr=0.500 adjGain=0.050 tw=120 pid.kp=300.000 pid.ki=0.000 pid.kd=0.000 pid.max=30.000 turnThr=50 doneTol=5 distScale=0.940 turnScale=1.070 minSpeed=50 sTimeout=200 tick=20 tlmPeriod=0
+CFG ml=0.487 mr=0.481 kff=0.150 klf=1.000 klb=1.000 krf=1.000 krb=1.000 adjThr=0.500 adjGain=0.050 tw=120 pid.kp=300.000 pid.ki=0.000 pid.kd=0.000 pid.max=30.000 turnThr=50 doneTol=5 distScale=0.940 turnScale=1.070 minSpeed=50 sTimeout=500 tick=20 tlmPeriod=0
 
 GET ml pid.kp
 CFG ml=0.487 pid.kp=300.000
@@ -370,7 +370,7 @@ equivalents they replace.
 | `distScale` | float       | `%.3f`      | `0.940`  | Distance command scale factor           | `KDS`     |
 | `turnScale` | float       | `%.3f`      | `1.070`  | Turn command scale factor               | `KTS`     |
 | `minSpeed`  | int32       | `%d`        | `50`     | Minimum drive speed (mm/s)              | `KMS`     |
-| `sTimeout`  | int32       | `%d`        | `200`    | Streaming watchdog timeout (ms)         | `KST`     |
+| `sTimeout`  | int32       | `%d`        | `500`    | Streaming watchdog timeout (ms)         | `KST`     |
 | `tick`      | int32       | `%d`        | `20`     | Main-loop tick period (ms)              | `KTK`     |
 | `tlmPeriod` | int32       | `%d`        | `0`      | TLM streaming period (ms); 0 = off      | —         |
 
@@ -577,7 +577,7 @@ S <l> <r> [#id]
 ```
 
 Sets left and right wheel velocities (mm/s) and resets the streaming
-watchdog.  If no `S` command arrives within `sTimeout` ms (default 200),
+watchdog.  If no `S` command arrives within `sTimeout` ms (default 500),
 the firmware stops the motors and emits `EVT safety_stop`.
 
 Velocity range: −1000 … +1000 mm/s per wheel.  Values outside this
@@ -948,7 +948,7 @@ A ~200-byte payload tests reassembly in both directions over the relay.
 
 ```
 GET
-CFG ml=0.487 mr=0.481 kff=0.150 klf=1.000 klb=1.000 krf=1.000 krb=1.000 adjThr=0.500 adjGain=0.050 tw=120 pid.kp=300.000 pid.ki=0.000 pid.kd=0.000 pid.max=30.000 turnThr=50 doneTol=5 distScale=0.940 turnScale=1.070 minSpeed=50 sTimeout=200 tick=20 tlmPeriod=0
+CFG ml=0.487 mr=0.481 kff=0.150 klf=1.000 klb=1.000 krf=1.000 krb=1.000 adjThr=0.500 adjGain=0.050 tw=120 pid.kp=300.000 pid.ki=0.000 pid.kd=0.000 pid.max=30.000 turnThr=50 doneTol=5 distScale=0.940 turnScale=1.070 minSpeed=50 sTimeout=500 tick=20 tlmPeriod=0
 ```
 
 ### SET and Verify

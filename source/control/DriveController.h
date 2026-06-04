@@ -1,6 +1,7 @@
 #pragma once
 #include <stdint.h>
 #include <math.h>
+#include <stddef.h>
 #include "Config.h"
 #include "Protocol.h"
 
@@ -16,8 +17,14 @@ class OtosSensor;
  * Calls Odometry::correct() on each slow-cadence OTOS sample when an
  * OtosSensor is connected (architecture: DC reads otos → Odo::correct).
  * Does not parse commands. Does not emit telemetry — telemetry is
- * assembled by Robot::tick() into a unified TLM frame.
- * Emits EVT completions (done, safety_stop) through the captured reply sink.
+ * assembled by Robot::telemetryTick() into a unified TLM frame.
+ *
+ * Two-fiber architecture (013-010):
+ *   - controlTick() runs on the high-priority control fiber.  It calls
+ *     the motor/PID path and enqueues EVT completions into a small ring
+ *     buffer.  It does NOT call any reply fn (no serial/radio I/O).
+ *   - drainEvents(fn, ctx) is called from the comms+telemetry fiber
+ *     (Robot::telemetryTick()) to pop and emit pending EVT messages.
  *
  * Per-drive sink capture: each begin*() captures the originating reply
  * sink so that async completions (EVT done, EVT safety_stop) are returned
@@ -54,10 +61,15 @@ public:
                    ReplyFn fn, void* ctx, const char* corr_id = nullptr);
     void stop(uint32_t now_ms, ReplyFn fn, void* ctx);
 
-    // Advance all state machines. Call once per main-loop iteration.
-    // now_ms: current system time. fn/ctx: active-channel reply sink (for
-    // completions if no per-drive sink was captured).
-    void tick(uint32_t now_ms, ReplyFn fn, void* ctx);
+    // Control-fiber entry point (013-010): advance motor/PID state machines
+    // only.  Does NOT call any reply fn — completions are enqueued into the
+    // internal ring buffer for later drain by the comms fiber.
+    void controlTick(uint32_t now_ms);
+
+    // Drain pending EVT completions (safety_stop, done T/D/G) into fn/ctx.
+    // Called from the comms+telemetry fiber (Robot::telemetryTick()).
+    // Returns the number of events emitted.
+    int drainEvents(ReplyFn fn, void* ctx);
 
     DriveMode mode() const { return _mode; }
 
@@ -108,8 +120,37 @@ private:
     // Tick timing
     uint32_t _lastTickMs;
 
-    // Updated at top of tick()
+    // Updated at top of controlTick()
     uint32_t _currentTimeMs;
+
+    // ---------------------------------------------------------------------------
+    // EVT completion ring buffer (013-010)
+    //
+    // The control fiber enqueues EVT strings here instead of calling the reply fn
+    // directly.  The comms fiber drains the queue via drainEvents().
+    //
+    // CODAL cooperative scheduler: on this single-core chip a fiber switch only
+    // happens at explicit yield points (fiber_sleep / uBit.sleep).  The control
+    // fiber never yields mid-enqueue and the comms fiber never yields mid-drain,
+    // so a simple lock-free ring is safe (no mutex needed on the hot path).
+    //
+    // Ring capacity: 4 entries is ample — at most one completion fires per tick,
+    // and the comms fiber drains every ~5 ms.
+    // ---------------------------------------------------------------------------
+    static constexpr int kEvtQueueCap = 4;
+    struct EvtEntry {
+        char msg[48];    // full EVT string including " #<corr_id>" suffix
+        // captured reply sink (the channel that originated the drive command)
+        ReplyFn fn;
+        void*   ctx;
+    };
+    EvtEntry _evtQueue[kEvtQueueCap];
+    int      _evtHead;   // index of next slot to write
+    int      _evtTail;   // index of next slot to read (head == tail → empty)
+
+    // Enqueue an EVT message with the current _corrId suffix.
+    // Called only from the control fiber.
+    void enqueueEvt(const char* base);
 
     // Slow-cadence OTOS polling: run correct() every kOtosSlowMs milliseconds.
     // OTOS is the slow optical sensor; predict() runs every fast tick.
