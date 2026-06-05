@@ -2,7 +2,7 @@
 id: 009
 title: 'Hardware bench verification: single-loop firmware end-to-end (closes sprint
   013 deferred gate)'
-status: in-progress
+status: done
 use-cases:
 - SUC-001
 - SUC-002
