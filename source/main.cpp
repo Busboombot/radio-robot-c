@@ -2,12 +2,19 @@
 #include "Robot.h"
 #include "CommandProcessor.h"
 #include "LoopScheduler.h"
-#include "SerialPort.h"
+#include "Communicator.h"
+#include "Motor.h"
+#include "OtosSensor.h"
+#include "LineSensor.h"
+#include "ColorSensor.h"
+#include "Servo.h"
+#include "PortIO.h"
+#include "Config.h"
 #include "Icons.h"
 
 // ---------------------------------------------------------------------------
-// MicroBit uBit singleton — must be file-scope so CODAL peripherals are
-// fully initialised before Robot is constructed in main().
+// MicroBit uBit singleton — file-scope so CODAL peripherals are fully
+// initialised before any device is constructed in main().
 // ---------------------------------------------------------------------------
 static MicroBit uBit;
 
@@ -20,46 +27,81 @@ static void serialReply(const char* msg, void* ctx)
 }
 
 // ---------------------------------------------------------------------------
-// main — constructs the robot and runs the single cooperative main loop.
+// main — construct all devices, call begin() explicitly, then run the single
+// cooperative loop.
 //
-// Single cooperative main loop architecture (014-006/007):
+// Device ordering:
+//   1. uBit.init() — all CODAL peripherals ready.
+//   2. Static RobotConfig cfg — Motor constructors need fwdSign values.
+//   3. Device singletons — each holds a reference to the CODAL bus/pin.
+//   4. Communicator — begin() enables serial and radio.
+//   5. Sensor begin() calls — straight-line, before the loop.
+//      Comment a line out to disable that sensor; its task skips via
+//      is_initialized() on every subsequent read.
+//   6. Robot — built from its devices + communicator.
+//   7. CommandProcessor / LoopScheduler — wired and started.
 //
-//   LoopScheduler::run() (never returns):
-//     1. HARD TASK: split-phase encoder COLLECT → velocity (ZOH) → PID → PWM.
-//     2. LOW-PRIORITY SWEEP: comms-in, drive-advance, odometry-predict,
-//        otos-correct, line-read, color-read, ports-read, telemetry-emit.
-//        Round-robin, persistent cursor, budget-gated against controlDeadline.
-//     3. ENCODER REQUEST: fire next wheel request (last I2C before idle).
-//     4. IDLE SLEEP: sleep until controlDeadline.
-//
-// No CODAL fibers. All I/O inline. All task entry points on Robot.
+// Sensor detection rationale:
+//   * NOT in the Robot constructor — detecting that early reads the line/color
+//     chips before they have powered up and wedges the I2C bus.
+//   * NOT inside the loop — the per-sensor retries would freeze the loop.
+//   A short settle delay gives the sensors time to power up; each begin()
+//   internally retries until the chip answers (mirrors the old firmware).
 // ---------------------------------------------------------------------------
-
 int main() {
     uBit.init();
 
-    // Force the I2C bus to 100 kHz (matches the known-good MakeCode firmware).
-    // The CODAL default can be faster; at higher speed the OTOS (0x17) read
-    // wedges the shared bus once a second sensor (color 0x43) is present —
-    // writes survive, reads return 0. 100 kHz gives the margin the loaded bus
-    // needs. (Sprint 014 color/OTOS bus-conflict fix.)
-    uBit.i2c.setFrequency(100000);
+    // Heart on the LED matrix — "powered and ready" (non-blocking).
+    uBit.display.printAsync(icons::boot());
 
-    // Show a heart on the 5x5 LED matrix as a "powered and ready" indicator.
-    uBit.display.printAsync(icons::boot()); // delay=0 → show forever, non-blocking
+    // -----------------------------------------------------------------------
+    // 2. Config (needed by Motor constructor for fwdSign values).
+    // -----------------------------------------------------------------------
+    static RobotConfig cfg = defaultRobotConfig();
 
-    static Robot            robot(uBit.i2c, uBit.serial, uBit.radio,
-                                  uBit.io, uBit.messageBus, uBit);
+    // -----------------------------------------------------------------------
+    // 3. Devices (singletons) on the buses.
+    // -----------------------------------------------------------------------
+    static Motor        motorL(uBit.i2c, 2, cfg.fwdSignL);   // M2 left
+    static Motor        motorR(uBit.i2c, 1, cfg.fwdSignR);   // M1 right
+    static OtosSensor   otos(uBit.i2c, cfg);
+    static LineSensor   line(uBit.i2c);
+    static ColorSensor  color(uBit.i2c);
+    static Servo        gripper(uBit.io.P1);
+    static PortIO       portio(uBit.io);
+
+    // -----------------------------------------------------------------------
+    // 4. Communications — begin() enables serial + radio.
+    // -----------------------------------------------------------------------
+    static Communicator comm(uBit.serial, uBit.radio, uBit.messageBus);
+    comm.begin();
+
+    // -----------------------------------------------------------------------
+    // 5. Device initialisation — comment a line out to disable that device.
+    //    begin() sets is_initialized(); read paths check it each tick.
+    // -----------------------------------------------------------------------
+    // Settle so the sensors have time to power up before begin() probes them.
+    uBit.sleep(2500);
+    otos.begin();
+    line.begin();
+    color.begin();
+
+    // -----------------------------------------------------------------------
+    // 6. Robot — built from its devices + communicator (no i2c/serial/radio/
+    //    MicroBit refs; those are fully encapsulated by the device objects).
+    // -----------------------------------------------------------------------
+    static Robot            robot(motorL, motorR, otos, line, color, gripper, portio, comm, cfg);
     static CommandProcessor cmd(robot);
 
-    // Emit DEVICE: identification banner once at boot over serial.
-    cmd.process("HELLO", serialReply, &robot.serialPort());
+    // DEVICE: identification banner once at boot over serial.
+    cmd.process("HELLO", serialReply, &comm.serial());
 
-    // Run the cooperative main loop — never returns.
-    // run_tasks() = production priority-task loop; run_all() = explicit testing loop.
-    static LoopScheduler sched(robot, cmd, uBit);
+    // -----------------------------------------------------------------------
+    // 7. Run the cooperative main loop — never returns.
+    // -----------------------------------------------------------------------
+    static LoopScheduler sched(robot, cmd, comm, uBit);
     cmd.setScheduler(&sched);   // enable DBG LOOP <x> <state> task toggling
-    sched.run_all();            // testing loop (per-task toggles + timing)
+    sched.run_all();
 
     return 0;
 }

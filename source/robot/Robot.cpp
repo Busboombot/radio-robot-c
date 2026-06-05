@@ -2,30 +2,31 @@
 #include "LineSensor.h"
 #include "ColorSensor.h"
 #include "DriveController.h"
+#include "MicroBit.h"
 #include <cstdio>
 #include <cmath>
 
-Robot::Robot(MicroBitI2C&    i2c,
-             NRF52Serial&    serial,
-             MicroBitRadio&  radio,
-             MicroBitIO&     io,
-             MessageBus&     messageBus,
-             MicroBit&       uBit)
-    : _uBit(uBit),
-      _i2c(i2c),
-      _currentGripperAngle(0),
-      _config(defaultRobotConfig()),
+Robot::Robot(Motor&        motorL,
+             Motor&        motorR,
+             OtosSensor&   otos,
+             LineSensor&   line,
+             ColorSensor&  color,
+             Servo&        gripper,
+             PortIO&       portio,
+             Communicator& comm,
+             const RobotConfig& cfg)
+    : _currentGripperAngle(0),
+      _config(cfg),
       _lastTlmMs(0),
-      _motorL(i2c, 2, _config.fwdSignL),  // M2, left wheel
-      _motorR(i2c, 1, _config.fwdSignR),   // M1, right wheel
-      _serial(serial),
-      _radio(radio, messageBus),
-      _otos(i2c, _config),
-      _line(i2c),
-      _color(i2c),
-      _servo(io.P1),
+      _motorL(motorL),
+      _motorR(motorR),
+      _otos(otos),
+      _line(line),
+      _color(color),
+      _servo(gripper),
       _gripperPresent(false),
-      _portio(io),
+      _portio(portio),
+      _comm(comm),
       _mc(_motorL, _motorR, _config),
       _odo(),
       _dc(_mc, _odo, _config),
@@ -33,19 +34,8 @@ Robot::Robot(MicroBitI2C&    i2c,
       _lastControlMs(0),
       _lastOtosMs(0)
 {
-    // uBit.init() was called by main.cpp before constructing Robot.
-    // All CODAL peripherals are ready; begin subsystem initialisation now.
-
-    _serial.begin();
-    _radio.begin();
-
-    // Sensor initialization — comment out a line to disable that sensor.
-    // Each begin() detects + initializes its device and sets is_initialized();
-    // a disabled sensor's reads then skip via is_initialized() guards.
-    // DIAGNOSTIC: temporarily disabled to test whether a sensor begin() stalls boot.
-    // _otos.begin();   // detect + init + apply OTOS scalars from config (all in begin)
-    _line.begin();
-    // _color.begin();
+    // Devices are fully initialised before this constructor runs (main.cpp calls
+    // uBit.init() and device begin() before constructing Robot).
 
     _gripperPresent = true;  // servo always available on P1
 
@@ -62,47 +52,59 @@ Robot::Robot(MicroBitI2C&    i2c,
 }
 
 // ---------------------------------------------------------------------------
+// systemTime — robot system time in milliseconds since boot.
+//
+// Uses the CODAL free function system_timer_current_time() (ms resolution),
+// declared in codal-core/inc/driver-models/Timer.h, available via MicroBit.h.
+// ---------------------------------------------------------------------------
+
+uint32_t Robot::systemTime() const
+{
+    return (uint32_t)system_timer_current_time();
+}
+
+// ---------------------------------------------------------------------------
 // Drive action methods — delegate to DriveController
 // ---------------------------------------------------------------------------
 
 void Robot::stop()
 {
-    uint32_t now_ms = _uBit.systemTime();
+    uint32_t now_ms = systemTime();
     // stop() with no reply fn: use a no-op sink
     _dc.stop(now_ms, [](const char*, void*){}, nullptr);
 }
 
 void Robot::streamDrive(int32_t leftMms, int32_t rightMms, ReplyFn fn, void* ctx)
 {
-    _dc.beginStream((float)leftMms, (float)rightMms, _uBit.systemTime(),
+    _dc.beginStream((float)leftMms, (float)rightMms, systemTime(),
                     _state.target, fn, ctx);
 }
 
 void Robot::velocityDrive(float v_mms, float omega_rads, ReplyFn fn, void* ctx,
                            const char* corr_id)
 {
-    _dc.beginVelocity(v_mms, omega_rads, _uBit.systemTime(),
+    _dc.beginVelocity(v_mms, omega_rads, systemTime(),
                       _state.target, fn, ctx, corr_id);
 }
 
 void Robot::timedDrive(int32_t leftMms, int32_t rightMms, uint32_t durationMs,
                        ReplyFn fn, void* ctx, const char* corr_id)
 {
-    _dc.beginTimed((float)leftMms, (float)rightMms, durationMs, _uBit.systemTime(),
+    _dc.beginTimed((float)leftMms, (float)rightMms, durationMs, systemTime(),
                    _state.target, fn, ctx, corr_id);
 }
 
 void Robot::distanceDrive(int32_t leftMms, int32_t rightMms, int32_t targetMm,
                           ReplyFn fn, void* ctx, const char* corr_id)
 {
-    _dc.beginDistance((float)leftMms, (float)rightMms, targetMm, _uBit.systemTime(),
+    _dc.beginDistance((float)leftMms, (float)rightMms, targetMm, systemTime(),
                       _state.target, fn, ctx, corr_id);
 }
 
 void Robot::goTo(float tx, float ty, float speedMms, ReplyFn fn, void* ctx,
                  const char* corr_id)
 {
-    _dc.beginGoTo(tx, ty, speedMms, _uBit.systemTime(),
+    _dc.beginGoTo(tx, ty, speedMms, systemTime(),
                   _state.target, fn, ctx, corr_id);
 }
 
@@ -368,7 +370,7 @@ void Robot::lineRead()
 {
     if (!_line.is_initialized()) return;
     if (_line.readValues(_state.inputs.line)) {
-        _state.inputs.lineVS.lastUpdMs = _uBit.systemTime();
+        _state.inputs.lineVS.lastUpdMs = systemTime();
         _state.inputs.lineVS.valid     = true;
     }
 }
@@ -387,7 +389,7 @@ void Robot::colorRead()
                         _state.inputs.colorG,
                         _state.inputs.colorB,
                         _state.inputs.colorC)) {
-        _state.inputs.colorVS.lastUpdMs = _uBit.systemTime();
+        _state.inputs.colorVS.lastUpdMs = systemTime();
         _state.inputs.colorVS.valid     = true;
     }
 }
@@ -402,39 +404,8 @@ void Robot::portsRead()
         _state.inputs.digitalIn[i] = (_portio.readDigital(i) != 0);
         _state.inputs.analogIn[i]  = (int16_t)_portio.readAnalog(i);
     }
-    _state.inputs.portsVS.lastUpdMs = _uBit.systemTime();
+    _state.inputs.portsVS.lastUpdMs = systemTime();
     _state.inputs.portsVS.valid     = true;
-}
-
-// ---------------------------------------------------------------------------
-// dbgI2C — DBG I2C diagnostic probe.
-//
-// Reads one byte from each device (write reg pointer, then read 1 byte) and
-// reports the CODAL return codes (0 = MICROBIT_OK) and the byte.  The motor
-// (0x10) is probed both first AND last: if reading OTOS (0x17) or color (0x43)
-// in between wedges the TWIM, the final motor read will error / return garbage,
-// pinpointing which read breaks the bus and whether it errors vs returns zeros.
-// ---------------------------------------------------------------------------
-void Robot::dbgI2C(ReplyFn fn, void* ctx)
-{
-    static const struct { const char* name; uint8_t addr; uint8_t reg; } kDevs[] = {
-        { "motor",  0x10, 0x00 },
-        { "line",   0x1A, 0x00 },
-        { "otos",   0x17, 0x00 },   // OTOS PRODUCT_ID (expect 0x5F)
-        { "color",  0x43, 0xA4 },
-        { "apds",   0x39, 0x92 },   // APDS9960 ID
-        { "motor2", 0x10, 0x00 },   // re-probe motor to see if it got wedged
-    };
-    char line[96];
-    for (unsigned i = 0; i < sizeof(kDevs) / sizeof(kDevs[0]); ++i) {
-        uint8_t reg = kDevs[i].reg;
-        uint8_t val = 0;
-        int wr = _i2c.write((kDevs[i].addr << 1), (uint8_t*)&reg, 1, false);
-        int rd = _i2c.read((kDevs[i].addr << 1), (uint8_t*)&val, 1, false);
-        snprintf(line, sizeof(line), "I2C %s 0x%02X wr=%d rd=%d b=0x%02X",
-                 kDevs[i].name, (unsigned)kDevs[i].addr, wr, rd, (unsigned)val);
-        fn(line, ctx);
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -461,7 +432,7 @@ void Robot::telemetryEmit(uint32_t now_ms, ReplyFn fn, void* ctx)
     }
 
     // ----- 1. Capture timestamp -----------------------------------------------
-    uint32_t t_sample = _uBit.systemTime();
+    uint32_t t_sample = systemTime();
 
     // ----- 2. Encoder positions from HardwareState snapshot -------------------
     int32_t encL = static_cast<int32_t>(_state.inputs.encLMm);

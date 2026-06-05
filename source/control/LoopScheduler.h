@@ -5,6 +5,7 @@
 // Forward declarations to avoid pulling in the full header graph.
 class Robot;
 class CommandProcessor;
+class Communicator;
 
 // ---------------------------------------------------------------------------
 // Task — descriptor for one slot in the cooperative scheduler's task table.
@@ -76,12 +77,12 @@ struct Task {
 //   occurs inside the motor's pending-read window.
 //
 // Construction:
-//   LoopScheduler sched(robot, cmd, uBit);
+//   LoopScheduler sched(robot, cmd, comm, uBit);
 //   sched.run_tasks();   // never returns (or run_all() for testing)
 // ---------------------------------------------------------------------------
 class LoopScheduler {
 public:
-    LoopScheduler(Robot& robot, CommandProcessor& cmd, MicroBit& uBit);
+    LoopScheduler(Robot& robot, CommandProcessor& cmd, Communicator& comm, MicroBit& uBit);
 
     // Production cooperative main loop: priority task table, budget gating,
     // round-robin sweep. Never returns. (Was run().)
@@ -108,6 +109,7 @@ public:
     // ---------------------------------------------------------------------------
     Robot&            robot() { return _robot; }
     CommandProcessor& cmd()   { return _cmd;   }
+    Communicator&     comm()  { return _comm;  }
     MicroBit&         uBit()  { return _uBit;  }
 
     // Active reply sink — updated each time a command is dispatched so that
@@ -118,6 +120,7 @@ public:
 private:
     Robot&            _robot;
     CommandProcessor& _cmd;
+    Communicator&     _comm;
     MicroBit&         _uBit;
 
     // ---------------------------------------------------------------------------

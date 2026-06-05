@@ -1,5 +1,4 @@
 #pragma once
-#include "MicroBit.h"
 #include "Config.h"
 #include "Motor.h"
 #include "OtosSensor.h"
@@ -7,8 +6,7 @@
 #include "ColorSensor.h"
 #include "Servo.h"
 #include "PortIO.h"
-#include "SerialPort.h"
-#include "Radio.h"
+#include "Communicator.h"
 #include "MotorController.h"
 #include "Odometry.h"
 #include "DriveController.h"
@@ -17,20 +15,23 @@
 /**
  * Robot — top-level object that owns all firmware subsystems.
  *
- * MicroBit uBit now lives in main.cpp as a file-scope static. Robot
- * receives references to the CODAL peripherals it needs so that hardware
- * ownership is explicit and Robot is a pure abstraction layer.
+ * Devices (Motor, OtosSensor, LineSensor, ColorSensor, Servo, PortIO) and the
+ * Communicator are constructed in main() as statics and passed in by reference.
+ * Robot holds REFERENCES to them — it does NOT own or construct them.
  *
- * Construction order is preserved: main.cpp calls uBit.init() before
- * constructing Robot, so all CODAL peripherals are fully initialised
- * when the subsystem constructors run.
+ * The control layer (MotorController, Odometry, DriveController,
+ * RobotStateContainer) is still owned here.  RobotConfig is held as an owned
+ * COPY initialised from the cfg argument (runtime SET commands mutate it).
+ *
+ * begin() for each device is called explicitly in main() before constructing
+ * Robot, so a device can be disabled by commenting out its begin() call.
  *
  * Usage (main.cpp):
- *   static MicroBit uBit;
- *   uBit.init();
- *   static Robot robot(uBit.i2c, uBit.serial, uBit.radio, uBit.io,
- *                      uBit.messageBus, uBit);
- *   // then run the visible main loop — see main.cpp.
+ *   static Motor motorL(uBit.i2c, 2, cfg.fwdSignL);
+ *   static Communicator comm(uBit.serial, uBit.radio, uBit.messageBus);
+ *   comm.begin();
+ *   otos.begin();
+ *   static Robot robot(motorL, motorR, otos, line, color, gripper, portio, comm, cfg);
  */
 class Robot {
 public:
@@ -41,12 +42,15 @@ public:
     struct EncoderReading { int32_t leftMm; int32_t rightMm; };
     struct Pose           { int32_t x_mm; int32_t y_mm; int32_t h_cdeg; };
 
-    Robot(MicroBitI2C&    i2c,
-          NRF52Serial&    serial,
-          MicroBitRadio&  radio,
-          MicroBitIO&     io,
-          MessageBus&     messageBus,
-          MicroBit&       uBit);
+    Robot(Motor&        motorL,
+          Motor&        motorR,
+          OtosSensor&   otos,
+          LineSensor&   line,
+          ColorSensor&  color,
+          Servo&        gripper,
+          PortIO&       portio,
+          Communicator& comm,
+          const RobotConfig& cfg);
 
 
     // ---------------------------------------------------------------------------
@@ -111,11 +115,6 @@ public:
     void portsRead();
     void telemetryEmit(uint32_t now_ms, ReplyFn fn, void* ctx);
 
-    // DBG I2C diagnostic — probe each device address once (write reg + read 1
-    // byte) and report the CODAL return codes + byte via fn/ctx, so we can see
-    // whether a read errors / wedges the TWIM (vs returning zero data).
-    void dbgI2C(ReplyFn fn, void* ctx);
-
     // ---------------------------------------------------------------------------
     // Drive action methods — delegate to DriveController.
     // fn/ctx: originating reply sink captured for async completions.
@@ -149,10 +148,11 @@ public:
     // Current gripper angle (set by setGripperAngle / G command)
     int32_t gripperAngle() const { return _currentGripperAngle; }
 
-    // Robot system time in milliseconds since boot (uBit.systemTime()).
-    uint32_t systemTime() const { return _uBit.systemTime(); }
+    // Robot system time in milliseconds since boot.
+    // Uses the CODAL free function system_timer_current_time() (declared in
+    // codal-core Timer.h, pulled in via MicroBit.h headers).
+    uint32_t systemTime() const;
 
-    // ---------------------------------------------------------------------------
     // ---------------------------------------------------------------------------
     // State accessor — returns the authoritative robot state container (014-003).
     // HardwareState::enc*/vel* are written each tick by controlCollect().
@@ -164,23 +164,17 @@ public:
     // Component accessors — used by CommandProcessor and main.cpp.
     // ---------------------------------------------------------------------------
     RobotConfig&     config()          { return _config; }
-    SerialPort&      serialPort()      { return _serial; }
-    Radio&           radioPort()       { return _radio; }
+    Communicator&    comm()            { return _comm; }
     MotorController& motor()           { return _mc; }
     DriveController& driveController() { return _dc; }
     Odometry&        odometry()        { return _odo; }
     OtosSensor*      otos()            { return _otos.is_initialized()  ? &_otos  : nullptr; }
     LineSensor*      lineSensor()      { return _line.is_initialized()  ? &_line  : nullptr; }
     ColorSensor*     colorSensor()     { return _color.is_initialized() ? &_color : nullptr; }
-    Servo*           servo()            { return _gripperPresent ? &_servo   : nullptr; }
+    Servo*           servo()           { return _gripperPresent ? &_servo   : nullptr; }
     PortIO&          portIO()          { return _portio; }
 
 private:
-    // Reference to the CODAL singleton — used by drive action helpers for systemTime().
-    MicroBit&  _uBit;
-    // Raw I2C bus reference — used only by dbgI2C() for the DBG I2C probe.
-    MicroBitI2C& _i2c;
-
     // Gripper angle tracking (owned here so CommandProcessor is stateless)
     int32_t _currentGripperAngle;
 
@@ -192,22 +186,20 @@ private:
     // TLM streaming state — managed by tick(); period/fields/snap set via config().
     uint32_t _lastTlmMs;    // timestamp of last emitted TLM frame
 
-    // Required subsystems (constructed from received references)
-    Motor      _motorL;   // M2, left wheel
-    Motor      _motorR;   // M1, right wheel
-    SerialPort _serial;
-    Radio      _radio;
-
-    // Optional subsystems.  I2C sensors derive from Sensor; their
-    // is_initialized() reports hardware availability (set by begin()).
-    OtosSensor   _otos;
-    LineSensor   _line;
-    ColorSensor  _color;
-    Servo        _servo;
+    // Device references (constructed externally in main(), passed in as refs).
+    Motor&       _motorL;   // M2, left wheel
+    Motor&       _motorR;   // M1, right wheel
+    OtosSensor&  _otos;
+    LineSensor&  _line;
+    ColorSensor& _color;
+    Servo&       _servo;
     bool         _gripperPresent;
-    PortIO       _portio;
+    PortIO&      _portio;
 
-    // Control layer — declared after _motorL/_motorR and _config to ensure correct init order.
+    // Communications (owns SerialPort + Radio; begin() called in main() before Robot).
+    Communicator& _comm;
+
+    // Control layer — declared after device refs to ensure correct init order.
     MotorController  _mc;
     Odometry         _odo;
     DriveController  _dc;

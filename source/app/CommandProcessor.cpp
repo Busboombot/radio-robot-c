@@ -813,12 +813,6 @@ void CommandProcessor::process(const char* line, ReplyFn replyFn, void* ctx)
         for (char* c = tokens[1]; *c != '\0'; ++c) {
             *c = (char)toupper((unsigned char)*c);
         }
-        if (strcmp(tokens[1], "I2C") == 0) {
-            // Probe every device address once; report CODAL return codes + byte.
-            _robot.dbgI2C(replyFn, ctx);
-            replyOK(rbuf, sizeof(rbuf), "dbg", "i2c", corr_id, replyFn, ctx);
-            return;
-        }
         if (strcmp(tokens[1], "LOOP") == 0) {
             if (_sched == nullptr) {
                 replyErr(rbuf, sizeof(rbuf), "noimpl", "no scheduler", corr_id, replyFn, ctx);

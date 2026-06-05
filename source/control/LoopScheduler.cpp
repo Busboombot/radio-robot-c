@@ -1,6 +1,7 @@
 #include "LoopScheduler.h"
 #include "Robot.h"
 #include "CommandProcessor.h"
+#include "Communicator.h"
 #include "SerialPort.h"
 #include "Radio.h"
 #include "RobotState.h"
@@ -43,10 +44,9 @@ static bool defaultDue(Task& task, uint32_t now)
 // Captures the active reply sink (activeFn/activeCtx) on the scheduler.
 static void runCommsIn(LoopScheduler& sched, uint32_t /*now*/)
 {
-    Robot&            robot  = sched.robot();
     CommandProcessor& cmd    = sched.cmd();
-    SerialPort&       serial = robot.serialPort();
-    Radio&            radio  = robot.radioPort();
+    SerialPort&       serial = sched.comm().serial();
+    Radio&            radio  = sched.comm().radio();
 
     char buf[512];
 
@@ -118,11 +118,13 @@ static void runTelemetryEmit(LoopScheduler& sched, uint32_t now)
 // can be changed at runtime by the command processor (SET lag.*).
 // ---------------------------------------------------------------------------
 
-LoopScheduler::LoopScheduler(Robot& robot, CommandProcessor& cmd, MicroBit& uBit)
+LoopScheduler::LoopScheduler(Robot& robot, CommandProcessor& cmd,
+                             Communicator& comm, MicroBit& uBit)
     : activeFn(nullptr),
       activeCtx(nullptr),
       _robot(robot),
       _cmd(cmd),
+      _comm(comm),
       _uBit(uBit),
       _cursor(0),
       _pendingWheel(0),
@@ -232,9 +234,8 @@ LoopScheduler::LoopScheduler(Robot& robot, CommandProcessor& cmd, MicroBit& uBit
     }
 
     // All tasks default to run=true.  Disabling a sensor is done by commenting
-    // its begin() line in the Robot constructor (its reads then skip via
-    // Sensor::is_initialized()); the "DBG LOOP <x> 0/1" command still toggles
-    // tasks at runtime.
+    // its begin() call in main() (its reads then skip via is_initialized());
+    // the "DBG LOOP <x> 0/1" command still toggles tasks at runtime.
 }
 
 // ---------------------------------------------------------------------------
@@ -485,6 +486,8 @@ void LoopScheduler::run_all()
         }
         now = _uBit.systemTime();
         _controlDeadline = now + (uint32_t)_robot.config().controlPeriodMs;
+
+        // (Sensor detection is done once in main() before this loop starts.)
 
         // --- LOW-PRIORITY TASKS — explicit, in order, each guarded + timed --
         // Reorder / comment-out / toggle (_table[i].run = false) freely.
