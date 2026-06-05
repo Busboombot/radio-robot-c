@@ -101,7 +101,7 @@ int main() {
     // -----------------------------------------------------------------------
     static LoopScheduler sched(robot, cmd, comm, uBit);
     cmd.setScheduler(&sched);   // enable DBG LOOP <x> <state> task toggling
-    sched.run_all();
+    sched.run_tasks();
 
     return 0;
 }
