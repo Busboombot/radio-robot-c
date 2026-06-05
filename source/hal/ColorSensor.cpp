@@ -12,42 +12,31 @@ ColorSensor::ColorSensor(MicroBitI2C& i2c)
 
 bool ColorSensor::begin()
 {
-    // Probe the alt chip at 0x43 first.
-    // Mirror upstream PlanetX driver: write 0x81=0xCA, 0x80=0x17, then
-    // settle 50 ms and retry up to 20 times checking that the 16-bit value
-    // at 0xA4/0xA5 (read as two single-byte transactions) is non-zero.
-    writeReg8(ADDR_ALT, 0x81, 0xCA);
-    writeReg8(ADDR_ALT, 0x80, 0x17);
-    bool altFound = false;
+    // EXACT port of upstream PlanetX initColor (old radio-robot nezha.ts):
+    // probe the alt chip at 0x43, re-asserting the wake writes (0x81=0xCA,
+    // 0x80=0x17) INSIDE every retry iteration, settle 50 ms, then check the
+    // 16-bit value at 0xA4/0xA5 is non-zero.  Re-writing the wake each loop is
+    // what wakes a chip that wasn't ready on the first attempt.
     for (int i = 0; i < 20; i++) {
+        writeReg8(ADDR_ALT, 0x81, 0xCA);
+        writeReg8(ADDR_ALT, 0x80, 0x17);
         fiber_sleep(50);
-        uint16_t probe = readReg16Alt(0xA4);
-        if (probe != 0) {
-            altFound = true;
-            break;
+        if (readReg16Alt(0xA4) != 0) {   // 0xA4 + 0xA5 * 256
+            _isAlt = true;
+            _initialized = true;
+            return true;
         }
     }
-    if (altFound) {
-        _isAlt = true;
+
+    // Fall back to APDS9960 at 0x39: write ENABLE off and read it back.
+    writeReg8(ADDR_APDS, 0x80, 0x00);
+    if (readReg8(ADDR_APDS, 0x80) == 0x00) {
+        _isAlt = false;
+        initApds();
         _initialized = true;
         return true;
     }
-
-    // Fall back to APDS9960 at 0x39.
-    // Perform a minimal communication check: write ENABLE register and read it back.
-    // If the write succeeds we assume the chip is present (no device-ID register
-    // on APDS9960 that is safe to probe without side effects at this stage).
-    writeReg8(ADDR_APDS, 0x80, 0x00);  // ENABLE: power off — safe probe write
-    uint8_t en = readReg8(ADDR_APDS, 0x80);
-    if (en != 0x00) {
-        // Unexpected read — device not present or not responding correctly.
-        return false;
-    }
-
-    _isAlt = false;
-    initApds();
-    _initialized = true;
-    return true;
+    return false;
 }
 
 bool ColorSensor::pollRGBC(uint16_t& r, uint16_t& g, uint16_t& b, uint16_t& c)

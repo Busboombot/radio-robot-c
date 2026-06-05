@@ -29,8 +29,7 @@ bool OtosSensor::begin()
     if (!_initialized) return false;
 
     // Enable signal processing + reset Kalman tracking, then apply the
-    // linear/angular calibration scalars from config.  (init() and the
-    // setter calls are gated on is_initialized(), now true.)
+    // linear/angular calibration scalars from config.
     init();
     setLinearScalar(scaleToInt8(_cfg.otosLinearScale));
     setAngularScalar(scaleToInt8(_cfg.otosAngularScale));
