@@ -14,6 +14,7 @@ dependencies = [
 # the aprilcam camera client (and its CV/gRPC stack). Install with `uv sync`.
 calibrate = [
     "aprilcam",
+    "matplotlib>=3.8",
 ]
 
 [tool.uv]
@@ -46,4 +47,5 @@ testpaths = ["host/tests", "tests"]
 norecursedirs = [
     "vendor", "build", ".venv", "node_modules",
     "*.egg", ".*", "dist", "{arch}", "__pycache__",
+    "tests/bench",
 ]
