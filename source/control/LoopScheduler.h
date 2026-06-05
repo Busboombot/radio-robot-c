@@ -18,7 +18,16 @@ class CommandProcessor;
 //                now + estCostMs > controlDeadline, don't start it).
 //   due        : returns true when the task is eligible to run (default:
 //                periodMs==0, or now - lastRunMs >= periodMs).
-//   run        : executes the task body.
+//   runFn      : executes the task body (was 'run'; renamed so the 'run' bool
+//                flag below is unambiguous).
+//
+//   run        : per-step enable gate. run_all() runs this task iff run==true.
+//   run_always : default true  — re-armed every pass (never auto-disabled).
+//   run_once   : default false — after one run, disarm (run := false) unless
+//                run_always is also set.
+//   runs       : number of times runFn has been invoked (for averaging).
+//   totalTimeUs: accumulated wall time across all runs, in microseconds.
+//                Average per-run cost = totalTimeUs / runs.
 // ---------------------------------------------------------------------------
 struct Task {
     const char* name;
@@ -26,7 +35,16 @@ struct Task {
     uint32_t    lastRunMs;
     uint32_t    estCostMs;
     bool      (*due)(struct Task& task, uint32_t now);
-    void      (*run)(class LoopScheduler& sched, uint32_t now);
+    void      (*runFn)(class LoopScheduler& sched, uint32_t now);
+
+    // run-control flags (used by run_all() via _runStep)
+    bool        run;
+    bool        run_always;
+    bool        run_once;
+
+    // per-task timing stats
+    uint32_t    runs;
+    uint32_t    totalTimeUs;
 };
 
 // ---------------------------------------------------------------------------
@@ -59,14 +77,31 @@ struct Task {
 //
 // Construction:
 //   LoopScheduler sched(robot, cmd, uBit);
-//   sched.run();   // never returns
+//   sched.run_tasks();   // never returns (or run_all() for testing)
 // ---------------------------------------------------------------------------
 class LoopScheduler {
 public:
     LoopScheduler(Robot& robot, CommandProcessor& cmd, MicroBit& uBit);
 
-    // Enter the cooperative main loop. Never returns.
-    void run();
+    // Production cooperative main loop: priority task table, budget gating,
+    // round-robin sweep. Never returns. (Was run().)
+    void run_tasks();
+
+    // Explicit testing loop: every task is called explicitly, in a visible
+    // fixed order, each guarded by its Task::run flag and individually timed
+    // (Task::runs / Task::totalTimeUs). Easy to reorder / toggle by hand.
+    // Never returns.
+    void run_all();
+
+    // --- Debug/testing task control (DBG LOOP command) -----------------------
+    // Number of low-priority tasks; valid indices are 0..numTasks()-1.
+    int  numTasks() const { return kNumTasks; }
+    // Enable/disable a task's run flag (takes effect in run_all). Returns false
+    // if idx is out of range.
+    bool setTaskRun(int idx, bool run);
+    // Read-only access to a task entry (name / run / runs / totalTimeUs).
+    // Returns nullptr if idx is out of range.
+    const Task* taskAt(int idx) const;
 
     // ---------------------------------------------------------------------------
     // Accessors used by Task::run() lambdas.
@@ -108,6 +143,11 @@ private:
     int      _pendingWheel;
     uint32_t _controlDeadline;
 
+    // Control-task timing (the control task is special — not a Task entry, so
+    // its stats live here rather than in the table). Average = us/runs.
+    uint32_t _controlRuns;
+    uint32_t _controlTotalUs;
+
     // ---------------------------------------------------------------------------
     // Private helpers that implement the split-phase control logic.
     // ---------------------------------------------------------------------------
@@ -126,4 +166,9 @@ private:
     // wheel via Robot::controlFireRequest().  No longer called by run() since
     // the request is now issued atomically at the top of the tick.
     void controlFireRequest();
+
+    // Run one task with the run-flag guard + per-task timing (used by run_all).
+    // Skips if !t.run; otherwise times t.runFn, accumulates runs/totalTimeUs,
+    // and disarms (run := false) if run_once && !run_always.
+    void _runStep(Task& t, uint32_t now);
 };

@@ -3,6 +3,8 @@
 #include "Sensor.h"
 #include <stdint.h>
 
+struct RobotConfig;   // fwd decl — begin() applies the OTOS scalars from config
+
 /**
  * OtosSensor — I2C driver for the SparkFun Optical Tracking Odometry Sensor (OTOS).
  *
@@ -22,11 +24,11 @@
  */
 class OtosSensor : public Sensor {
 public:
-    explicit OtosSensor(MicroBitI2C& i2c);
+    OtosSensor(MicroBitI2C& i2c, const RobotConfig& cfg);
 
-    // Detect (read PRODUCT_ID) and, if found, initialize signal processing +
-    // reset Kalman tracking.  Sets _initialized = (id == EXPECTED_PRODUCT_ID).
-    // Returns _initialized.
+    // Detect (read PRODUCT_ID) and, if found: init signal processing, reset
+    // Kalman tracking, and apply the linear/angular scalars from config.
+    // Sets _initialized = (id == EXPECTED_PRODUCT_ID). Returns _initialized.
     bool begin() override;
 
     // Re-run device init: enable all signal processing (0x0F) and reset Kalman
@@ -50,8 +52,13 @@ public:
     void   setAngularScalar(int8_t val);
 
 private:
-    MicroBitI2C& _i2c;
+    MicroBitI2C&       _i2c;
+    const RobotConfig& _cfg;
     static constexpr uint8_t ADDR = 0x17;
+
+    // Convert a calibration scale (e.g. 1.05) to the chip's signed-int8 scalar
+    // (0.1% per LSB), clamped to [-127, 127].
+    static int8_t scaleToInt8(float scale);
 
     // Register addresses
     static constexpr uint8_t REG_PRODUCT_ID        = 0x00;

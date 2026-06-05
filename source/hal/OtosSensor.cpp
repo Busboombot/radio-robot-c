@@ -1,7 +1,9 @@
 #include "OtosSensor.h"
+#include "Config.h"
+#include <cmath>
 
-OtosSensor::OtosSensor(MicroBitI2C& i2c)
-    : _i2c(i2c)
+OtosSensor::OtosSensor(MicroBitI2C& i2c, const RobotConfig& cfg)
+    : _i2c(i2c), _cfg(cfg)
 {
 }
 
@@ -9,14 +11,30 @@ OtosSensor::OtosSensor(MicroBitI2C& i2c)
 // Public interface
 // ---------------------------------------------------------------------------
 
+int8_t OtosSensor::scaleToInt8(float scale)
+{
+    // scalar = clamp(round((scale - 1.0) / 0.001), -127, 127).
+    // E.g. 1.05 → +50; 0.987 → -13.
+    float raw = roundf((scale - 1.0f) / 0.001f);
+    if (raw >  127.0f) raw =  127.0f;
+    if (raw < -127.0f) raw = -127.0f;
+    return static_cast<int8_t>(raw);
+}
+
 bool OtosSensor::begin()
 {
     // Detect via product-ID read.
     uint8_t id = readReg8(REG_PRODUCT_ID);
     _initialized = (id == EXPECTED_PRODUCT_ID);
-    // init() is gated on is_initialized(), so it only writes when detected.
+    if (!_initialized) return false;
+
+    // Enable signal processing + reset Kalman tracking, then apply the
+    // linear/angular calibration scalars from config.  (init() and the
+    // setter calls are gated on is_initialized(), now true.)
     init();
-    return _initialized;
+    setLinearScalar(scaleToInt8(_cfg.otosLinearScale));
+    setAngularScalar(scaleToInt8(_cfg.otosAngularScale));
+    return true;
 }
 
 void OtosSensor::init()

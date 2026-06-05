@@ -20,7 +20,7 @@ Robot::Robot(MicroBitI2C&    i2c,
       _motorR(i2c, 1, _config.fwdSignR),   // M1, right wheel
       _serial(serial),
       _radio(radio, messageBus),
-      _otos(i2c),
+      _otos(i2c, _config),
       _line(i2c),
       _color(i2c),
       _servo(io.P1),
@@ -42,26 +42,10 @@ Robot::Robot(MicroBitI2C&    i2c,
     // Sensor initialization — comment out a line to disable that sensor.
     // Each begin() detects + initializes its device and sets is_initialized();
     // a disabled sensor's reads then skip via is_initialized() guards.
-    _otos.begin();
+    // DIAGNOSTIC: temporarily disabled to test whether a sensor begin() stalls boot.
+    // _otos.begin();   // detect + init + apply OTOS scalars from config (all in begin)
     _line.begin();
-    _color.begin();
-
-    if (_otos.is_initialized()) {
-        // OTOS correction is handled by Robot::otosCorrect() exclusively (014-005).
-        // DriveController no longer holds the OtosSensor pointer.
-
-        // Apply calibration scalars from config at boot.
-        // Formula: scalar = clamp(round((scale - 1.0) / 0.001), -127, 127).
-        // E.g. otosLinearScale=1.05 → +50; otosAngularScale=0.987 → -13.
-        auto scaleToInt8 = [](float scale) -> int8_t {
-            float raw = roundf((scale - 1.0f) / 0.001f);
-            if (raw > 127.0f) raw = 127.0f;
-            if (raw < -127.0f) raw = -127.0f;
-            return static_cast<int8_t>(raw);
-        };
-        _otos.setLinearScalar(scaleToInt8(_config.otosLinearScale));
-        _otos.setAngularScalar(scaleToInt8(_config.otosAngularScale));
-    }
+    // _color.begin();
 
     _gripperPresent = true;  // servo always available on P1
 

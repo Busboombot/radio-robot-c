@@ -22,6 +22,7 @@
 #include "MotorController.h"
 #include "Odometry.h"
 #include "DriveController.h"
+#include "LoopScheduler.h"
 #include "Config.h"
 #include <cstring>
 #include <cstdio>
@@ -796,6 +797,64 @@ void CommandProcessor::process(const char* line, ReplyFn replyFn, void* ctx)
     if (strcmp(verb, "SNAP") == 0) {
         _robot.config().tlmSnapPending = true;
         replyOK(rbuf, sizeof(rbuf), "snap", nullptr, corr_id, replyFn, ctx);
+        return;
+    }
+
+    // ── DBG — debug/testing controls ──────────────────────────────────────────
+    // DBG LOOP <x> <state>  → set scheduler task x run flag (0/1).
+    //                         Takes effect in LoopScheduler::run_all().
+    // DBG LOOP              → list tasks: "LOOP <idx> <name> run=<0|1> n=<runs> avgUs=<us>"
+    if (strcmp(verb, "DBG") == 0) {
+        if (ntok < 2) {
+            replyErr(rbuf, sizeof(rbuf), "badarg", "dbg subcommand", corr_id, replyFn, ctx);
+            return;
+        }
+        // Only the verb is auto-uppercased; normalise the subcommand here.
+        for (char* c = tokens[1]; *c != '\0'; ++c) {
+            *c = (char)toupper((unsigned char)*c);
+        }
+        if (strcmp(tokens[1], "I2C") == 0) {
+            // Probe every device address once; report CODAL return codes + byte.
+            _robot.dbgI2C(replyFn, ctx);
+            replyOK(rbuf, sizeof(rbuf), "dbg", "i2c", corr_id, replyFn, ctx);
+            return;
+        }
+        if (strcmp(tokens[1], "LOOP") == 0) {
+            if (_sched == nullptr) {
+                replyErr(rbuf, sizeof(rbuf), "noimpl", "no scheduler", corr_id, replyFn, ctx);
+                return;
+            }
+            // DBG LOOP <x> <state> — set task x run flag.
+            if (ntok >= 4) {
+                int x = atoi(tokens[2]);
+                int s = atoi(tokens[3]);
+                if (!_sched->setTaskRun(x, s != 0)) {
+                    replyErr(rbuf, sizeof(rbuf), "badarg", "task index", corr_id, replyFn, ctx);
+                    return;
+                }
+                char body[40];
+                snprintf(body, sizeof(body), "loop %d run=%d", x, (s != 0) ? 1 : 0);
+                replyOK(rbuf, sizeof(rbuf), "dbg", body, corr_id, replyFn, ctx);
+                return;
+            }
+            // DBG LOOP — list every task with its run flag and timing stats.
+            int n = _sched->numTasks();
+            for (int i = 0; i < n; ++i) {
+                const Task* t = _sched->taskAt(i);
+                if (t == nullptr) continue;
+                unsigned long avg = (t->runs > 0)
+                                  ? (unsigned long)(t->totalTimeUs / t->runs) : 0UL;
+                char line[96];
+                snprintf(line, sizeof(line),
+                         "LOOP %d %s run=%d n=%lu avgUs=%lu",
+                         i, t->name, t->run ? 1 : 0,
+                         (unsigned long)t->runs, avg);
+                replyFn(line, ctx);
+            }
+            replyOK(rbuf, sizeof(rbuf), "dbg", "loop", corr_id, replyFn, ctx);
+            return;
+        }
+        replyErr(rbuf, sizeof(rbuf), "badarg", "dbg subcommand", corr_id, replyFn, ctx);
         return;
     }
 

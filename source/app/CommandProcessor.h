@@ -7,6 +7,7 @@
 // header graph (MicroBit, CODAL, all subsystems) in every file that
 // includes CommandProcessor.h.
 class Robot;
+class LoopScheduler;
 
 // ---------------------------------------------------------------------------
 // KVPair — a single key=value token pair. Used by parseKV().
@@ -48,6 +49,10 @@ public:
     // Parse and dispatch one command line. line must be NUL-terminated.
     // Calls replyFn(msg, ctx) for each response line.
     void process(const char* line, ReplyFn replyFn, void* ctx);
+
+    // Wire the scheduler so the DBG LOOP command can toggle/inspect tasks.
+    // Optional — if unset, DBG LOOP replies with an error.
+    void setScheduler(LoopScheduler* sched) { _sched = sched; }
 
     // -------------------------------------------------------------------------
     // Static parse helpers — public so dependent tickets can call them
@@ -117,6 +122,7 @@ public:
 
 private:
     Robot& _robot;
+    LoopScheduler* _sched = nullptr;
 
     static int clampInt(int v, int lo, int hi);
 };

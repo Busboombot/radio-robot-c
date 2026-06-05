@@ -38,6 +38,13 @@ static void serialReply(const char* msg, void* ctx)
 int main() {
     uBit.init();
 
+    // Force the I2C bus to 100 kHz (matches the known-good MakeCode firmware).
+    // The CODAL default can be faster; at higher speed the OTOS (0x17) read
+    // wedges the shared bus once a second sensor (color 0x43) is present —
+    // writes survive, reads return 0. 100 kHz gives the margin the loaded bus
+    // needs. (Sprint 014 color/OTOS bus-conflict fix.)
+    uBit.i2c.setFrequency(100000);
+
     // Show a heart on the 5x5 LED matrix as a "powered and ready" indicator.
     uBit.display.printAsync(icons::boot()); // delay=0 → show forever, non-blocking
 
@@ -49,8 +56,10 @@ int main() {
     cmd.process("HELLO", serialReply, &robot.serialPort());
 
     // Run the cooperative main loop — never returns.
+    // run_tasks() = production priority-task loop; run_all() = explicit testing loop.
     static LoopScheduler sched(robot, cmd, uBit);
-    sched.run();
+    cmd.setScheduler(&sched);   // enable DBG LOOP <x> <state> task toggling
+    sched.run_all();            // testing loop (per-task toggles + timing)
 
     return 0;
 }
