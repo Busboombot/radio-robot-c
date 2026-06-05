@@ -1,9 +1,9 @@
 ---
 id: '001'
 title: Headless wedge reproduction harness (tests/bench/wedge_repro.py)
-status: open
+status: done
 use-cases:
-  - SUC-001
+- SUC-001
 depends-on: []
 github-issue: ''
 issue: residual-motor-encoder-wedge-after-stop.md
@@ -28,22 +28,22 @@ Reference for connection pattern: `tests/bench/drive_raw.py`.
 
 ## Acceptance Criteria
 
-- [ ] `uv run python tests/bench/wedge_repro.py --help` runs without error.
-- [ ] Script connects without DTR reset (`dtr=False`, `dsrdtr=False`), PINGs
+- [x] `uv run python tests/bench/wedge_repro.py --help` runs without error.
+- [x] Script connects without DTR reset (`dtr=False`, `dsrdtr=False`), PINGs
   for liveness, and hard-fails with a clear error if the robot is silent.
-- [ ] `SET sTimeout=2000` is sent before streaming begins.
-- [ ] `--clean-stop` mode: each drive phase ends with an explicit `STOP` sent
+- [x] `SET sTimeout=2000` is sent before streaming begins.
+- [x] `--clean-stop` mode: each drive phase ends with an explicit `STOP` sent
   over serial (3x with 50 ms gaps), then the script pauses 200 ms and restarts.
-- [ ] `--watchdog-stop` mode: each drive phase ends by letting the S keepalive
+- [x] `--watchdog-stop` mode: each drive phase ends by letting the S keepalive
   lapse for at least `sTimeout + 500` ms so the firmware S-watchdog fires; then
   the script resumes.
-- [ ] `--cycles N` controls the number of drive->stop->drive cycles (default 50).
-- [ ] `--speed V` sets the wheel speed passed to `S V V` (default 200).
-- [ ] Wedge detection: after each stop->restart, reads streaming lines for
+- [x] `--cycles N` controls the number of drive->stop->drive cycles (default 50).
+- [x] `--speed V` sets the wheel speed passed to `S V V` (default 200).
+- [x] Wedge detection: after each stop->restart, reads streaming lines for
   >= 1.5 s and classifies the cycle as "wedged" if both `enc=L,R` values show
   |delta| < 5 mm over the observation window, or "clean" if either encoder
   accumulates movement.
-- [ ] Script prints per-cycle result (wedged/clean) and a final summary line:
+- [x] Script prints per-cycle result (wedged/clean) and a final summary line:
   `RESULT: X/N wedged  mode=<mode>`.
 - [ ] A documented bench run of `--watchdog-stop --cycles 20` produces at least
   1 observed wedge on the hardware bench -- or the output explicitly states
