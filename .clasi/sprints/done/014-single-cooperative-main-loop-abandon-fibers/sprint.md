@@ -1,18 +1,18 @@
 ---
 id: '014'
 title: Single Cooperative Main Loop (abandon fibers)
-status: planning-docs
+status: done
 branch: sprint/014-single-cooperative-main-loop-abandon-fibers
 use-cases:
-  - SUC-001
-  - SUC-002
-  - SUC-003
-  - SUC-004
-  - SUC-005
-  - SUC-006
-  - SUC-007
+- SUC-001
+- SUC-002
+- SUC-003
+- SUC-004
+- SUC-005
+- SUC-006
+- SUC-007
 issues:
-  - plan-single-cooperative-main-loop-abandon-fibers.md
+- plan-single-cooperative-main-loop-abandon-fibers.md
 ---
 <!-- CLASI: Before changing code or making plans, review the SE process in CLAUDE.md -->
 
