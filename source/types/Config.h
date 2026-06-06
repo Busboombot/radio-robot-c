@@ -192,8 +192,11 @@ inline RobotConfig defaultRobotConfig() {
     p.velKi           = 0.05f;
     p.velKff          = 0.15f;
     p.minWheelMms     = 20.0f;
-    p.velFiltAlpha    = 0.4f;
-    p.syncGain        = 0.4f;
+    p.velFiltAlpha    = 0.3f;
+    p.syncGain        = 0.0f;   // cross-coupling OFF by default — it amplifies
+                                // velocity noise into wheel-fighting unless the
+                                // velocity signal is clean first. Re-enable via
+                                // SET sync=<g> only after velocity is smooth.
     p.turnThresholdMm = 50.0f;
     p.doneTolMm       = 5.0f;
     p.aMax            = 300.0f;
