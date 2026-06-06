@@ -60,6 +60,15 @@ struct RobotConfig {
     float velKi;          // integral gain for per-wheel velocity loop
     float velKff;         // feed-forward coefficient: FF = velKff * |setpoint|
     float minWheelMms;    // deadband: integrator frozen below this |speed| (default 20.0 mm/s)
+    // Velocity EMA filter + cross-wheel ratio coupling (SET keys "vel.filt", "sync").
+    //   velFiltAlpha ↔ "vel.filt" : EMA weight on each new velocity sample
+    //                  (1.0 = no filtering, lower = smoother/laggier; default 0.4)
+    //   syncGain     ↔ "sync"     : cross-coupling gain. PWM correction
+    //                  ±syncGain*(velL*ratio - velR) pulls the wheels onto the
+    //                  commanded ratio line so disturbing one wheel slows the
+    //                  other. 0 = independent wheels (old behavior); default 0.4
+    float velFiltAlpha;
+    float syncGain;
 
     // OTOS complementary fusion parameters (docs/kinematics-model.md §2.4).
     // C++ field names use flat camel-case; SET/GET key strings match exactly.
@@ -183,6 +192,8 @@ inline RobotConfig defaultRobotConfig() {
     p.velKi           = 0.05f;
     p.velKff          = 0.15f;
     p.minWheelMms     = 20.0f;
+    p.velFiltAlpha    = 0.4f;
+    p.syncGain        = 0.4f;
     p.turnThresholdMm = 50.0f;
     p.doneTolMm       = 5.0f;
     p.aMax            = 300.0f;

@@ -77,6 +77,8 @@ static const ConfigEntry kRegistry[] = {
     CFG_F("vel.kP",       velKp),
     CFG_F("vel.kI",       velKi),
     CFG_F("vel.kFF",      velKff),
+    CFG_F("vel.filt",     velFiltAlpha),   // velocity EMA weight (smoothing)
+    CFG_F("sync",         syncGain),       // cross-wheel ratio coupling gain
     // Velocity deadband and wheel speed ceiling (Sprint 010)
     CFG_F("minWheelMms",  minWheelMms),
     CFG_F("vWheelMax",    vWheelMax),

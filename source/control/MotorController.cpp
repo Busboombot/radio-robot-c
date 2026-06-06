@@ -158,31 +158,50 @@ void MotorController::controlTick(HardwareState& inputs, MotorCommands& cmds,
     //                 1 = left wheel was just collected,
     //                 2 = right wheel was just collected.
 
+    // Max physically-plausible wheel speed. The robot tops out near ~400 mm/s;
+    // an occasional corrupt encoder read produces a huge bogus delta (seen: tens
+    // of thousands of mm/s). Reject any sample beyond this bound — keep the prev
+    // position/time so the NEXT good read computes a correct delta — then EMA the
+    // accepted samples.
+    static constexpr float kMaxPlausibleMmps = 1000.0f;
+
     if (refreshedWheel == 1) {
         // Left wheel was just collected.
         float encLMm = inputs.encLMm;
-        if (_hasTimestampL) {
+        if (!_hasTimestampL) {
+            _prevEncL = encLMm; _prevTimeMsL = now_ms; _hasTimestampL = true;
+        } else {
             float elapsed_s = static_cast<float>(now_ms - _prevTimeMsL) / 1000.0f;
             if (elapsed_s > 0.0f) {
-                inputs.velLMms = (encLMm - _prevEncL) / elapsed_s;
+                float rawV = (encLMm - _prevEncL) / elapsed_s;
+                if (fabsf(rawV) <= kMaxPlausibleMmps) {        // accept plausible
+                    float a = _cal.velFiltAlpha;               // EMA smoothing
+                    inputs.velLMms = a * rawV + (1.0f - a) * inputs.velLMms;
+                    _prevEncL    = encLMm;
+                    _prevTimeMsL = now_ms;
+                }
+                // else: garbage read — reject, hold velLMms and prev refs.
             }
         }
-        _prevEncL      = encLMm;
-        _prevTimeMsL   = now_ms;
-        _hasTimestampL = true;
         // Right wheel: ZOH — leave inputs.velRMms unchanged.
     } else if (refreshedWheel == 2) {
         // Right wheel was just collected.
         float encRMm = inputs.encRMm;
-        if (_hasTimestampR) {
+        if (!_hasTimestampR) {
+            _prevEncR = encRMm; _prevTimeMsR = now_ms; _hasTimestampR = true;
+        } else {
             float elapsed_s = static_cast<float>(now_ms - _prevTimeMsR) / 1000.0f;
             if (elapsed_s > 0.0f) {
-                inputs.velRMms = (encRMm - _prevEncR) / elapsed_s;
+                float rawV = (encRMm - _prevEncR) / elapsed_s;
+                if (fabsf(rawV) <= kMaxPlausibleMmps) {        // accept plausible
+                    float a = _cal.velFiltAlpha;               // EMA smoothing
+                    inputs.velRMms = a * rawV + (1.0f - a) * inputs.velRMms;
+                    _prevEncR    = encRMm;
+                    _prevTimeMsR = now_ms;
+                }
+                // else: garbage read — reject, hold velRMms and prev refs.
             }
         }
-        _prevEncR      = encRMm;
-        _prevTimeMsR   = now_ms;
-        _hasTimestampR = true;
         // Left wheel: ZOH — leave inputs.velLMms unchanged.
     }
     // refreshedWheel == 0: first iteration or no collect — both velocities held at 0.
@@ -321,6 +340,19 @@ void MotorController::controlTick(HardwareState& inputs, MotorCommands& cmds,
     // Per-wheel velocity PID (Sprint 010 inner loop).
     float uL = _vcL.update(cmds.tgtLMms, inputs.velLMms, dt_s);
     float uR = _vcR.update(cmds.tgtRMms, inputs.velRMms, dt_s);
+
+    // Cross-wheel ratio coupling (015): pull the wheels onto the commanded ratio
+    // line so disturbing one wheel slows the other (keeps the phase-plot point on
+    // the diagonal). syncErr > 0 means the right wheel is slower than the ratio
+    // demands; we then push right harder and slow left, and vice-versa. A light
+    // touch yields a small syncErr (absorbed by the per-wheel PID); a hard/held
+    // wheel yields a large syncErr that pulls both wheels down together.
+    // syncGain = 0 restores fully-independent per-wheel control.
+    float ratio   = (cmds.tgtLMms != 0.0f) ? (cmds.tgtRMms / cmds.tgtLMms) : 1.0f;
+    float syncErr = (inputs.velLMms * ratio) - inputs.velRMms;
+    float corr    = _cal.syncGain * syncErr;
+    uR += corr;
+    uL -= corr;
 
     cmds.pwmL = static_cast<int16_t>(roundf(uL));
     cmds.pwmR = static_cast<int16_t>(roundf(uR));
