@@ -2,7 +2,7 @@
 #include "Config.h"
 #include <cmath>
 
-OtosSensor::OtosSensor(MicroBitI2C& i2c, const RobotConfig& cfg)
+OtosSensor::OtosSensor(I2CBus& i2c, const RobotConfig& cfg)
     : _i2c(i2c), _cfg(cfg)
 {
 }

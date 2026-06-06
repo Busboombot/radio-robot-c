@@ -1,5 +1,7 @@
 #include "MotorController.h"
+#include "I2CBus.h"
 #include <math.h>
+#include <cstdio>
 
 // DEBUG (sprint 014 — encoder-wedge isolation): when 1, controlTick() bypasses
 // the velocity PID and drives the wheels OPEN-LOOP at a fixed PWM proportional
@@ -19,13 +21,29 @@ MotorController::MotorController(Motor& left, Motor& right, const RobotConfig& c
       _cmds(nullptr),
       _prevEncL(0.0f), _prevEncR(0.0f),
       _prevTimeMsL(0), _prevTimeMsR(0),
-      _hasTimestampL(false), _hasTimestampR(false)
+      _hasTimestampL(false), _hasTimestampR(false),
+      _wedgePrevEncL(0.0f), _wedgePrevEncR(0.0f),
+      _wedgePrevValidL(false), _wedgePrevValidR(false),
+      _stuckCountL(0), _stuckCountR(0),
+      _wedgeEmittedL(false), _wedgeEmittedR(false),
+      _i2cBus(nullptr),
+      _evtFn(nullptr), _evtCtx(nullptr)
 {
     gains.kFF     = 0.15f;
     gains.kP      = 0.05f;
     gains.kI      = 0.20f;
     gains.iClamp  = 60.0f;
     gains.kRatio  = 0.01f;
+}
+
+void MotorController::resetStuckCounters()
+{
+    _stuckCountL    = 0;
+    _stuckCountR    = 0;
+    _wedgeEmittedL  = false;
+    _wedgeEmittedR  = false;
+    _wedgePrevValidL = false;
+    _wedgePrevValidR = false;
 }
 
 void MotorController::setTarget(float leftMms, float rightMms)
@@ -140,36 +158,146 @@ void MotorController::controlTick(HardwareState& inputs, MotorCommands& cmds,
     //                 1 = left wheel was just collected,
     //                 2 = right wheel was just collected.
 
+    // Max physically-plausible wheel speed. The robot tops out near ~400 mm/s;
+    // an occasional corrupt encoder read produces a huge bogus delta (seen: tens
+    // of thousands of mm/s). Reject any sample beyond this bound — keep the prev
+    // position/time so the NEXT good read computes a correct delta — then EMA the
+    // accepted samples.
+    static constexpr float kMaxPlausibleMmps = 1000.0f;
+
     if (refreshedWheel == 1) {
         // Left wheel was just collected.
         float encLMm = inputs.encLMm;
-        if (_hasTimestampL) {
+        if (!_hasTimestampL) {
+            _prevEncL = encLMm; _prevTimeMsL = now_ms; _hasTimestampL = true;
+        } else {
             float elapsed_s = static_cast<float>(now_ms - _prevTimeMsL) / 1000.0f;
             if (elapsed_s > 0.0f) {
-                inputs.velLMms = (encLMm - _prevEncL) / elapsed_s;
+                float rawV = (encLMm - _prevEncL) / elapsed_s;
+                if (fabsf(rawV) <= kMaxPlausibleMmps) {        // accept plausible
+                    float a = _cal.velFiltAlpha;               // EMA smoothing
+                    inputs.velLMms = a * rawV + (1.0f - a) * inputs.velLMms;
+                    _prevEncL    = encLMm;
+                    _prevTimeMsL = now_ms;
+                }
+                // else: garbage read — reject, hold velLMms and prev refs.
             }
         }
-        _prevEncL      = encLMm;
-        _prevTimeMsL   = now_ms;
-        _hasTimestampL = true;
         // Right wheel: ZOH — leave inputs.velRMms unchanged.
     } else if (refreshedWheel == 2) {
         // Right wheel was just collected.
         float encRMm = inputs.encRMm;
-        if (_hasTimestampR) {
+        if (!_hasTimestampR) {
+            _prevEncR = encRMm; _prevTimeMsR = now_ms; _hasTimestampR = true;
+        } else {
             float elapsed_s = static_cast<float>(now_ms - _prevTimeMsR) / 1000.0f;
             if (elapsed_s > 0.0f) {
-                inputs.velRMms = (encRMm - _prevEncR) / elapsed_s;
+                float rawV = (encRMm - _prevEncR) / elapsed_s;
+                if (fabsf(rawV) <= kMaxPlausibleMmps) {        // accept plausible
+                    float a = _cal.velFiltAlpha;               // EMA smoothing
+                    inputs.velRMms = a * rawV + (1.0f - a) * inputs.velRMms;
+                    _prevEncR    = encRMm;
+                    _prevTimeMsR = now_ms;
+                }
+                // else: garbage read — reject, hold velRMms and prev refs.
             }
         }
-        _prevEncR      = encRMm;
-        _prevTimeMsR   = now_ms;
-        _hasTimestampR = true;
         // Left wheel: ZOH — leave inputs.velLMms unchanged.
     }
     // refreshedWheel == 0: first iteration or no collect — both velocities held at 0.
 
     // PID runs for BOTH wheels using the held (ZOH) velocities.
+
+    // -------------------------------------------------------------------------
+    // Encoder-wedge detector (015-003).
+    //
+    // Per-wheel: if the commanded speed is non-zero and the encoder value has
+    // not changed since the last reading, increment the stuck counter. When
+    // the counter reaches kWedgeThreshold and the latch is clear, emit
+    // EVT enc_wedged once (latched) and set the latch. Re-arm when the
+    // encoder moves.
+    //
+    // Only checked when a wheel's encoder was just refreshed (refreshedWheel
+    // matches the wheel index) so we compare two real hardware reads, not
+    // stale ZOH-held values.
+    //
+    // See: .clasi/issues/residual-motor-encoder-wedge-after-stop.md
+    // -------------------------------------------------------------------------
+    {
+        // Left-wheel check — only when left was just collected.
+        if (refreshedWheel == 1) {
+            float encL = inputs.encLMm;
+            if (cmds.tgtLMms != 0.0f) {
+                if (_wedgePrevValidL && encL == _wedgePrevEncL) {
+                    if (_stuckCountL < 255) ++_stuckCountL;
+                } else {
+                    // Encoder moved — re-arm.
+                    _stuckCountL   = 0;
+                    _wedgeEmittedL = false;
+                }
+            } else {
+                // Not commanded — reset.
+                _stuckCountL   = 0;
+                _wedgeEmittedL = false;
+            }
+            _wedgePrevEncL   = encL;
+            _wedgePrevValidL = true;
+
+            if (_stuckCountL >= kWedgeThreshold && !_wedgeEmittedL) {
+                _wedgeEmittedL = true;
+                if (_evtFn && *_evtFn && _evtCtx && *_evtCtx) {
+                    uint32_t busErr    = _i2cBus ? (_i2cBus->errCount(0x10)) : 0;
+                    uint32_t reentryN  = _i2cBus ? (_i2cBus->reentryViolations()) : 0;
+                    int      lastErrV  = _i2cBus ? (_i2cBus->lastErr(0x10)) : 0;
+                    char evtBuf[96];
+                    snprintf(evtBuf, sizeof(evtBuf),
+                             "EVT enc_wedged wheel=L enc=%d n=%u err=%lu reentry=%lu lastErr=%d",
+                             (int)encL,
+                             (unsigned)_stuckCountL,
+                             (unsigned long)busErr,
+                             (unsigned long)reentryN,
+                             lastErrV);
+                    (*_evtFn)(evtBuf, *_evtCtx);
+                }
+            }
+        }
+
+        // Right-wheel check — only when right was just collected.
+        if (refreshedWheel == 2) {
+            float encR = inputs.encRMm;
+            if (cmds.tgtRMms != 0.0f) {
+                if (_wedgePrevValidR && encR == _wedgePrevEncR) {
+                    if (_stuckCountR < 255) ++_stuckCountR;
+                } else {
+                    _stuckCountR   = 0;
+                    _wedgeEmittedR = false;
+                }
+            } else {
+                _stuckCountR   = 0;
+                _wedgeEmittedR = false;
+            }
+            _wedgePrevEncR   = encR;
+            _wedgePrevValidR = true;
+
+            if (_stuckCountR >= kWedgeThreshold && !_wedgeEmittedR) {
+                _wedgeEmittedR = true;
+                if (_evtFn && *_evtFn && _evtCtx && *_evtCtx) {
+                    uint32_t busErr    = _i2cBus ? (_i2cBus->errCount(0x10)) : 0;
+                    uint32_t reentryN  = _i2cBus ? (_i2cBus->reentryViolations()) : 0;
+                    int      lastErrV  = _i2cBus ? (_i2cBus->lastErr(0x10)) : 0;
+                    char evtBuf[96];
+                    snprintf(evtBuf, sizeof(evtBuf),
+                             "EVT enc_wedged wheel=R enc=%d n=%u err=%lu reentry=%lu lastErr=%d",
+                             (int)encR,
+                             (unsigned)_stuckCountR,
+                             (unsigned long)busErr,
+                             (unsigned long)reentryN,
+                             lastErrV);
+                    (*_evtFn)(evtBuf, *_evtCtx);
+                }
+            }
+        }
+    }
 
     // If no drive command active, ensure motors are stopped.
     if (cmds.tgtLMms == 0.0f && cmds.tgtRMms == 0.0f) {
@@ -209,9 +337,31 @@ void MotorController::controlTick(HardwareState& inputs, MotorCommands& cmds,
     float dt_s = static_cast<float>(_cal.controlPeriodMs) / 1000.0f;
     if (dt_s <= 0.0f) return;
 
-    // Per-wheel velocity PID (Sprint 010 inner loop).
-    float uL = _vcL.update(cmds.tgtLMms, inputs.velLMms, dt_s);
-    float uR = _vcR.update(cmds.tgtRMms, inputs.velRMms, dt_s);
+    // Cross-wheel coupling — "slowest wheel governs" (015). Computed BEFORE the
+    // per-wheel PID by adjusting the effective setpoints (not the PWM), so the
+    // per-wheel PID does the work and there is no fighting. The wheel that is
+    // ACHIEVING more of its target is slaved to the slower wheel's actual speed
+    // at the commanded ratio: disturbing one wheel pulls the other onto the
+    // ratio line, and a fully-held wheel (vel -> 0) drags the other to 0. A
+    // deadband lets the per-wheel PID absorb LIGHT touches (point doesn't move);
+    // only a real, sustained discrepancy couples. SET sync=0 -> independent.
+    float effTgtL = cmds.tgtLMms;
+    float effTgtR = cmds.tgtRMms;
+    if (_cal.syncGain > 0.0f && cmds.tgtLMms != 0.0f && cmds.tgtRMms != 0.0f) {
+        float ratio = cmds.tgtRMms / cmds.tgtLMms;        // commanded vR/vL
+        float achL  = inputs.velLMms / cmds.tgtLMms;      // fraction-of-target each wheel does
+        float achR  = inputs.velRMms / cmds.tgtRMms;
+        const float deadband = 0.08f;                     // ignore light-touch differences
+        if (achL - achR > deadband) {
+            effTgtL = inputs.velRMms / ratio;             // left ahead -> follow right
+        } else if (achR - achL > deadband) {
+            effTgtR = inputs.velLMms * ratio;             // right ahead -> follow left
+        }
+    }
+
+    // Per-wheel velocity PID (Sprint 010 inner loop) on the (possibly coupled) targets.
+    float uL = _vcL.update(effTgtL, inputs.velLMms, dt_s);
+    float uR = _vcR.update(effTgtR, inputs.velRMms, dt_s);
 
     cmds.pwmL = static_cast<int16_t>(roundf(uL));
     cmds.pwmR = static_cast<int16_t>(roundf(uR));

@@ -1,5 +1,9 @@
 ---
-status: pending
+status: in-progress
+sprint: '015'
+tickets:
+- 015-001
+- 015-004
 ---
 
 # Encoder/I2C wedge — line of attack (debug-once-and-for-all plan)

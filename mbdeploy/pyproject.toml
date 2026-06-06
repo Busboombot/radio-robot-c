@@ -1,6 +1,6 @@
 [project]
 name = "mbdeploy"
-version = "0.20260605.5"
+version = "0.20260605.11"
 requires-python = ">=3.10"
 dependencies = ["pyocd>=0.44.1", "pyserial>=3.5"]
 

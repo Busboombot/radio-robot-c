@@ -1,6 +1,6 @@
 #include "LineSensor.h"
 
-LineSensor::LineSensor(MicroBitI2C& i2c)
+LineSensor::LineSensor(I2CBus& i2c)
     : _i2c(i2c)
     , _alpha(0.0f)
 {

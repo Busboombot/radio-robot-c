@@ -1,5 +1,6 @@
 #pragma once
 #include "MicroBit.h"
+#include "I2CBus.h"
 #include "Config.h"
 
 /**
@@ -41,7 +42,7 @@
  */
 class Motor {
 public:
-    Motor(MicroBitI2C& i2c, uint8_t motorId, int8_t fwdSign);
+    Motor(I2CBus& i2c, uint8_t motorId, int8_t fwdSign);
 
     // Set speed as signed percentage (-100..100). Positive = logical forward.
     // fwdSign is applied internally to map logical direction to chip direction.
@@ -216,7 +217,7 @@ public:
     float readEncoderMmFAtomic(const RobotConfig& cfg) const;
 
 private:
-    MicroBitI2C& _i2c;
+    I2CBus& _i2c;
     uint8_t      _motorId;  // 1=M1/right, 2=M2/left
     int8_t       _fwdSign;  // +1 or -1
 

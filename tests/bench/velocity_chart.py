@@ -44,10 +44,29 @@ def _stream_worker(
     stop_event: threading.Event,   # set externally to tear down
     status_queue: "queue.Queue[str]",  # push status strings to main thread
 ) -> None:
-    """Open a fresh serial connection, connect, drive, push (t,vL,vR) tuples."""
+    """Open a fresh serial connection, connect, drive, push (t,vL,vR) tuples.
+
+    Custom robust streaming loop — does NOT use NezhaProtocol.stream_drive so
+    it can re-arm on EVT safety_stop rather than exiting on the first one.
+
+    Protocol:
+      1. Flush (STOP + STREAM 0 + reset_input_buffer) — drops any stale
+         EVT safety_stop left in the serial buffer from a prior run.
+      2. SET sTimeout=10000 — generous firmware watchdog; host sends S every
+         150 ms which is far inside 10 s.
+      3. STREAM 100 — ~10 Hz TLM; low serial load avoids TX buffer overflow
+         during GUI stalls.
+      4. Send S <speed> <speed> immediately, then re-send every 150 ms
+         measured by time.monotonic() — independent of how many lines were
+         read in each iteration.
+      5. On EVT safety_stop: log, immediately re-send S, continue (re-arm).
+         Only exit on stop_event or a real serial OSError.
+    """
     from robot_radio.io.serial_conn import SerialConnection
-    from robot_radio.robot.protocol import NezhaProtocol, parse_tlm
+    from robot_radio.robot.protocol import NezhaProtocol, parse_response, parse_tlm
     from robot_radio.robot.nezha import Nezha
+
+    KEEPALIVE_S = 0.150   # re-send S every 150 ms; safely inside 10 s watchdog
 
     conn = None
     try:
@@ -72,31 +91,58 @@ def _stream_worker(
             status_queue.put("FAILED")
             return
 
-        # Widen the firmware S-watchdog to 10 s. The matplotlib render loop and
-        # this worker share the GIL; the GUI can hold it for a couple seconds at
-        # a time, slipping the keepalive past a shorter watchdog and tripping a
-        # spurious safety_stop (the chart freezes). A 10 s firmware timeout with
-        # frequent (~300 ms) host keepalives is robust to those GUI stalls.
+        # 1. Flush — drop any stale EVT safety_stop (or leftover TLM) from a
+        #    prior session so the streaming loop starts on a clean buffer.
+        try:
+            conn.send_fast("STOP")
+            conn.send_fast("STREAM 0")
+            time.sleep(0.05)
+            conn._ser.reset_input_buffer()
+        except Exception:
+            pass
+
+        # 2. Generous firmware S-watchdog (10 s). The host sends S every 150 ms,
+        #    well within the window even during multi-second GUI/GIL stalls.
         try:
             proto.send("SET sTimeout=10000", 300)
         except Exception:
             pass
 
-        status_queue.put(f"RUNNING — {identity.get('name', '?')}")
-        speeds = [speed, speed]
+        # 3. Enable TLM streaming at 10 Hz (low serial load).
+        proto.stream(100)
 
-        # period_ms=100 (10 Hz) keeps serial load light. At 40 ms, a GUI stall
-        # that stops draining serial overflows the firmware's 255-byte TX buffer
-        # and hangs it. 10 Hz is plenty for a live chart.
-        # watchdog_ms=1000 → host keepalive every ~300 ms; combined with the 10 s
-        # firmware watchdog set above, survives multi-second GUI/GIL stalls.
-        for resp in nezha.stream_drive(speeds, period_ms=100, watchdog_ms=1000):
-            if stop_event.is_set():
-                break
-            if resp.tag == "TLM":
-                tlm = parse_tlm(resp.raw)
-                if tlm and tlm.vel is not None:
-                    data_queue.put((time.monotonic(), tlm.vel[0], tlm.vel[1]))
+        status_queue.put(f"RUNNING — {identity.get('name', '?')}")
+
+        # 4. Send S immediately, then every KEEPALIVE_S.
+        conn.send_fast(f"S {speed} {speed}")
+        last_send = time.monotonic()
+
+        # Robust streaming loop — re-arms on EVT safety_stop.
+        while not stop_event.is_set():
+            for raw_line in conn.read_lines(duration_ms=50):
+                r = parse_response(raw_line)
+                if r is None:
+                    continue
+
+                # 5. Re-arm on safety_stop — do NOT exit; restart the wheels.
+                if r.tag == "EVT" and r.tokens and r.tokens[0] == "safety_stop":
+                    status_queue.put("REARM — safety_stop received, re-sending S")
+                    conn.send_fast(f"S {speed} {speed}")
+                    last_send = time.monotonic()
+                    continue
+
+                # 6. Collect velocity telemetry.
+                if r.tag == "TLM":
+                    tlm = parse_tlm(r.raw)
+                    if tlm and tlm.vel is not None:
+                        data_queue.put((time.monotonic(), tlm.vel[0], tlm.vel[1]))
+
+            # 4 (cont). Time-driven keepalive — re-send S if 150 ms elapsed,
+            # regardless of how many lines were read this iteration.
+            now = time.monotonic()
+            if now - last_send >= KEEPALIVE_S:
+                conn.send_fast(f"S {speed} {speed}")
+                last_send = now
 
     except OSError as exc:
         if exc.errno == 6:   # Device not configured — robot power-cycled
@@ -110,9 +156,11 @@ def _stream_worker(
         if conn is not None:
             try:
                 # Best-effort stop before closing.
+                for _ in range(3):
+                    conn.send_fast("STOP")
+                    time.sleep(0.05)
                 from robot_radio.robot.protocol import NezhaProtocol
                 proto = NezhaProtocol(conn)
-                proto.stop()
                 proto.stream(0)
             except Exception:
                 pass

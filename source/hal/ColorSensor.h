@@ -1,5 +1,6 @@
 #pragma once
 #include "MicroBit.h"
+#include "I2CBus.h"
 #include "Sensor.h"
 #include <stdint.h>
 
@@ -14,7 +15,7 @@
  */
 class ColorSensor : public Sensor {
 public:
-    explicit ColorSensor(MicroBitI2C& i2c);
+    explicit ColorSensor(I2CBus& i2c);
 
     // Auto-detect chip variant. Returns false if neither 0x43 nor 0x39 responds.
     // Sets _initialized to the result.
@@ -29,7 +30,7 @@ public:
     bool pollRGBC(uint16_t& r, uint16_t& g, uint16_t& b, uint16_t& c);
 
 private:
-    MicroBitI2C& _i2c;
+    I2CBus& _i2c;
     bool _isAlt;
 
     static constexpr uint8_t ADDR_APDS = 0x39;

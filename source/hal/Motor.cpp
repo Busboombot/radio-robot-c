@@ -22,7 +22,7 @@
 //   Read:  4 bytes, signed int32 little-endian, units = tenths of degrees
 // ---------------------------------------------------------------------------
 
-Motor::Motor(MicroBitI2C& i2c, uint8_t motorId, int8_t fwdSign)
+Motor::Motor(I2CBus& i2c, uint8_t motorId, int8_t fwdSign)
     : _i2c(i2c), _motorId(motorId), _fwdSign(fwdSign), _lastDir(0), _encOffset(0)
 {
 }

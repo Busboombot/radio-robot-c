@@ -1,5 +1,6 @@
 #pragma once
 #include "MicroBit.h"
+#include "I2CBus.h"
 #include "Sensor.h"
 #include <stdint.h>
 
@@ -24,7 +25,7 @@ struct RobotConfig;   // fwd decl — begin() applies the OTOS scalars from conf
  */
 class OtosSensor : public Sensor {
 public:
-    OtosSensor(MicroBitI2C& i2c, const RobotConfig& cfg);
+    OtosSensor(I2CBus& i2c, const RobotConfig& cfg);
 
     // Detect (read PRODUCT_ID) and, if found: init signal processing, reset
     // Kalman tracking, and apply the linear/angular scalars from config.
@@ -52,7 +53,7 @@ public:
     void   setAngularScalar(int8_t val);
 
 private:
-    MicroBitI2C&       _i2c;
+    I2CBus&            _i2c;
     const RobotConfig& _cfg;
     static constexpr uint8_t ADDR = 0x17;
 

@@ -1,6 +1,6 @@
 #include "ColorSensor.h"
 
-ColorSensor::ColorSensor(MicroBitI2C& i2c)
+ColorSensor::ColorSensor(I2CBus& i2c)
     : _i2c(i2c)
     , _isAlt(false)
 {

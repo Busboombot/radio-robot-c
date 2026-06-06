@@ -2,12 +2,13 @@
 #include <stdint.h>
 #include "Protocol.h"
 
-// Forward declaration — CommandProcessor.cpp includes Robot.h directly.
-// Keeping only a forward decl here avoids including Robot.h's transitive
+// Forward declarations — CommandProcessor.cpp includes Robot.h directly.
+// Keeping only forward decls here avoids including Robot.h's transitive
 // header graph (MicroBit, CODAL, all subsystems) in every file that
 // includes CommandProcessor.h.
 class Robot;
 class LoopScheduler;
+class I2CBus;
 
 // ---------------------------------------------------------------------------
 // KVPair — a single key=value token pair. Used by parseKV().
@@ -53,6 +54,10 @@ public:
     // Wire the scheduler so the DBG LOOP command can toggle/inspect tasks.
     // Optional — if unset, DBG LOOP replies with an error.
     void setScheduler(LoopScheduler* sched) { _sched = sched; }
+
+    // Wire the I2CBus instance so DBG I2C can read per-device stats (015-003).
+    // Optional — if unset, DBG I2C replies with an error.
+    void setI2CBus(I2CBus* bus) { _i2cBus = bus; }
 
     // -------------------------------------------------------------------------
     // Static parse helpers — public so dependent tickets can call them
@@ -122,7 +127,8 @@ public:
 
 private:
     Robot& _robot;
-    LoopScheduler* _sched = nullptr;
+    LoopScheduler* _sched   = nullptr;
+    I2CBus*        _i2cBus  = nullptr;
 
     static int clampInt(int v, int lo, int hi);
 };

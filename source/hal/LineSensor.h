@@ -1,5 +1,6 @@
 #pragma once
 #include "MicroBit.h"
+#include "I2CBus.h"
 #include "Sensor.h"
 #include <stdint.h>
 
@@ -25,7 +26,7 @@
  */
 class LineSensor : public Sensor {
 public:
-    explicit LineSensor(MicroBitI2C& i2c);
+    explicit LineSensor(I2CBus& i2c);
 
     // Probe the sensor (read all 4 channels); set _initialized to the result.
     // Returns _initialized.
@@ -56,7 +57,7 @@ public:
     void setSmoothingAlpha(float alpha);
 
 private:
-    MicroBitI2C& _i2c;
+    I2CBus& _i2c;
     static constexpr uint8_t ADDR = 0x1A;
 
     // Low-level 4-channel raw read (ungated); used by begin()'s probe and by
