@@ -1,6 +1,6 @@
 ---
 id: '004'
-title: "Harden velocity_chart streaming — re-arm on safety_stop, flush on entry,\
+title: "Harden velocity_chart streaming \u2014 re-arm on safety_stop, flush on entry,\
   \ robust keepalive"
 status: done
 use-cases: []
