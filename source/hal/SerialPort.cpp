@@ -37,7 +37,15 @@ bool SerialPort::readLine(char* buf, uint16_t len) {
 }
 
 void SerialPort::send(const char* msg) {
-    _serial.send(ManagedString(msg) + ManagedString("\r\n"));
+    // ASYNC: queue what fits in the TX buffer and return IMMEDIATELY. Never block
+    // the cooperative loop waiting for the host to drain the buffer. The default
+    // (SYNC_SLEEP) fiber-sleeps until the buffer has room — under a telemetry
+    // flood (host not reading fast enough) that stalls the whole loop, which
+    // starves the S-keepalive (→ watchdog safety_stop = the velocity "notches" /
+    // momentary stops) and, if the reader stops entirely, hard-hangs the firmware.
+    // Trade-off: under flood a telemetry frame may be dropped (host just sees a
+    // truncated line and skips it) — acceptable; a stalled control loop is not.
+    _serial.send(ManagedString(msg) + ManagedString("\r\n"), ASYNC);
 }
 
 void SerialPort::sendf(const char* fmt, ...) {

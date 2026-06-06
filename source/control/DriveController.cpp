@@ -313,7 +313,15 @@ void DriveController::driveAdvance(HardwareState& inputs, MotorCommands& cmds,
     // write-on-change, so fullStop()'s 0x5F stop is sent once instead of being
     // spammed every tick — which was what wedged the encoder.)
     if (_mode == DriveMode::STREAMING) {
-        if ((now_ms - _lastSMs) > (uint32_t)_cfg.sTimeoutMs) {
+        // Wraparound/ordering-SAFE elapsed time. _lastSMs can be a hair AHEAD of
+        // now_ms: the scheduler samples now_ms at the top of the loop, but the
+        // keepalive S is processed slightly later in the same iteration and sets
+        // _lastSMs from a fresh systemTime(). A plain uint32 (now_ms - _lastSMs)
+        // then underflows to ~4.29e9 and trips a spurious safety_stop EVERY tick
+        // an S lands in that window (the velocity "notches" / momentary stops).
+        // A signed delta treats a small negative as "0 ms elapsed".
+        int32_t dt = (int32_t)(now_ms - _lastSMs);
+        if (dt > (int32_t)_cfg.sTimeoutMs) {
             fullStop(nullptr, nullptr);
             emitEvt("EVT safety_stop", target);
         }
