@@ -1,13 +1,13 @@
 ---
 id: '015'
 title: Encoder/I2C Wedge Diagnosis and Fix
-status: planning-docs
+status: done
 branch: sprint/015-encoder-i2c-wedge-diagnosis-and-fix
 use-cases:
-  - SUC-001
-  - SUC-002
-  - SUC-003
-  - SUC-004
+- SUC-001
+- SUC-002
+- SUC-003
+- SUC-004
 issues:
 - residual-motor-encoder-wedge-after-stop.md
 ---
