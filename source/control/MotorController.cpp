@@ -1,5 +1,7 @@
 #include "MotorController.h"
+#include "I2CBus.h"
 #include <math.h>
+#include <cstdio>
 
 // DEBUG (sprint 014 — encoder-wedge isolation): when 1, controlTick() bypasses
 // the velocity PID and drives the wheels OPEN-LOOP at a fixed PWM proportional
@@ -19,13 +21,29 @@ MotorController::MotorController(Motor& left, Motor& right, const RobotConfig& c
       _cmds(nullptr),
       _prevEncL(0.0f), _prevEncR(0.0f),
       _prevTimeMsL(0), _prevTimeMsR(0),
-      _hasTimestampL(false), _hasTimestampR(false)
+      _hasTimestampL(false), _hasTimestampR(false),
+      _wedgePrevEncL(0.0f), _wedgePrevEncR(0.0f),
+      _wedgePrevValidL(false), _wedgePrevValidR(false),
+      _stuckCountL(0), _stuckCountR(0),
+      _wedgeEmittedL(false), _wedgeEmittedR(false),
+      _i2cBus(nullptr),
+      _evtFn(nullptr), _evtCtx(nullptr)
 {
     gains.kFF     = 0.15f;
     gains.kP      = 0.05f;
     gains.kI      = 0.20f;
     gains.iClamp  = 60.0f;
     gains.kRatio  = 0.01f;
+}
+
+void MotorController::resetStuckCounters()
+{
+    _stuckCountL    = 0;
+    _stuckCountR    = 0;
+    _wedgeEmittedL  = false;
+    _wedgeEmittedR  = false;
+    _wedgePrevValidL = false;
+    _wedgePrevValidR = false;
 }
 
 void MotorController::setTarget(float leftMms, float rightMms)
@@ -170,6 +188,97 @@ void MotorController::controlTick(HardwareState& inputs, MotorCommands& cmds,
     // refreshedWheel == 0: first iteration or no collect — both velocities held at 0.
 
     // PID runs for BOTH wheels using the held (ZOH) velocities.
+
+    // -------------------------------------------------------------------------
+    // Encoder-wedge detector (015-003).
+    //
+    // Per-wheel: if the commanded speed is non-zero and the encoder value has
+    // not changed since the last reading, increment the stuck counter. When
+    // the counter reaches kWedgeThreshold and the latch is clear, emit
+    // EVT enc_wedged once (latched) and set the latch. Re-arm when the
+    // encoder moves.
+    //
+    // Only checked when a wheel's encoder was just refreshed (refreshedWheel
+    // matches the wheel index) so we compare two real hardware reads, not
+    // stale ZOH-held values.
+    //
+    // See: .clasi/issues/residual-motor-encoder-wedge-after-stop.md
+    // -------------------------------------------------------------------------
+    {
+        // Left-wheel check — only when left was just collected.
+        if (refreshedWheel == 1) {
+            float encL = inputs.encLMm;
+            if (cmds.tgtLMms != 0.0f) {
+                if (_wedgePrevValidL && encL == _wedgePrevEncL) {
+                    if (_stuckCountL < 255) ++_stuckCountL;
+                } else {
+                    // Encoder moved — re-arm.
+                    _stuckCountL   = 0;
+                    _wedgeEmittedL = false;
+                }
+            } else {
+                // Not commanded — reset.
+                _stuckCountL   = 0;
+                _wedgeEmittedL = false;
+            }
+            _wedgePrevEncL   = encL;
+            _wedgePrevValidL = true;
+
+            if (_stuckCountL >= kWedgeThreshold && !_wedgeEmittedL) {
+                _wedgeEmittedL = true;
+                if (_evtFn && *_evtFn && _evtCtx && *_evtCtx) {
+                    uint32_t busErr    = _i2cBus ? (_i2cBus->errCount(0x10)) : 0;
+                    uint32_t reentryN  = _i2cBus ? (_i2cBus->reentryViolations()) : 0;
+                    int      lastErrV  = _i2cBus ? (_i2cBus->lastErr(0x10)) : 0;
+                    char evtBuf[96];
+                    snprintf(evtBuf, sizeof(evtBuf),
+                             "EVT enc_wedged wheel=L enc=%d n=%u err=%lu reentry=%lu lastErr=%d",
+                             (int)encL,
+                             (unsigned)_stuckCountL,
+                             (unsigned long)busErr,
+                             (unsigned long)reentryN,
+                             lastErrV);
+                    (*_evtFn)(evtBuf, *_evtCtx);
+                }
+            }
+        }
+
+        // Right-wheel check — only when right was just collected.
+        if (refreshedWheel == 2) {
+            float encR = inputs.encRMm;
+            if (cmds.tgtRMms != 0.0f) {
+                if (_wedgePrevValidR && encR == _wedgePrevEncR) {
+                    if (_stuckCountR < 255) ++_stuckCountR;
+                } else {
+                    _stuckCountR   = 0;
+                    _wedgeEmittedR = false;
+                }
+            } else {
+                _stuckCountR   = 0;
+                _wedgeEmittedR = false;
+            }
+            _wedgePrevEncR   = encR;
+            _wedgePrevValidR = true;
+
+            if (_stuckCountR >= kWedgeThreshold && !_wedgeEmittedR) {
+                _wedgeEmittedR = true;
+                if (_evtFn && *_evtFn && _evtCtx && *_evtCtx) {
+                    uint32_t busErr    = _i2cBus ? (_i2cBus->errCount(0x10)) : 0;
+                    uint32_t reentryN  = _i2cBus ? (_i2cBus->reentryViolations()) : 0;
+                    int      lastErrV  = _i2cBus ? (_i2cBus->lastErr(0x10)) : 0;
+                    char evtBuf[96];
+                    snprintf(evtBuf, sizeof(evtBuf),
+                             "EVT enc_wedged wheel=R enc=%d n=%u err=%lu reentry=%lu lastErr=%d",
+                             (int)encR,
+                             (unsigned)_stuckCountR,
+                             (unsigned long)busErr,
+                             (unsigned long)reentryN,
+                             lastErrV);
+                    (*_evtFn)(evtBuf, *_evtCtx);
+                }
+            }
+        }
+    }
 
     // If no drive command active, ensure motors are stopped.
     if (cmds.tgtLMms == 0.0f && cmds.tgtRMms == 0.0f) {

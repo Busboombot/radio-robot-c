@@ -106,7 +106,14 @@ int main() {
     // 7. Run the cooperative main loop — never returns.
     // -----------------------------------------------------------------------
     static LoopScheduler sched(robot, cmd, comm, uBit);
-    cmd.setScheduler(&sched);   // enable DBG LOOP <x> <state> task toggling
+    cmd.setScheduler(&sched);             // enable DBG LOOP <x> <state> task toggling
+    cmd.setI2CBus(&bus);                  // enable DBG I2C stats dump (015-003)
+
+    // Wire the I2CBus and EVT sink into MotorController so enc_wedged events
+    // are emitted with bus stats and go to the active serial/radio channel.
+    robot.motor().setI2CBus(&bus);
+    robot.motor().setEvtSink(&sched.activeFn, &sched.activeCtx);
+
     sched.run_all();
 
     return 0;

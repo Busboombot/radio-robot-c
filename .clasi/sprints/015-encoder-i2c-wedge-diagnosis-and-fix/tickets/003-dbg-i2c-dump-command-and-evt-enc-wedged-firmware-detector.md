@@ -1,15 +1,15 @@
 ---
-id: "003"
-title: "DBG I2C dump command and EVT enc_wedged firmware detector"
-status: open
+id: '003'
+title: DBG I2C dump command and EVT enc_wedged firmware detector
+status: done
 use-cases:
-  - SUC-002
-  - SUC-003
-  - SUC-004
+- SUC-002
+- SUC-003
+- SUC-004
 depends-on:
-  - "002"
-github-issue: ""
-issue: ""
+- '002'
+github-issue: ''
+issue: ''
 completes_issue: false
 ---
 <!-- CLASI: Before changing code or making plans, review the SE process in CLAUDE.md -->
@@ -38,23 +38,23 @@ wedge is detected, which is the key correlating data for Phase 2 experiments.
 
 ## Acceptance Criteria
 
-- [ ] `DBG I2C` over serial returns exactly one line without crashing.
-- [ ] The response line fits within 255 bytes for expected counter magnitudes
+- [x] `DBG I2C` over serial returns exactly one line without crashing.
+- [x] The response line fits within 255 bytes for expected counter magnitudes
   (snprintf with length check; truncated safely if overflow).
-- [ ] Response format includes: per-device txn/err counts for 0x10/0x17/0x1A/0x43,
+- [x] Response format includes: per-device txn/err counts for 0x10/0x17/0x1A/0x43,
   last error code per device, re-entrancy violation count, stuck-encoder count.
-  Example: `I2C 0x10:txn=142 err=0 last=0 0x17:txn=28 err=0 last=0 0x1A:txn=142 err=0 last=0 0x43:txn=142 err=0 last=0 reentry=0 stuck=0`
+  Example: `I2C 0x10:txn=142 err=0 last=0 0x17:txn=28 err=0 last=0 0x1A:txn=142 err=0 last=0 0x43:txn=142 err=0 last=0 reentry=0 stuck=L:0,R:0`
 - [ ] After driving 50 cycles, `DBG I2C` shows non-zero txn counts for active
-  devices.
+  devices. (Hardware bench — not verified offline)
 - [ ] `EVT enc_wedged` is emitted when a wedge is induced on hardware (encoder
-  value frozen while S command is active).
-- [ ] `EVT enc_wedged` is emitted only once per wedge event (no spam); the
+  value frozen while S command is active). (Hardware bench — not verified offline)
+- [x] `EVT enc_wedged` is emitted only once per wedge event (no spam); the
   consecutive counter resets when a new non-identical read is seen.
-- [ ] `EVT enc_wedged` line includes: stuck count, bus error count, re-entrancy
+- [x] `EVT enc_wedged` line includes: stuck count, bus error count, re-entrancy
   violation count, last error code at detection time.
-  Example: `EVT enc_wedged stuck=6 err=3 reentry=0 lastErr=-1`
-- [ ] Build passes clean: `python3 build.py --clean`.
-- [ ] Host test suite passes: `uv run --with pytest python -m pytest`.
+  Actual format: `EVT enc_wedged wheel=L enc=<v> n=<count> err=<busErr> reentry=<n> lastErr=<code>`
+- [x] Build passes clean: `python3 build.py --clean`.
+- [x] Host test suite passes: `uv run --with pytest python -m pytest`.
 
 ## Implementation Plan
 

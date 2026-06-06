@@ -23,6 +23,7 @@
 #include "Odometry.h"
 #include "DriveController.h"
 #include "LoopScheduler.h"
+#include "I2CBus.h"
 #include "Config.h"
 #include <cstring>
 #include <cstdio>
@@ -869,6 +870,65 @@ void CommandProcessor::process(const char* line, ReplyFn replyFn, void* ctx)
                 replyFn(buf, ctx);
             }
             replyOK(rbuf, sizeof(rbuf), "dbg", "loop", corr_id, replyFn, ctx);
+            return;
+        }
+        // ── DBG I2C [RESET] ───────────────────────────────────────────────────
+        // DBG I2C        → one line: per-device txn/err/last-err, reentry count,
+        //                  stuck encoder counters. All on ONE serial send (≤255 B).
+        // DBG I2C RESET  → zero all I2CBus stats + stuck counters; reply OK.
+        if (strcmp(tokens[1], "I2C") == 0) {
+            if (_i2cBus == nullptr) {
+                replyErr(rbuf, sizeof(rbuf), "noimpl", "no i2c bus", corr_id, replyFn, ctx);
+                return;
+            }
+            if (ntok >= 3 && strcmp(tokens[2], "RESET") == 0) {
+                _i2cBus->resetStats();
+                _robot.motor().resetStuckCounters();
+                replyOK(rbuf, sizeof(rbuf), "dbg", "i2c reset", corr_id, replyFn, ctx);
+                return;
+            }
+            // Build a single compact dump line — must fit in ≤200 chars so the
+            // 255-byte serial TX buffer is not exceeded.
+            // Format:
+            //   I2C 0x10:txn=N err=N last=N 0x17:txn=N err=N last=N
+            //       0x1A:txn=N err=N last=N 0x43:txn=N err=N last=N
+            //       reentry=N stuck=L:N,R:N
+            // (single line, all on one snprintf)
+            uint32_t rV  = _i2cBus->reentryViolations();
+            uint8_t  sL  = _robot.motor().stuckCountL();
+            uint8_t  sR  = _robot.motor().stuckCountR();
+            // Single snprintf into ≤200-byte buffer (well under 255-byte serial TX
+            // buffer). snprintf truncates + NUL-terminates safely on overflow.
+            // Format: I2C 0x10:txn=N err=N last=N 0x17:... reentry=N stuck=L:N,R:N
+            // Worst-case length with max uint32 counts: ~200 chars (truncated safely).
+            char buf[200];
+            int n = snprintf(buf, sizeof(buf),
+                "I2C 0x10:txn=%lu err=%lu last=%d "
+                "0x17:txn=%lu err=%lu last=%d "
+                "0x1A:txn=%lu err=%lu last=%d "
+                "0x43:txn=%lu err=%lu last=%d "
+                "reentry=%lu stuck=L:%u,R:%u",
+                (unsigned long)_i2cBus->txnCount(0x10),
+                (unsigned long)_i2cBus->errCount(0x10),
+                _i2cBus->lastErr(0x10),
+                (unsigned long)_i2cBus->txnCount(0x17),
+                (unsigned long)_i2cBus->errCount(0x17),
+                _i2cBus->lastErr(0x17),
+                (unsigned long)_i2cBus->txnCount(0x1A),
+                (unsigned long)_i2cBus->errCount(0x1A),
+                _i2cBus->lastErr(0x1A),
+                (unsigned long)_i2cBus->txnCount(0x43),
+                (unsigned long)_i2cBus->errCount(0x43),
+                _i2cBus->lastErr(0x43),
+                (unsigned long)rV,
+                (unsigned)sL,
+                (unsigned)sR);
+            // Safety: snprintf returns bytes-that-would-have-been-written.
+            // If it exceeded sizeof(buf)-1, the string was truncated and NUL-
+            // terminated by snprintf — safe to send as-is.
+            (void)n;
+            replyFn(buf, ctx);
+            replyOK(rbuf, sizeof(rbuf), "dbg", "i2c", corr_id, replyFn, ctx);
             return;
         }
         replyErr(rbuf, sizeof(rbuf), "badarg", "dbg subcommand", corr_id, replyFn, ctx);

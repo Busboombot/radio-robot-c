@@ -5,7 +5,11 @@
 #include "RatioPidController.h"
 #include "VelocityController.h"
 #include "RobotState.h"
+#include "Protocol.h"
 #include <stdint.h>
+
+// Forward declaration — include in .cpp only.
+class I2CBus;
 
 /**
  * MotorController — per-wheel velocity PID wheel speed control.
@@ -90,6 +94,32 @@ public:
     void setCommandsRef(MotorCommands* cmds) { _cmds = cmds; }
 
     /**
+     * setI2CBus — bind the I2CBus instance so controlTick() can read per-device
+     * stats when emitting EVT enc_wedged (015-003).
+     * Optional — if unset, EVT stats show zeros.
+     */
+    void setI2CBus(I2CBus* bus) { _i2cBus = bus; }
+
+    /**
+     * setEvtSink — bind the reply sink for EVT enc_wedged emission (015-003).
+     * Points at the LoopScheduler's activeFn / activeCtx live fields so the
+     * event goes to whichever channel sent the most recent command.
+     * Optional — if fn is nullptr, the event is silently dropped.
+     */
+    void setEvtSink(ReplyFn* fn, void** ctx) { _evtFn = fn; _evtCtx = ctx; }
+
+    /**
+     * stuckCountL / stuckCountR — current consecutive-identical-while-commanded
+     * counter for left and right wheels respectively (015-003).
+     * Read by CommandProcessor::DBG I2C to include in the dump line.
+     */
+    uint8_t stuckCountL() const { return _stuckCountL; }
+    uint8_t stuckCountR() const { return _stuckCountR; }
+
+    /** resetStuckCounters — zero both stuck counters and re-arm both latch flags. */
+    void resetStuckCounters();
+
+    /**
      * getVelocitySourceFlags — always returns false for both wheels.
      *
      * The chip readSpeed (0x47) path was disabled in sprint 013 to fix
@@ -138,6 +168,37 @@ private:
     uint32_t _prevTimeMsR;  // system time (ms) of last right-wheel collect
     bool     _hasTimestampL;
     bool     _hasTimestampR;
+
+    // -------------------------------------------------------------------------
+    // Encoder-wedge detector (015-003)
+    //
+    // Per-wheel consecutive-identical-while-commanded counter.
+    // When either counter reaches kWedgeThreshold and the latch flag is clear,
+    // an EVT enc_wedged line is emitted via _evtFn/_evtCtx and the latch is set.
+    // The latch re-arms (clears) when the encoder value changes.
+    // -------------------------------------------------------------------------
+    static constexpr uint8_t kWedgeThreshold = 10;  // consecutive identical reads
+
+    // Previous encoder snapshots used for identity comparison (distinct from the
+    // velocity-compute snapshots _prevEncL/R above, which are updated only on
+    // the refreshed wheel; these are updated every tick regardless of wheel).
+    float    _wedgePrevEncL;
+    float    _wedgePrevEncR;
+    bool     _wedgePrevValidL;    // false until first reading
+    bool     _wedgePrevValidR;
+
+    uint8_t  _stuckCountL;        // consecutive identical-while-commanded reads (L)
+    uint8_t  _stuckCountR;        // consecutive identical-while-commanded reads (R)
+    bool     _wedgeEmittedL;      // latch: EVT already sent for this episode (L)
+    bool     _wedgeEmittedR;      // latch: EVT already sent for this episode (R)
+
+    // Optional I2CBus pointer for stats in EVT body.
+    I2CBus*  _i2cBus;
+
+    // Live pointers into LoopScheduler::activeFn / activeCtx so the EVT goes
+    // to the channel that most recently sent a command.
+    ReplyFn* _evtFn;
+    void**   _evtCtx;
 
     // clamp helper
     static float clamp(float v, float lo, float hi);
