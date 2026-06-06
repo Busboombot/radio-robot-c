@@ -1,11 +1,12 @@
 ---
-id: "005"
-title: "Firmware hard-hang under sustained streaming — TX-buffer overflow when no reader"
-status: open
+id: '005'
+title: "Firmware hard-hang under sustained streaming \u2014 TX-buffer overflow when\
+  \ no reader"
+status: done
 use-cases: []
 depends-on: []
-github-issue: ""
-issue: ""
+github-issue: ''
+issue: ''
 completes_issue: true
 ---
 <!-- CLASI: Before changing code or making plans, review the SE process in CLAUDE.md -->
