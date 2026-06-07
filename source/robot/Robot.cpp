@@ -346,14 +346,25 @@ void Robot::controlCollectSplitPhase(uint32_t now_ms, int /*pendingWheel*/)
         static constexpr float kMaxDeltaMm = 150.0f;
         static constexpr int   kRetries    = 2;
 
+        // Encoder read method, live-toggleable via SET encAtomic (anti-wedge
+        // investigation): 0 = readEncoderMmFSettle (write→4ms settle→read, NO
+        // pre-write idle — the current fast control read, suspected to freeze);
+        // 1 = readEncoderMmFAtomic (request→4ms idle→4ms settle→collect, full
+        // vendor timing — ~2x slower but the read getEncoders() uses, which kept
+        // counting while the settle read froze). A/B this against the wedge.
+        auto readEnc = [&](Motor& m) -> float {
+            return _config.encAtomic ? m.readEncoderMmFAtomic(_config)
+                                     : m.readEncoderMmFSettle(_config);
+        };
+
         // Right (M1) first — proven ordering from WedgeTest.
         {
-            float newR = _motorR.readEncoderMmFSettle(_config);
+            float newR = readEnc(_motorR);
             float dR   = newR - _state.inputs.encRMm;
             if (dR > kMaxDeltaMm || dR < -kMaxDeltaMm) {
                 newR = _state.inputs.encRMm;             // default: hold old
                 for (int k = 0; k < kRetries; ++k) {
-                    float r2  = _motorR.readEncoderMmFSettle(_config);
+                    float r2  = readEnc(_motorR);
                     float dr2 = r2 - _state.inputs.encRMm;
                     if (dr2 <= kMaxDeltaMm && dr2 >= -kMaxDeltaMm) { newR = r2; break; }
                 }
@@ -363,12 +374,12 @@ void Robot::controlCollectSplitPhase(uint32_t now_ms, int /*pendingWheel*/)
 
         // Left (M2) second.
         {
-            float newL = _motorL.readEncoderMmFSettle(_config);
+            float newL = readEnc(_motorL);
             float dL   = newL - _state.inputs.encLMm;
             if (dL > kMaxDeltaMm || dL < -kMaxDeltaMm) {
                 newL = _state.inputs.encLMm;             // default: hold old
                 for (int k = 0; k < kRetries; ++k) {
-                    float r2  = _motorL.readEncoderMmFSettle(_config);
+                    float r2  = readEnc(_motorL);
                     float dr2 = r2 - _state.inputs.encLMm;
                     if (dr2 <= kMaxDeltaMm && dr2 >= -kMaxDeltaMm) { newL = r2; break; }
                 }

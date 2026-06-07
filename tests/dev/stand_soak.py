@@ -41,6 +41,8 @@ def main() -> int:
     p.add_argument("--minutes", type=float, default=30.0)
     p.add_argument("--seed", type=int, default=1)
     p.add_argument("--stimeout", type=int, default=1500, help="firmware S-watchdog ms")
+    p.add_argument("--set", dest="sets", action="append", default=[], metavar="K=V",
+                   help="SET override applied on connect (repeatable), e.g. --set encAtomic=1")
     args = p.parse_args()
 
     rng = random.Random(args.seed)
@@ -187,6 +189,9 @@ def main() -> int:
         proto.send("STREAM 0", 200)
         time.sleep(0.05)
         proto.send(f"SET sTimeout={args.stimeout}", 300)
+        for kv in args.sets:
+            r = proto.send(f"SET {kv}", 300)
+            print(f"  SET {kv} -> {r.get('responses', ['?'])[-1]}")
         proto.send("OI", 400)
         proto.zero_encoders()
         set_stream(50, FIELD_POOL)

@@ -135,6 +135,12 @@ struct RobotConfig {
     // Default 10 ms → target ~100 Hz; actual rate depends on I2C busy-wait cost.
     int32_t controlPeriodMs;
 
+    // Encoder read method for the control loop. SET "encAtomic". 0 = settle-only
+    // read (fast, no pre-write idle — current default, suspected to freeze the
+    // Nezha readback); 1 = atomic read (full vendor request→idle→settle→collect,
+    // ~2x slower). Live A/B for the encoder-wedge investigation.
+    int32_t encAtomic;
+
     // Telemetry streaming period in ms (0 = off). Set via STREAM command.
     int32_t tlmPeriodMs;
 
@@ -224,6 +230,7 @@ inline RobotConfig defaultRobotConfig() {
     p.tickMs          = 20;
     p.sTimeoutMs      = 500;   // 500 ms: allows relay-link jitter without cutting motors
     p.controlPeriodMs = 10;    // 10 ms → ~100 Hz control rate (actual rate = 10 ms + I2C time)
+    p.encAtomic       = 0;     // 0 = settle read (current); 1 = atomic read (anti-wedge A/B)
     p.tlmPeriodMs     = 0;
     p.tlmFields       = 0xFF;
     p.tlmSnapPending  = false;

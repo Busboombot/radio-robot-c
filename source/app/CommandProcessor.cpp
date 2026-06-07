@@ -110,6 +110,7 @@ static const ConfigEntry kRegistry[] = {
     CFG_I("sTimeout",     sTimeoutMs),
     CFG_I("tick",         tickMs),
     CFG_I("ctrlPeriod",   controlPeriodMs),
+    CFG_I("encAtomic",    encAtomic),       // 0=settle read, 1=atomic read (anti-wedge A/B)
     CFG_I("tlmPeriod",    tlmPeriodMs),
     // Sensor lag budgets (ms) for the cooperative scheduler's low-priority tasks.
     // SET lag.* N updates cfg.lag*Ms; LoopScheduler syncs task periodMs live.
