@@ -527,6 +527,137 @@ void LoopScheduler::run_all()
 }
 
 // ---------------------------------------------------------------------------
+// run_blocks — the straightforward main loop. Never returns.
+//
+// No task table, no _runStep, no round-robin cursor, no budget gating. Every
+// subsystem is an explicit BLOCK right here in the loop body, so you can read
+// the whole schedule top to bottom. Each block is gated by two things:
+//
+//   1. an ENABLE FLAG (en*) — set false to turn that block off entirely; and
+//   2. a TIME CHECK — using a SIGNED delta (int32_t)(now - last) so a uint32
+//      millisecond wrap/inversion can never make a block fire ~4.3e9 ms "late"
+//      or never (this is the watchdog-underflow lesson — never plain-compare two
+//      uint32 ms stamps).
+//
+// Built from the WedgeTest recipe that runs wedge-free on the bench:
+//   - the CONTROL block (read BOTH encoders, M1/right first → velocity → per-
+//     wheel PID → setSpeed) runs EVERY iteration as the metronome;
+//   - the idle sleep paces the whole loop to a fixed controlPeriodMs deadline;
+//   - the timed sensor/telemetry blocks run only when their interval elapses.
+//
+// To turn a subsystem on/off, flip its en* flag below. To change a rate, edit
+// the matching cfg.lag*Ms / cfg.tlmPeriodMs (also live-settable via SET).
+// ---------------------------------------------------------------------------
+
+void LoopScheduler::run_blocks()
+{
+    // ---- ENABLE FLAGS: is each block turned on? -----------------------------
+    bool enControl = true;   // read encoders + run PID + write motors (metronome)
+    bool enComms   = true;   // drain serial + radio command queues
+    bool enDrive   = true;   // advance S/T/D/G drive state machine + S-watchdog
+    bool enOdom    = true;   // dead-reckon pose from the encoders
+    bool enOtos    = true;   // OTOS pose read + complementary fusion (timed)
+    bool enLine    = true;   // line sensor read (timed)
+    bool enColor   = true;   // colour sensor read (timed)
+    bool enPorts   = true;   // port-IO / GPIO read (timed)
+    bool enTlm     = true;   // assemble + send the TLM telemetry frame (timed)
+
+    // ---- per-block last-run timestamps for the timed blocks -----------------
+    // Seed to NOW (not 0): with 0, (now - 0) >= period is true for every block
+    // on the first iteration, so they'd ALL fire on tick 1 alongside the control
+    // read and overrun the period (there is no budget gate here). Seeding to now
+    // makes each wait a full period first. The small descending offsets phase-
+    // spread the first runs so the timed blocks don't keep coming due together.
+    uint32_t t0 = _uBit.systemTime();
+    uint32_t lastOtos  = t0;
+    uint32_t lastLine  = t0 - 10;
+    uint32_t lastColor = t0 - 20;
+    uint32_t lastPorts = t0 - 30;
+    uint32_t lastTlm   = t0 - 40;
+
+    uint32_t controlDeadline = 0;
+
+    while (true) {
+        const RobotConfig& cfg = _robot.config();
+        uint32_t now = _uBit.systemTime();
+
+        // ===== CONTROL: read BOTH encoders (M1 first) → PID → setSpeed =======
+        // Runs every iteration; the idle sleep at the bottom paces the loop to
+        // cfg.controlPeriodMs. This is the WedgeTest-proven read-both pattern
+        // (Robot::controlCollectSplitPhase): right/M1 encoder first, then left,
+        // with outlier rejection, then the per-wheel velocity PID writes PWM.
+        if (enControl) {
+            controlCollect(now);
+        }
+        now = _uBit.systemTime();
+        controlDeadline = now + (uint32_t)cfg.controlPeriodMs;
+
+        // ===== COMMS: drain serial + radio command queues (every iteration) ==
+        if (enComms) {
+            now = _uBit.systemTime();
+            runCommsIn(*this, now);
+        }
+
+        // ===== DRIVE: advance the drive state machine + S-watchdog ===========
+        if (enDrive) {
+            now = _uBit.systemTime();
+            _robot.driveAdvance(now);
+        }
+
+        // ===== ODOMETRY: dead-reckon pose from the latest encoder deltas =====
+        if (enOdom) {
+            _robot.odometryPredict();
+        }
+
+        // ===== OTOS: timed I2C pose read + fusion ============================
+        now = _uBit.systemTime();
+        if (enOtos && cfg.lagOtosMs > 0 &&
+            (int32_t)(now - lastOtos) >= (int32_t)cfg.lagOtosMs) {
+            _robot.otosCorrect(now);
+            lastOtos = now;
+        }
+
+        // ===== LINE: timed I2C read =========================================
+        now = _uBit.systemTime();
+        if (enLine && cfg.lagLineMs > 0 &&
+            (int32_t)(now - lastLine) >= (int32_t)cfg.lagLineMs) {
+            _robot.lineRead();
+            lastLine = now;
+        }
+
+        // ===== COLOUR: timed read ===========================================
+        now = _uBit.systemTime();
+        if (enColor && cfg.lagColorMs > 0 &&
+            (int32_t)(now - lastColor) >= (int32_t)cfg.lagColorMs) {
+            _robot.colorRead();
+            lastColor = now;
+        }
+
+        // ===== PORTS: timed GPIO read =======================================
+        now = _uBit.systemTime();
+        if (enPorts && cfg.lagPortsMs > 0 &&
+            (int32_t)(now - lastPorts) >= (int32_t)cfg.lagPortsMs) {
+            _robot.portsRead();
+            lastPorts = now;
+        }
+
+        // ===== TELEMETRY: timed TLM frame emit ==============================
+        now = _uBit.systemTime();
+        if (enTlm && cfg.tlmPeriodMs > 0 &&
+            (int32_t)(now - lastTlm) >= (int32_t)cfg.tlmPeriodMs) {
+            _robot.telemetryEmit(now, activeFn, activeCtx);
+            lastTlm = now;
+        }
+
+        // ===== IDLE SLEEP until the control deadline ========================
+        now = _uBit.systemTime();
+        if ((int32_t)(controlDeadline - now) > 0) {
+            _uBit.sleep(controlDeadline - now);
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // resetStats — zero all timing counters so DBG LOOP reports a fresh window.
 // ---------------------------------------------------------------------------
 void LoopScheduler::resetStats()

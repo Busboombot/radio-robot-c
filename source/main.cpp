@@ -207,7 +207,7 @@ int main() {
     robot.motor().setI2CBus(&bus);
     robot.motor().setEvtSink(&sched.activeFn, &sched.activeCtx);
 
-    sched.run_all();
+    sched.run_blocks();
 
     return 0;
 }

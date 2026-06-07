@@ -94,6 +94,14 @@ public:
     // Never returns.
     void run_all();
 
+    // run_blocks — the straightforward, fully-inlined main loop. No task table,
+    // no _runStep, no budget/cursor machinery. Every subsystem is an explicit
+    // block right in the loop body, each gated by (1) a plain on/off enable flag
+    // and (2) a signed-delta time check (the watchdog pattern). Built from the
+    // WedgeTest recipe: read BOTH encoders (M1 first) + PID every tick as the
+    // metronome, idle-sleep to a fixed control-period deadline. Never returns.
+    void run_blocks();
+
     // --- Debug/testing task control (DBG LOOP command) -----------------------
     // Number of low-priority tasks; valid indices are 0..numTasks()-1.
     int  numTasks() const { return kNumTasks; }

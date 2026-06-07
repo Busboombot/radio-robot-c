@@ -960,9 +960,17 @@ void CommandProcessor::process(const char* line, ReplyFn replyFn, void* ctx)
                 replyErr(rbuf, sizeof(rbuf), "noimpl", "no scheduler", corr_id, replyFn, ctx);
                 return;
             }
-            int wrate = (ntok >= 3) ? atoi(tokens[2]) : 50;   // loop rate in Hz
+            // DBG WEDGE [rateHz] [writeMs] [busKHz] [dither] [reg] [sensors] [realCtrl]
+            int wrate  = (ntok >= 3) ? atoi(tokens[2]) : 50;    // loop/read rate (Hz)
+            int wwrite = (ntok >= 4) ? atoi(tokens[3]) : 40;    // motor write min interval (ms)
+            int wbus   = (ntok >= 5) ? atoi(tokens[4]) : 400;   // I2C bus speed (kHz)
+            int wdith  = (ntok >= 6) ? atoi(tokens[5]) : 3;     // per-tick pwm dither (+/- units)
+            int wreg   = (ntok >= 7) ? atoi(tokens[6]) : 0x46;  // encoder read reg (46/47)
+            int wsens  = (ntok >= 8) ? atoi(tokens[7]) : 0;     // 1 = sensor bus traffic
+            int wreal  = (ntok >= 9) ? atoi(tokens[8]) : 0;     // 1 = drive via real PID/Motor path
             replyOK(rbuf, sizeof(rbuf), "dbg", "wedge start", corr_id, replyFn, ctx);
-            runWedgeTest(_sched->uBit(), wrate);   // blocks until wedge or stop byte
+            runWedgeTest(_sched->uBit(), wrate, wwrite, wbus, wdith, wreg, wsens,
+                         wreal, &_sched->robot());  // blocks until wedge/stop
             replyOK(rbuf, sizeof(rbuf), "dbg", "wedge end", corr_id, replyFn, ctx);
             return;
         }
