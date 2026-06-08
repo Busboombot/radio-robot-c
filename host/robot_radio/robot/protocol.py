@@ -483,9 +483,20 @@ class NezhaProtocol:
         """
         self._conn.send(f"STREAM fields={fields}", read_ms=300)
 
-    def snap(self) -> None:
-        """Request one immediate TLM frame (SNAP command)."""
-        self._conn.send("SNAP", read_ms=200)
+    def snap(self) -> "TLMFrame | None":
+        """Request ONE telemetry frame synchronously and return it (parsed).
+
+        SNAP returns the frame as its reply (request/response), not via the
+        stream — so it works while stopped and survives the radio relay (an
+        ordinary command-response, unlike a dropped async stream frame). Set the
+        desired fields first with stream_fields(); no continuous stream needed.
+        """
+        resp = self._conn.send("SNAP", read_ms=400)
+        for ln in resp.get("responses", []):
+            f = parse_tlm(ln)
+            if f is not None:
+                return f
+        return None
 
     # ------------------------------------------------------------------
     # OTOS sensor

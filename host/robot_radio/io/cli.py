@@ -230,7 +230,7 @@ def _make_robot(args) -> tuple[QBotPro, SerialConnection, dict]:
         cached_mode = cache["mode"]
         _log(f"cache hit: port={port} mode={cached_mode} — skipping HELLO")
         conn = SerialConnection(port, mode=cached_mode, on_send=on_send)
-        result = conn.connect(skip_hello=True)
+        result = conn.connect(skip_ping=True)
         if "error" in result:
             # Cache path failed — fall through to full HELLO below.
             _log(f"cache-hit connect failed ({result['error']}), falling back to full HELLO")
@@ -1616,17 +1616,17 @@ def cmd_port(args):
         sys.exit(1)
     robot, conn, _ = _make_robot(args)
     if args.value is None:
-        wire = f"P+{args.jack}"
+        wire = f"P {args.jack}"
     else:
         if args.value not in (0, 1):
             print(f"Error: digital value must be 0 or 1, got {args.value}", file=sys.stderr)
             conn.disconnect()
             sys.exit(1)
-        wire = f"P+{args.jack}+{args.value}"
+        wire = f"P {args.jack} {args.value}"
     result = robot.send(wire, read_ms=400)
     for line in result.get("responses", []):
         s = str(line).lstrip("<# ")
-        if s.startswith(("ACK:P ", "P ", "ERR")):
+        if s.startswith(("OK port", "ACK:P ", "P ", "ERR")):
             print(s)
             break
     conn.disconnect()
@@ -1647,17 +1647,17 @@ def cmd_pwm(args):
         sys.exit(1)
     robot, conn, _ = _make_robot(args)
     if args.value is None:
-        wire = f"PA+{args.jack}"
+        wire = f"PA {args.jack}"
     else:
         if not (0 <= args.value <= 1023):
             print(f"Error: PWM value must be 0..1023, got {args.value}", file=sys.stderr)
             conn.disconnect()
             sys.exit(1)
-        wire = f"PA+{args.jack}+{args.value}"
+        wire = f"PA {args.jack} {args.value}"
     result = robot.send(wire, read_ms=400)
     for line in result.get("responses", []):
         s = str(line).lstrip("<# ")
-        if s.startswith(("ACK:PA ", "PA ", "ERR")):
+        if s.startswith(("OK port", "OK analog", "ACK:PA ", "PA ", "ERR")):
             print(s)
             break
     conn.disconnect()

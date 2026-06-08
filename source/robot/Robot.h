@@ -115,6 +115,10 @@ public:
     void portsRead();
     void telemetryEmit(uint32_t now_ms, ReplyFn fn, void* ctx);
 
+    // buildTlmFrame — assemble the TLM line into buf; returns length. Shared by
+    // the periodic stream and the synchronous telemetry request (SNAP reply).
+    int buildTlmFrame(char* buf, int len);
+
     // ---------------------------------------------------------------------------
     // Drive action methods — delegate to DriveController.
     // fn/ctx: originating reply sink captured for async completions.
@@ -152,6 +156,12 @@ public:
     // Uses the CODAL free function system_timer_current_time() (declared in
     // codal-core Timer.h, pulled in via MicroBit.h headers).
     uint32_t systemTime() const;
+
+    // noteActivity — mark the host as active (a command was received). Keeps the
+    // periodic telemetry stream alive while the host is talking (so idle reads —
+    // e.g. calibrate's pre-drive baseline — work), even when not driving. The
+    // stream still auto-stops once the host goes quiet AND the robot is idle.
+    void noteActivity(uint32_t now_ms) { _lastActiveMs = now_ms; }
 
     // ---------------------------------------------------------------------------
     // State accessor — returns the authoritative robot state container (014-003).

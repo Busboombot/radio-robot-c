@@ -26,6 +26,24 @@ _POLL_TOTAL_NORMAL_S = 1.5
 _POLL_TOTAL_FAST_S = 0.6
 
 
+def _disable_hupcl(ser) -> None:
+    """Clear the HUPCL termios flag so close() does NOT pulse DTR.
+
+    On macOS/Linux the default tty behaviour asserts DTR when the last handle
+    closes (HUPCL = "hang up on close"), which the micro:bit DAPLink interprets
+    as a target reset. Clearing it lets a CLI command open/close the port
+    without rebooting the robot. No-op on platforms without termios.
+    """
+    try:
+        import termios
+        fd = ser.fileno()
+        attrs = termios.tcgetattr(fd)
+        attrs[2] &= ~termios.HUPCL      # c_cflag
+        termios.tcsetattr(fd, termios.TCSANOW, attrs)
+    except Exception:
+        pass
+
+
 class SerialConnection:
     """Manages a serial connection to a micro:bit relay or direct device."""
 
@@ -49,7 +67,7 @@ class SerialConnection:
     def mode(self) -> str | None:
         return self._mode
 
-    def connect(self, skip_ping: bool = False) -> dict[str, Any]:
+    def connect(self, skip_ping: bool = False, reset: bool = False) -> dict[str, Any]:
         """Open port, send PING (v2), confirm readiness.
 
         After opening the serial port the device is not immediately ready —
@@ -86,9 +104,17 @@ class SerialConnection:
             self._ser = serial.Serial(baudrate=self._baud, timeout=READ_TIMEOUT_S,
                                       dsrdtr=False, rtscts=False)
             self._ser.port = self._port
-            self._ser.dtr = False
-            self._ser.rts = False
+            if not reset:
+                self._ser.dtr = False   # hold DTR de-asserted → no reset on open
+                self._ser.rts = False
             self._ser.open()
+            if not reset:
+                # On macOS/Linux, close() pulses DTR via the HUPCL termios flag,
+                # which the DAPLink reads as a target reset — so every CLI command
+                # would reboot the robot on exit (losing SET state, laser, etc.).
+                # Clear HUPCL so close() leaves the line alone. Pass reset=True
+                # (e.g. `--reset`) to deliberately reboot the robot instead.
+                _disable_hupcl(self._ser)
 
             # Default mode to relay if not set.
             if self._mode is None:

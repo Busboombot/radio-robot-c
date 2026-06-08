@@ -456,60 +456,27 @@ void Robot::portsRead()
 // Emits when tlmPeriodMs has elapsed or a SNAP is pending.
 // ---------------------------------------------------------------------------
 
-void Robot::telemetryEmit(uint32_t now_ms, ReplyFn fn, void* ctx)
+// buildTlmFrame — assemble the TLM line into buf; returns its length. Shared by
+// the periodic STREAM (telemetryEmit) and the synchronous telemetry REQUEST (the
+// SNAP command, which replies with this frame). Honors the tlmFields mask.
+int Robot::buildTlmFrame(char* buf, int len)
 {
-    // Auto-stop the periodic stream when the robot has been idle (not driving)
-    // longer than a short grace. The grace lets a just-finished drive's final
-    // state reach the host (the bench reads the encoder right after a drive);
-    // after that, streaming stops so it doesn't flood the link forever — that
-    // flood buries the DEVICE: handshake line and makes reconnect fail. A one-shot
-    // SNAP still works any time (an explicit request, below).
-    static constexpr uint32_t kIdleStopMs = 1500;
-    if (_dc.mode() != DriveMode::IDLE) _lastActiveMs = now_ms;
-    bool idleTooLong = (now_ms - _lastActiveMs) > kIdleStopMs;
-
-    bool snapPending = _config.tlmSnapPending;
-    bool periodic    = (_config.tlmPeriodMs > 0) && !idleTooLong &&
-                       ((now_ms - _lastTlmMs) >= (uint32_t)_config.tlmPeriodMs);
-
-    if (!snapPending && !periodic) return;
-
-    // Clamp period to 20 ms minimum to avoid flooding the buffer.
-    if (periodic && _config.tlmPeriodMs < 20) {
-        _config.tlmPeriodMs = 20;
-    }
-
-    // ----- 1. Capture timestamp -----------------------------------------------
     uint32_t t_sample = systemTime();
-
-    // ----- 2. Encoder positions from HardwareState snapshot -------------------
     int32_t encL = static_cast<int32_t>(_state.inputs.encLMm);
     int32_t encR = static_cast<int32_t>(_state.inputs.encRMm);
 
-    // ----- 3. Pose from HardwareState -----------------------------------------
     int32_t pose_x = 0, pose_y = 0, pose_h = 0;
     if (_config.tlmFields & TLM_FIELD_POSE) {
         Odometry::getPose(_state.inputs, pose_x, pose_y, pose_h);
     }
-
-    // ----- 4. Line from HardwareState snapshot --------------------------------
     bool haveLine = _line.is_initialized() && _state.inputs.lineVS.valid &&
                     (_config.tlmFields & TLM_FIELD_LINE);
-
-    // ----- 5. Color from HardwareState snapshot -------------------------------
     bool haveColor = _color.is_initialized() && _state.inputs.colorVS.valid &&
                      (_config.tlmFields & TLM_FIELD_COLOR);
+    bool haveVel = (_config.tlmFields & TLM_FIELD_VEL) != 0;
+    float velL = haveVel ? _state.inputs.velLMms : 0.0f;
+    float velR = haveVel ? _state.inputs.velRMms : 0.0f;
 
-    // ----- 6. Velocity from HardwareState -------------------------------------
-    float velL = 0.0f, velR = 0.0f;
-    bool haveVel = false;
-    if (_config.tlmFields & TLM_FIELD_VEL) {
-        velL    = _state.inputs.velLMms;
-        velR    = _state.inputs.velRMms;
-        haveVel = true;
-    }
-
-    // ----- 7. Drive mode character --------------------------------------------
     char modeChar = 'I';
     switch (_dc.mode()) {
         case DriveMode::STREAMING: modeChar = 'S'; break;
@@ -519,57 +486,57 @@ void Robot::telemetryEmit(uint32_t now_ms, ReplyFn fn, void* ctx)
         default:                   modeChar = 'I'; break;
     }
 
-    // ----- 8. Assemble TLM line -----------------------------------------------
-    char tlmBuf[128];
-    int  pos = 0;
-    int  rem = (int)sizeof(tlmBuf);
-
-    int n = snprintf(tlmBuf + pos, (size_t)rem,
-                     "TLM t=%lu mode=%c",
+    int pos = 0, rem = len;
+    int n = snprintf(buf + pos, (size_t)rem, "TLM t=%lu mode=%c",
                      (unsigned long)t_sample, modeChar);
     if (n > 0 && n < rem) { pos += n; rem -= n; }
-
     if (_config.tlmFields & TLM_FIELD_ENC) {
-        n = snprintf(tlmBuf + pos, (size_t)rem, " enc=%d,%d", (int)encL, (int)encR);
+        n = snprintf(buf + pos, (size_t)rem, " enc=%d,%d", (int)encL, (int)encR);
         if (n > 0 && n < rem) { pos += n; rem -= n; }
     }
-
     if (_config.tlmFields & TLM_FIELD_POSE) {
-        n = snprintf(tlmBuf + pos, (size_t)rem,
-                     " pose=%d,%d,%d", (int)pose_x, (int)pose_y, (int)pose_h);
+        n = snprintf(buf + pos, (size_t)rem, " pose=%d,%d,%d",
+                     (int)pose_x, (int)pose_y, (int)pose_h);
         if (n > 0 && n < rem) { pos += n; rem -= n; }
     }
-
     if (haveVel) {
-        n = snprintf(tlmBuf + pos, (size_t)rem,
-                     " vel=%d,%d", (int)velL, (int)velR);
+        n = snprintf(buf + pos, (size_t)rem, " vel=%d,%d", (int)velL, (int)velR);
         if (n > 0 && n < rem) { pos += n; rem -= n; }
     }
-
     if (haveLine) {
-        n = snprintf(tlmBuf + pos, (size_t)rem,
-                     " line=%u,%u,%u,%u",
-                     (unsigned)_state.inputs.line[0],
-                     (unsigned)_state.inputs.line[1],
-                     (unsigned)_state.inputs.line[2],
-                     (unsigned)_state.inputs.line[3]);
+        n = snprintf(buf + pos, (size_t)rem, " line=%u,%u,%u,%u",
+                     (unsigned)_state.inputs.line[0], (unsigned)_state.inputs.line[1],
+                     (unsigned)_state.inputs.line[2], (unsigned)_state.inputs.line[3]);
         if (n > 0 && n < rem) { pos += n; rem -= n; }
     }
-
     if (haveColor) {
-        n = snprintf(tlmBuf + pos, (size_t)rem,
-                     " color=%u,%u,%u,%u",
-                     (unsigned)_state.inputs.colorR,
-                     (unsigned)_state.inputs.colorG,
-                     (unsigned)_state.inputs.colorB,
-                     (unsigned)_state.inputs.colorC);
+        n = snprintf(buf + pos, (size_t)rem, " color=%u,%u,%u,%u",
+                     (unsigned)_state.inputs.colorR, (unsigned)_state.inputs.colorG,
+                     (unsigned)_state.inputs.colorB, (unsigned)_state.inputs.colorC);
         if (n > 0 && n < rem) { pos += n; rem -= n; }
     }
+    buf[pos] = '\0';
+    return pos;
+}
 
-    tlmBuf[pos] = '\0';
+void Robot::telemetryEmit(uint32_t now_ms, ReplyFn fn, void* ctx)
+{
+    // STREAM telemetry only while the motors are running (+ a short grace to flush
+    // the last frame). When stopped, the stream goes silent so the radio link is
+    // clear for commands. To read telemetry while stopped, the host REQUESTS it
+    // (the SNAP command returns a frame synchronously — see CommandProcessor).
+    static constexpr uint32_t kGraceMs = 400;
+    if (_dc.mode() != DriveMode::IDLE) _lastActiveMs = now_ms;
+    bool stopped = (now_ms - _lastActiveMs) > kGraceMs;
 
-    // ----- 9. Emit and update state ------------------------------------------
+    bool periodic = (_config.tlmPeriodMs > 0) && !stopped &&
+                    ((now_ms - _lastTlmMs) >= (uint32_t)_config.tlmPeriodMs);
+    if (!periodic) return;
+
+    if (_config.tlmPeriodMs < 20) _config.tlmPeriodMs = 20;  // clamp to 50 Hz max
+
+    char tlmBuf[128];
+    buildTlmFrame(tlmBuf, sizeof(tlmBuf));
     fn(tlmBuf, ctx);
     _lastTlmMs = now_ms;
-    _config.tlmSnapPending = false;
 }

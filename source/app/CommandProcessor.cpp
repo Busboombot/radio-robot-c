@@ -521,6 +521,11 @@ static void handleSet(KVPair* kvs, int nkv, RobotConfig& cfg,
 
 void CommandProcessor::process(const char* line, ReplyFn replyFn, void* ctx)
 {
+    // Telemetry streaming is gated purely on motors-running (see Robot::
+    // telemetryEmit): stream while driving, silent when stopped. To read while
+    // stopped, the host REQUESTS a frame (SNAP) — a synchronous command-response,
+    // so commands don't need to keep the stream alive.
+
     // Working buffer for tokenization. parseTokens() copies into this.
     char workBuf[512];
     char* tokens[MAX_TOKENS];
@@ -813,11 +818,14 @@ void CommandProcessor::process(const char* line, ReplyFn replyFn, void* ctx)
     }
 
     // ── SNAP ─────────────────────────────────────────────────────────────────
-    // SNAP → (emits one immediate TLM frame on next tick, then OK snap)
-    // The TLM frame is emitted by Robot::tick() when tlmSnapPending is set.
+    // SNAP → one telemetry frame returned SYNCHRONOUSLY as the reply (a request/
+    // response read, not the async stream). This is the radio-safe way to read
+    // telemetry while stopped: it's an ordinary command-response, so the relay
+    // delivers it (unlike an async stream frame, which the radio drops).
     if (strcmp(verb, "SNAP") == 0) {
-        _robot.config().tlmSnapPending = true;
-        replyOK(rbuf, sizeof(rbuf), "snap", nullptr, corr_id, replyFn, ctx);
+        char tlmBuf[128];
+        _robot.buildTlmFrame(tlmBuf, sizeof(tlmBuf));
+        replyFn(tlmBuf, ctx);
         return;
     }
 

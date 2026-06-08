@@ -359,15 +359,30 @@ def main() -> int:
             print(f"  pushed: ml={ml:.5f} mr={mr:.5f}  OL={otos_int8:+d} "
                   f"(readback {rb:+d})")
 
-        # Enable TLM streaming so enc + pose are readable each round (see
-        # _read_latest_tlm — SNAP/OP one-shots are unreliable here). Generous
-        # S-watchdog so the ramped S-drive's ~25 Hz keepalives never trip it.
+        # Push the velocity-loop / coupling tuning (vel.* + sync) from the config.
+        # Without this the wheels run at the firmware default (kI=0.05, ~5% bias);
+        # the config's kI keeps them straight. SET persists (no reset) over radio.
+        ctrl = getattr(cfg, "control", None)
+        if ctrl is not None:
+            pushed = []
+            for key, val in (("vel.kP", ctrl.vel_kp), ("vel.kI", ctrl.vel_ki),
+                             ("vel.kFF", ctrl.vel_kff), ("vel.iMax", ctrl.vel_imax),
+                             ("vel.kAw", ctrl.vel_kaw), ("vel.filt", ctrl.vel_filt),
+                             ("sync", ctrl.sync)):
+                if val is not None:
+                    proto.send(f"SET {key}={val:g}", 200)
+                    pushed.append(f"{key}={val:g}")
+            if pushed:
+                print(f"  pushed control: {' '.join(pushed)}")
+
+        # Set which fields a SNAP frame returns (enc + pose). We do NOT turn on
+        # continuous streaming — each round we REQUEST one frame after the drive
+        # (proto.snap()), a synchronous read that works while stopped and over the
+        # radio relay. (Continuous streaming floods the radio and gets dropped.)
         try:
-            proto.send("SET sTimeout=10000", 300)
             proto.stream_fields("enc,pose,vel")
         except Exception:
             pass
-        proto.stream(50)
 
         # Laser on for floor marking.
         proto.port_write(laser_port, True)
@@ -402,13 +417,12 @@ def main() -> int:
                       f"reposition the robot. Not driving.")
                 continue
 
-            # ---- baseline reads --------------------------------------------
+            # ---- baseline: zero the OTOS (D resets the encoder itself) ------
+            # No encoder zero (it flakes the readback → spasm; D resets its own
+            # accumulator at start). No continuous stream — we REQUEST a frame
+            # after the drive (SNAP: works while stopped + over the radio relay).
             proto.otos_zero()
-            proto.zero_encoders()
             time.sleep(0.3)
-            tlm0 = _read_latest_tlm(conn)
-            enc0 = tlm0.enc if tlm0 else None
-            op0  = tlm0.pose if tlm0 else None   # (x_mm, y_mm, h_cdeg) — fused pose
 
             # ---- drive (one deliberate blocking command) --------------------
             print(f"  driving {args.distance} mm…")
@@ -418,24 +432,25 @@ def main() -> int:
             proto.stop()
             time.sleep(0.4)
 
-            # ---- after reads -----------------------------------------------
-            tlm1 = _read_latest_tlm(conn)
+            # ---- after the drive: REQUEST one telemetry frame (SNAP) --------
+            # D reset the encoder at start → enc1 IS the per-wheel travel;
+            # otos_zero zeroed the OTOS → op1 IS the OTOS displacement.
+            tlm1 = proto.snap()
             enc1 = tlm1.enc if tlm1 else None
             op1  = tlm1.pose if tlm1 else None
             c1 = cam.pose()
 
             # ---- distances -------------------------------------------------
             enc_mm: float | None = None
-            if enc0 is not None and enc1 is not None:
-                # v2 TLM enc is already in mm (cumulative since last ZERO)
-                dL = enc1[0] - enc0[0]
-                dR = enc1[1] - enc0[1]
-                enc_mm = (dL + dR) / 2.0
+            dL = dR = 0.0
+            if enc1 is not None:
+                dL = float(enc1[0]); dR = float(enc1[1])
+                enc_mm = (abs(dL) + abs(dR)) / 2.0
 
             otos_mm: float | None = None
-            if op0 is not None and op1 is not None:
-                # otos_get_position() returns (x_mm, y_mm, h_cdeg) — already mm
-                otos_mm = math.hypot(op1[0] - op0[0], op1[1] - op0[1])
+            if op1 is not None:
+                # pose is (x_mm, y_mm, h_cdeg); displacement from the otos_zero
+                otos_mm = math.hypot(op1[0], op1[1])
 
             # dist2d_mm takes (x_cm, y_cm) tuples and returns mm
             cam_mm = dist2d_mm(c0, c1)
@@ -470,8 +485,8 @@ def main() -> int:
                 ex = (c1[0] - c0[0]) * 10.0      # cm → mm
                 ey = (c1[1] - c0[1]) * 10.0
                 lateral = -hy * ex + hx * ey      # +left / −right of start heading
-            if op0 is not None and op1 is not None:
-                otos_dh = (op1[2] - op0[2]) / 100.0   # centideg → deg
+            if op1 is not None:
+                otos_dh = op1[2] / 100.0   # heading change from otos_zero (centideg → deg)
             sline = "  STRAIGHTNESS           : "
             bits = []
             if lateral is not None:
