@@ -12,7 +12,7 @@
 // Static kRegistry[] maps friendly key names to RobotConfig fields.
 
 #include "CommandProcessor.h"
-#include "Robot.h"
+#include "AppContext.h"
 #include "MicroBitDevice.h"
 #include "OtosSensor.h"
 #include "LineSensor.h"
@@ -140,7 +140,7 @@ static constexpr int kRegistryCount = (int)(sizeof(kRegistry) / sizeof(kRegistry
 // Constructor
 // ---------------------------------------------------------------------------
 
-CommandProcessor::CommandProcessor(Robot& robot)
+CommandProcessor::CommandProcessor(AppContext& robot)
     : _robot(robot)
 {
 }
@@ -655,10 +655,11 @@ void CommandProcessor::process(const char* line, ReplyFn replyFn, void* ctx)
             if (rem > 0) strncat(caps, cap, (size_t)rem);
             first = false;
         };
-        if (_robot.otos())        addCap("otos");
-        if (_robot.lineSensor())  addCap("line");
-        if (_robot.colorSensor()) addCap("color");
-        if (_robot.servo())       addCap("gripper");
+        if (_robot.otos.is_initialized())        addCap("otos");
+        if (_robot.line.is_initialized())        addCap("line");
+        if (_robot.colorSensor.is_initialized()) addCap("color");
+        // gripper: omitted from caps — no gripper hardware (re-enable when added)
+        // if (_robot.gripper.is_initialized()) addCap("gripper");
         // portio is always present.
         addCap("portio");
 
@@ -709,8 +710,8 @@ void CommandProcessor::process(const char* line, ReplyFn replyFn, void* ctx)
             // Read velocities from HardwareState (written by controlCollect each tick).
             // Chip readSpeed (0x47) is disabled (sprint 013 throb fix), so source
             // is always encoder-delta ('E') for both wheels.
-            float vL = _robot.state().inputs.velLMms;
-            float vR = _robot.state().inputs.velRMms;
+            float vL = _robot.state.inputs.velLMms;
+            float vR = _robot.state.inputs.velRMms;
             char body[48];
             snprintf(body, sizeof(body), "vel=%d:E,%d:E",
                      (int)vL, (int)vR);
@@ -720,7 +721,7 @@ void CommandProcessor::process(const char* line, ReplyFn replyFn, void* ctx)
         // Positional args (tokens[1..]) are the requested keys.
         // parseKV() would consume tokens that contain '='; GET only uses plain
         // key names, so pass the raw token list directly.
-        handleGet(tokens, ntok, _robot.config(), rbuf, sizeof(rbuf),
+        handleGet(tokens, ntok, _robot.config, rbuf, sizeof(rbuf),
                   corr_id, replyFn, ctx);
         return;
     }
@@ -735,7 +736,7 @@ void CommandProcessor::process(const char* line, ReplyFn replyFn, void* ctx)
                      replyFn, ctx);
             return;
         }
-        handleSet(kvs, nkv, _robot.config(), _robot.motor(),
+        handleSet(kvs, nkv, _robot.config, _robot.motorController,
                   rbuf, sizeof(rbuf), corr_id, replyFn, ctx);
         return;
     }
@@ -771,7 +772,7 @@ void CommandProcessor::process(const char* line, ReplyFn replyFn, void* ctx)
                         if (*c == '\0') break;
                     }
                 }
-                _robot.config().tlmFields = mask ? mask : TLM_FIELD_ALL;
+                _robot.config.tlmFields = mask ? mask : TLM_FIELD_ALL;
                 // Reconstruct the fields string for the response body.
                 char body[80];
                 int bpos = 0;
@@ -787,7 +788,7 @@ void CommandProcessor::process(const char* line, ReplyFn replyFn, void* ctx)
                 int bw = snprintf(body + bpos, (size_t)brem, "fields=");
                 if (bw > 0 && bw < brem) { bpos += bw; brem -= bw; }
                 for (int fi = 0; fi < 5 && brem > 1; ++fi) {
-                    if (_robot.config().tlmFields & kFieldNames[fi].bit) {
+                    if (_robot.config.tlmFields & kFieldNames[fi].bit) {
                         if (needComma) { body[bpos++] = ','; --brem; }
                         bw = snprintf(body + bpos, (size_t)brem, "%s", kFieldNames[fi].name);
                         if (bw > 0 && bw < brem) { bpos += bw; brem -= bw; }
@@ -810,7 +811,7 @@ void CommandProcessor::process(const char* line, ReplyFn replyFn, void* ctx)
         int32_t ms = (int32_t)atoi(tokens[1]);
         if (ms < 0) ms = 0;
         if (ms > 0 && ms < 20) ms = 20;  // clamp to 20 ms minimum
-        _robot.config().tlmPeriodMs = ms;
+        _robot.config.tlmPeriodMs = ms;
         char body[32];
         snprintf(body, sizeof(body), "period=%d", (int)ms);
         replyOK(rbuf, sizeof(rbuf), "stream", body, corr_id, replyFn, ctx);
@@ -911,7 +912,7 @@ void CommandProcessor::process(const char* line, ReplyFn replyFn, void* ctx)
             }
             if (ntok >= 3 && strcmp(tokens[2], "RESET") == 0) {
                 _i2cBus->resetStats();
-                _robot.motor().resetStuckCounters();
+                _robot.motorController.resetStuckCounters();
                 replyOK(rbuf, sizeof(rbuf), "dbg", "i2c reset", corr_id, replyFn, ctx);
                 return;
             }
@@ -923,8 +924,8 @@ void CommandProcessor::process(const char* line, ReplyFn replyFn, void* ctx)
             //       reentry=N stuck=L:N,R:N
             // (single line, all on one snprintf)
             uint32_t rV  = _i2cBus->reentryViolations();
-            uint8_t  sL  = _robot.motor().stuckCountL();
-            uint8_t  sR  = _robot.motor().stuckCountR();
+            uint8_t  sL  = _robot.motorController.stuckCountL();
+            uint8_t  sR  = _robot.motorController.stuckCountR();
             // Single snprintf into ≤200-byte buffer (well under 255-byte serial TX
             // buffer). snprintf truncates + NUL-terminates safely on overflow.
             // Format: I2C 0x10:txn=N err=N last=N 0x17:... reentry=N stuck=L:N,R:N
@@ -1107,7 +1108,7 @@ void CommandProcessor::process(const char* line, ReplyFn replyFn, void* ctx)
             replyErr(rbuf, sizeof(rbuf), "range", "r", corr_id, replyFn, ctx);
             return;
         }
-        _robot.streamDrive((int32_t)l, (int32_t)r, replyFn, ctx);
+        _robot.driveController.beginStream((float)l, (float)r, _robot.systemTime(), _robot.state.target, replyFn, ctx);
         char body[32];
         snprintf(body, sizeof(body), "l=%d r=%d", l, r);
         replyOK(rbuf, sizeof(rbuf), "drive", body, corr_id, replyFn, ctx);
@@ -1136,7 +1137,7 @@ void CommandProcessor::process(const char* line, ReplyFn replyFn, void* ctx)
             replyErr(rbuf, sizeof(rbuf), "range", "ms", corr_id, replyFn, ctx);
             return;
         }
-        _robot.timedDrive((int32_t)l, (int32_t)r, (uint32_t)ms, replyFn, ctx, corr_id);
+        _robot.driveController.beginTimed((float)l, (float)r, (uint32_t)ms, _robot.systemTime(), _robot.state.target, replyFn, ctx, corr_id);
         char body[48];
         snprintf(body, sizeof(body), "l=%d r=%d ms=%d", l, r, ms);
         replyOK(rbuf, sizeof(rbuf), "drive", body, corr_id, replyFn, ctx);
@@ -1194,7 +1195,7 @@ void CommandProcessor::process(const char* line, ReplyFn replyFn, void* ctx)
             replyErr(rbuf, sizeof(rbuf), "range", "speed", corr_id, replyFn, ctx);
             return;
         }
-        _robot.goTo((float)x, (float)y, (float)speed, replyFn, ctx, corr_id);
+        _robot.driveController.beginGoTo((float)x, (float)y, (float)speed, _robot.systemTime(), _robot.state.target, replyFn, ctx, corr_id);
         char body[64];
         snprintf(body, sizeof(body), "x=%d y=%d speed=%d", x, y, speed);
         replyOK(rbuf, sizeof(rbuf), "goto", body, corr_id, replyFn, ctx);
@@ -1222,7 +1223,7 @@ void CommandProcessor::process(const char* line, ReplyFn replyFn, void* ctx)
             return;
         }
         float omega_rads = (float)omega / 1000.0f;  // mrad/s → rad/s
-        _robot.velocityDrive((float)v, omega_rads, replyFn, ctx, corr_id);
+        _robot.driveController.beginVelocity((float)v, omega_rads, _robot.systemTime(), _robot.state.target, replyFn, ctx, corr_id);
         char body[32];
         snprintf(body, sizeof(body), "v=%d omega=%d", v, omega);
         replyOK(rbuf, sizeof(rbuf), "vw", body, corr_id, replyFn, ctx);
@@ -1273,7 +1274,7 @@ void CommandProcessor::process(const char* line, ReplyFn replyFn, void* ctx)
     // ── STOP — stop motors immediately ───────────────────────────────────────
     // STOP  → OK stop
     if (strcmp(verb, "STOP") == 0) {
-        _robot.stop();
+        { uint32_t now = _robot.systemTime(); _robot.driveController.stop(now, [](const char*, void*){}, nullptr); }
         replyOK(rbuf, sizeof(rbuf), "stop", nullptr, corr_id, replyFn, ctx);
         return;
     }
@@ -1289,9 +1290,9 @@ void CommandProcessor::process(const char* line, ReplyFn replyFn, void* ctx)
                 replyErr(rbuf, sizeof(rbuf), "range", "deg", corr_id, replyFn, ctx);
                 return;
             }
-            _robot.setGripperAngle(deg);
+            { uint8_t clamped = (deg < 0) ? 0 : (deg > 180) ? 180 : (uint8_t)deg; _robot.gripper.setAngle(clamped); }
         } else {
-            deg = _robot.gripperAngle();
+            deg = _robot.gripper.currentAngle();
         }
         char body[24];
         snprintf(body, sizeof(body), "deg=%d", (int)deg);
@@ -1318,8 +1319,8 @@ void CommandProcessor::process(const char* line, ReplyFn replyFn, void* ctx)
             replyErr(rbuf, sizeof(rbuf), "badarg", nullptr, corr_id, replyFn, ctx);
             return;
         }
-        if (doEnc)  _robot.zeroEncoders();
-        if (doPose) _robot.zeroOdometry();
+        if (doEnc)  _robot.motorController.resetEncoderAccumulators();
+        if (doPose) _robot.odometry.zero(_robot.state.inputs);
         // Build body: "enc", "pose", or "enc pose"
         char body[16];
         if (doEnc && doPose)       snprintf(body, sizeof(body), "enc pose");
@@ -1332,12 +1333,11 @@ void CommandProcessor::process(const char* line, ReplyFn replyFn, void* ctx)
     // ── OI — OTOS init ────────────────────────────────────────────────────────
     // OI  → OK oi
     if (strcmp(verb, "OI") == 0) {
-        OtosSensor* otos = _robot.otos();
-        if (!otos) {
+        if (!_robot.otos.is_initialized()) {
             replyErr(rbuf, sizeof(rbuf), "nodev", "oi", corr_id, replyFn, ctx);
             return;
         }
-        otos->init();
+        _robot.otos.init();
         replyOK(rbuf, sizeof(rbuf), "oi", nullptr, corr_id, replyFn, ctx);
         return;
     }
@@ -1345,12 +1345,11 @@ void CommandProcessor::process(const char* line, ReplyFn replyFn, void* ctx)
     // ── OZ — OTOS zero (reset tracking) ──────────────────────────────────────
     // OZ  → OK oz
     if (strcmp(verb, "OZ") == 0) {
-        OtosSensor* otos = _robot.otos();
-        if (!otos) {
+        if (!_robot.otos.is_initialized()) {
             replyErr(rbuf, sizeof(rbuf), "nodev", "oz", corr_id, replyFn, ctx);
             return;
         }
-        otos->setPositionRaw(0, 0, 0);
+        _robot.otos.setPositionRaw(0, 0, 0);
         replyOK(rbuf, sizeof(rbuf), "oz", nullptr, corr_id, replyFn, ctx);
         return;
     }
@@ -1358,12 +1357,11 @@ void CommandProcessor::process(const char* line, ReplyFn replyFn, void* ctx)
     // ── OR — OTOS reset tracking ──────────────────────────────────────────────
     // OR  → OK or
     if (strcmp(verb, "OR") == 0) {
-        OtosSensor* otos = _robot.otos();
-        if (!otos) {
+        if (!_robot.otos.is_initialized()) {
             replyErr(rbuf, sizeof(rbuf), "nodev", "or", corr_id, replyFn, ctx);
             return;
         }
-        otos->resetTracking();
+        _robot.otos.resetTracking();
         replyOK(rbuf, sizeof(rbuf), "or", nullptr, corr_id, replyFn, ctx);
         return;
     }
@@ -1372,13 +1370,12 @@ void CommandProcessor::process(const char* line, ReplyFn replyFn, void* ctx)
     // OP  → OK rawpos x=<x> y=<y> h=<h>  (values are raw OTOS LSB, not mm)
     // 1 LSB ≈ 0.305 mm for position; TLM pose= is fused odometry in mm/cdeg.
     if (strcmp(verb, "OP") == 0) {
-        OtosSensor* otos = _robot.otos();
-        if (!otos) {
+        if (!_robot.otos.is_initialized()) {
             replyErr(rbuf, sizeof(rbuf), "nodev", "op", corr_id, replyFn, ctx);
             return;
         }
         int16_t ox = 0, oy = 0, oh = 0;
-        otos->getPositionRaw(ox, oy, oh);
+        _robot.otos.getPositionRaw(ox, oy, oh);
         char body[64];
         snprintf(body, sizeof(body), "x=%d y=%d h=%d (raw LSB)", (int)ox, (int)oy, (int)oh);
         replyOK(rbuf, sizeof(rbuf), "rawpos", body, corr_id, replyFn, ctx);
@@ -1388,8 +1385,7 @@ void CommandProcessor::process(const char* line, ReplyFn replyFn, void* ctx)
     // ── OV — OTOS set position ────────────────────────────────────────────────
     // OV <x> <y> <h>  → OK setpos x=<x> y=<y> h=<h>
     if (strcmp(verb, "OV") == 0) {
-        OtosSensor* otos = _robot.otos();
-        if (!otos) {
+        if (!_robot.otos.is_initialized()) {
             replyErr(rbuf, sizeof(rbuf), "nodev", "ov", corr_id, replyFn, ctx);
             return;
         }
@@ -1400,7 +1396,7 @@ void CommandProcessor::process(const char* line, ReplyFn replyFn, void* ctx)
         int16_t ox = (int16_t)atoi(tokens[1]);
         int16_t oy = (int16_t)atoi(tokens[2]);
         int16_t oh = (int16_t)atoi(tokens[3]);
-        otos->setPositionRaw(ox, oy, oh);
+        _robot.otos.setPositionRaw(ox, oy, oh);
         char body[48];
         snprintf(body, sizeof(body), "x=%d y=%d h=%d", (int)ox, (int)oy, (int)oh);
         replyOK(rbuf, sizeof(rbuf), "setpos", body, corr_id, replyFn, ctx);
@@ -1411,16 +1407,15 @@ void CommandProcessor::process(const char* line, ReplyFn replyFn, void* ctx)
     // OL        → OK linear scalar=<val>
     // OL <val>  → OK linear scalar=<val>
     if (strcmp(verb, "OL") == 0) {
-        OtosSensor* otos = _robot.otos();
-        if (!otos) {
+        if (!_robot.otos.is_initialized()) {
             replyErr(rbuf, sizeof(rbuf), "nodev", "ol", corr_id, replyFn, ctx);
             return;
         }
         if (ntok >= 2) {
             int8_t val = (int8_t)atoi(tokens[1]);
-            otos->setLinearScalar(val);
+            _robot.otos.setLinearScalar(val);
         }
-        int8_t val = otos->getLinearScalar();
+        int8_t val = _robot.otos.getLinearScalar();
         char body[24];
         snprintf(body, sizeof(body), "scalar=%d", (int)val);
         replyOK(rbuf, sizeof(rbuf), "linear", body, corr_id, replyFn, ctx);
@@ -1431,16 +1426,15 @@ void CommandProcessor::process(const char* line, ReplyFn replyFn, void* ctx)
     // OA        → OK angular scalar=<val>
     // OA <val>  → OK angular scalar=<val>
     if (strcmp(verb, "OA") == 0) {
-        OtosSensor* otos = _robot.otos();
-        if (!otos) {
+        if (!_robot.otos.is_initialized()) {
             replyErr(rbuf, sizeof(rbuf), "nodev", "oa", corr_id, replyFn, ctx);
             return;
         }
         if (ntok >= 2) {
             int8_t val = (int8_t)atoi(tokens[1]);
-            otos->setAngularScalar(val);
+            _robot.otos.setAngularScalar(val);
         }
-        int8_t val = otos->getAngularScalar();
+        int8_t val = _robot.otos.getAngularScalar();
         char body[24];
         snprintf(body, sizeof(body), "scalar=%d", (int)val);
         replyOK(rbuf, sizeof(rbuf), "angular", body, corr_id, replyFn, ctx);
@@ -1463,9 +1457,9 @@ void CommandProcessor::process(const char* line, ReplyFn replyFn, void* ctx)
         int val;
         if (ntok >= 3) {
             val = atoi(tokens[2]);
-            _robot.portIO().setDigital((uint8_t)port, val != 0);
+            _robot.portio.setDigital((uint8_t)port, val != 0);
         } else {
-            val = _robot.portIO().readDigital((uint8_t)port);
+            val = _robot.portio.readDigital((uint8_t)port);
         }
         char body[24];
         snprintf(body, sizeof(body), "p=%d v=%d", port, val);
@@ -1493,9 +1487,9 @@ void CommandProcessor::process(const char* line, ReplyFn replyFn, void* ctx)
                 replyErr(rbuf, sizeof(rbuf), "range", "val", corr_id, replyFn, ctx);
                 return;
             }
-            _robot.portIO().setAnalog((uint8_t)port, (uint16_t)val);
+            _robot.portio.setAnalog((uint8_t)port, (uint16_t)val);
         } else {
-            val = _robot.portIO().readAnalog((uint8_t)port);
+            val = _robot.portio.readAnalog((uint8_t)port);
         }
         char body[24];
         snprintf(body, sizeof(body), "p=%d v=%d", port, val);

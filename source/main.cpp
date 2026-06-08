@@ -1,5 +1,4 @@
 #include "MicroBit.h"
-#include "Robot.h"
 #include "AppContext.h"
 #include "CommandProcessor.h"
 #include "LoopScheduler.h"
@@ -190,11 +189,8 @@ int main() {
     // 6. Robot — built from its devices + communicator (no i2c/serial/radio/
     //    MicroBit refs; those are fully encapsulated by the device objects).
     // -----------------------------------------------------------------------
-    static Robot            robot(motorL, motorR, otos, line, color, gripper, portio, comm, cfg);
-    // T003: AppContext is now the primary scheduler input; Robot kept for
-    // CommandProcessor until T005 migrates it.
     static AppContext appCtx(motorL, motorR, otos, line, color, gripper, portio, cfg);
-    static CommandProcessor cmd(robot);
+    static CommandProcessor cmd(appCtx);
 
     // DEVICE: identification banner once at boot over serial.
     cmd.process("HELLO", serialReply, &comm.serial());

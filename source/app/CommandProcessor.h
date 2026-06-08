@@ -2,11 +2,11 @@
 #include <stdint.h>
 #include "Protocol.h"
 
-// Forward declarations — CommandProcessor.cpp includes Robot.h directly.
-// Keeping only forward decls here avoids including Robot.h's transitive
+// Forward declarations — CommandProcessor.cpp includes AppContext.h directly.
+// Keeping only forward decls here avoids including AppContext.h's transitive
 // header graph (MicroBit, CODAL, all subsystems) in every file that
 // includes CommandProcessor.h.
-class Robot;
+struct AppContext;
 class LoopScheduler;
 class I2CBus;
 
@@ -45,7 +45,7 @@ struct KVPair {
  */
 class CommandProcessor {
 public:
-    explicit CommandProcessor(Robot& robot);
+    explicit CommandProcessor(AppContext& robot);
 
     // Parse and dispatch one command line. line must be NUL-terminated.
     // Calls replyFn(msg, ctx) for each response line.
@@ -126,7 +126,7 @@ public:
                          ReplyFn fn, void* ctx);
 
 private:
-    Robot& _robot;
+    AppContext& _robot;
     LoopScheduler* _sched   = nullptr;
     I2CBus*        _i2cBus  = nullptr;
 

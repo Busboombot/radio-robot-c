@@ -1,16 +1,16 @@
 ---
 id: '005'
 title: Migrate CommandProcessor to AppContext
-status: open
+status: done
 use-cases:
-  - SUC-001
-  - SUC-002
-  - SUC-003
-  - SUC-004
-  - SUC-005
-  - SUC-007
+- SUC-001
+- SUC-002
+- SUC-003
+- SUC-004
+- SUC-005
+- SUC-007
 depends-on:
-  - '004'
+- '004'
 github-issue: ''
 issue: ''
 completes_issue: false
@@ -51,7 +51,7 @@ Verb-by-verb substitution table (all sites from reading CommandProcessor.cpp):
 | ID caps block | `_robot.otos()` (returns `OtosSensor*`) | `_robot.otos.is_initialized()` |
 | ID caps block | `_robot.lineSensor()` | `_robot.line.is_initialized()` |
 | ID caps block | `_robot.colorSensor()` | `_robot.color.is_initialized()` |
-| ID caps block | `_robot.servo()` | Include `gripper` unconditionally (see Open Q 2 in arch doc); or `_robot.gripper.is_initialized()` if Servo gains `is_initialized()` |
+| ID caps block | `_robot.servo()` | **Omit `gripper` from `caps=`** — comment out the gripper entry (stakeholder: no gripper hardware now or for the foreseeable future). The `Servo` is still constructed/bound on its port in `main.cpp`; only its advertisement in `caps=` is removed. Leave a comment so it can be re-enabled later. |
 | GET VEL | `_robot.state().inputs.velLMms` | `_robot.state.inputs.velLMms` |
 | GET VEL | `_robot.state().inputs.velRMms` | `_robot.state.inputs.velRMms` |
 | GET | `_robot.config()` | `_robot.config` |
@@ -87,13 +87,13 @@ Verb-by-verb substitution table (all sites from reading CommandProcessor.cpp):
 | PA | `_robot.portIO().setAnalog(...)` | `_robot.portio.setAnalog(...)` |
 | PA | `_robot.portIO().readAnalog(...)` | `_robot.portio.readAnalog(...)` |
 
-**Gripper presence in ID caps=**: Decide and implement one approach:
-- Option A: Always include `gripper` unconditionally (servo is always present
-  on P1 in this hardware).
-- Option B: `_robot.gripper.is_initialized()` — but Servo does not currently
-  have `is_initialized()`. Would require adding a trivial `begin()` → sets
-  `_initialized = true` to Servo. Given the architecture doc Open Q 2, prefer
-  Option A for this sprint; note the decision in a comment.
+**Gripper presence in ID caps= (stakeholder decision):** **Omit `gripper` from
+`caps=`** — comment out the gripper advertisement entirely. There is no gripper
+hardware now and none planned for the foreseeable future, so do NOT add
+`Servo::is_initialized()`. The `Servo` object is still constructed and bound to
+its port in `main.cpp` (so the wiring is ready when a gripper is added later);
+only its listing in `caps=` is removed. Leave a `// gripper: omitted from caps —
+no gripper hardware (re-enable when added)` comment at the commented-out site.
 
 ### main.cpp change
 
@@ -113,24 +113,30 @@ ticket: delete the `Robot robot(...)` line and `Communicator` argument since
 
 ## Acceptance Criteria
 
-- [ ] `CommandProcessor.h` uses `struct AppContext;` forward declaration and
+- [x] `CommandProcessor.h` uses `struct AppContext;` forward declaration and
       `AppContext& _robot` member.
-- [ ] `CommandProcessor.cpp` includes `AppContext.h` (not `Robot.h`).
-- [ ] All OTOS verb handlers use `_robot.otos.is_initialized()` instead of
+- [x] `CommandProcessor.cpp` includes `AppContext.h` (not `Robot.h`).
+- [x] All OTOS verb handlers use `_robot.otos.is_initialized()` instead of
       nullable pointer accessor.
-- [ ] Drive verb handlers (S, T, G, VW) call `driveController.beginX(...)`
+- [x] Drive verb handlers (S, T, G, VW) call `driveController.beginX(...)`
       directly (no `Robot::streamDrive`, `timedDrive`, `goTo`, `velocityDrive`).
-- [ ] `D` verb still calls `_robot.distanceDrive(...)` (the kept method).
-- [ ] `STOP` verb calls `_robot.driveController.stop(now, noop, nullptr)`.
-- [ ] `GRIP` set calls `_robot.gripper.setAngle(clamped)`.
-- [ ] `GRIP` query calls `_robot.gripper.currentAngle()`.
-- [ ] `ZERO enc` calls `_robot.motorController.resetEncoderAccumulators()`.
-- [ ] `ZERO pose` calls `_robot.odometry.zero(_robot.state.inputs)`.
-- [ ] `P` / `PA` call `_robot.portio.*` directly.
-- [ ] `main.cpp` passes `appCtx` to `CommandProcessor`; old `Robot robot(...)`
+- [x] `D` verb still calls `_robot.distanceDrive(...)` (the kept method).
+- [x] `STOP` verb calls `_robot.driveController.stop(now, noop, nullptr)`.
+- [x] `GRIP` set calls `_robot.gripper.setAngle(clamped)`.
+- [x] `GRIP` query calls `_robot.gripper.currentAngle()`.
+- [x] `gripper` is omitted (commented out) from the `ID caps=` block, with a
+      re-enable comment; the `Servo` is still constructed/bound on its port in
+      `main.cpp`. No `Servo::is_initialized()` added.
+- [x] `ZERO enc` calls `_robot.motorController.resetEncoderAccumulators()`.
+- [x] `ZERO pose` calls `_robot.odometry.zero(_robot.state.inputs)`.
+- [x] `P` / `PA` call `_robot.portio.*` directly.
+- [x] `main.cpp` passes `appCtx` to `CommandProcessor`; old `Robot robot(...)`
       line is deleted.
-- [ ] Clean build: `python3 build.py` passes.
-- [ ] Host unit tests pass: `uv run --with pytest python -m pytest`.
+- [x] Clean build: `python3 build.py` passes.
+- [x] Host unit tests pass: `uv run --with pytest python -m pytest`.
+- [ ] DEFERRED (bench): PING/ID caps/S/T/D/G/VW/STOP/GRIP/ZERO/OTOS/PORT/STREAM/SNAP
+      on-robot smoke test. No gripper hardware — confirm `gripper` absent from
+      `ID caps=`. Defer to stakeholder.
 
 ## Implementation Plan
 
