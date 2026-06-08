@@ -66,10 +66,10 @@
     "mm_per_wheel_deg_left": 0.71659,
     "mm_per_wheel_deg_right": 0.70777,
     "rotational_slip": 0.74,
-    "rotation_gain": 1.0,
-    "rotation_offset_deg": 0.0,
-    "rotation_gain_neg": 1.17,
-    "rotation_offset_deg_neg": 0.0
+    "rotation_gain": 0.956,
+    "rotation_offset_deg": 1.045,
+    "rotation_gain_neg": 0.954,
+    "rotation_offset_deg_neg": 1.158
   },
   "control": {
     "vel_kp": 0.3,
@@ -78,6 +78,7 @@
     "vel_imax": 20.0,
     "vel_kaw": 3.0,
     "vel_filt": 0.15,
-    "sync": 1.0
+    "sync": 1.0,
+    "max_rot_accel_dps2": 300
   }
 }

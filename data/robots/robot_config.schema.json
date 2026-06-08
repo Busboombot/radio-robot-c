@@ -175,7 +175,8 @@
         "vel_kaw":       { "type": ["number", "null"], "description": "Back-calculation anti-windup gain, 1/s (SET vel.kAw)." },
         "vel_filt":      { "type": ["number", "null"], "description": "Velocity EMA smoothing weight (SET vel.filt)." },
         "sync":          { "type": ["number", "null"], "description": "Cross-wheel ratio coupling gain (SET sync)." },
-        "min_wheel_mms": { "type": ["number", "null"], "description": "Low-speed integrator deadband, mm/s (SET minWheelMms)." }
+        "min_wheel_mms": { "type": ["number", "null"], "description": "Low-speed integrator deadband, mm/s (SET minWheelMms)." },
+        "max_rot_accel_dps2": { "type": ["number", "null"], "description": "Host-side turn ramp: max rotational acceleration, deg/s^2 (default 300). Not pushed to firmware." }
       }
     }
   },

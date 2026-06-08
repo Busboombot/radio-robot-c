@@ -161,6 +161,11 @@ class ControlConfig(BaseModel):
     sync:          Optional[float] = None   # → SET sync      (cross-wheel coupling)
     min_wheel_mms: Optional[float] = None   # → SET minWheelMms (low-speed deadband)
 
+    # Host-side motion limit (NOT pushed to firmware): the maximum rotational
+    # acceleration, deg/s^2, that the turn / turn2 trapezoidal velocity profile
+    # ramps to and from. Default 300. Override per-call with --accel if needed.
+    max_rot_accel_dps2: Optional[float] = 300.0
+
 
 # ---------------------------------------------------------------------------
 # Root config model
