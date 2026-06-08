@@ -1,9 +1,15 @@
 ---
 id: '017'
 title: Body velocity control and MotionCommand core
-status: roadmap
+status: ticketing
 branch: sprint/017-body-velocity-control-and-motioncommand-core
-use-cases: []
+use-cases:
+  - SUC-001
+  - SUC-002
+  - SUC-003
+  - SUC-004
+  - SUC-005
+  - SUC-006
 issues:
 - motion-command-body-velocity-control.md
 ---
@@ -102,5 +108,10 @@ Before tickets can be created, all of the following must be true:
 
 | # | Title | Depends On |
 |---|-------|------------|
+| 001 | Config params and kRegistry entries for body motion limits | — |
+| 002 | BodyVelocityController — trapezoid profiler and host unit tests | 001 |
+| 003 | StopCondition and MotionCommand — core classes and host unit tests | 002 |
+| 004 | Wire VW onto MotionCommand in DriveController | 003 |
+| 005 | X cancel verb and host cancel() wrapper | 004 |
 
 Tickets execute serially in the order listed.

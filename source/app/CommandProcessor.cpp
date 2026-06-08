@@ -102,6 +102,12 @@ static const ConfigEntry kRegistry[] = {
     CFG_F ("aDecel",      aDecel),
     CFG_FI("turnGate",    turnInPlaceGate),   // wire: integer degrees; DriveController converts to radians at use-site
     CFG_FI("arriveTol",   arriveTolMm),       // wire: integer mm
+    // Body motion limits (Sprint 017 — BodyVelocityController)
+    CFG_F("vBodyMax",    vBodyMax),           // body forward speed ceiling, mm/s
+    CFG_F("yawRateMax",  yawRateMax),         // yaw rate ceiling, deg/s
+    CFG_F("yawAccMax",   yawAccMax),          // yaw acceleration limit, deg/s²
+    CFG_F("jMax",        jMax),               // linear jerk limit, mm/s³ (0=trapezoid)
+    CFG_F("yawJerkMax",  yawJerkMax),         // yaw jerk limit, deg/s³   (0=trapezoid)
     // Command scaling
     CFG_F("distScale",    distScale),
     CFG_F("turnScale",    turnScale),

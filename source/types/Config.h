@@ -120,6 +120,19 @@ struct RobotConfig {
     float turnInPlaceGate;
     float arriveTolMm;
 
+    // Body motion limits (Sprint 017 — BodyVelocityController).
+    // vBodyMax:      body forward speed ceiling, mm/s          (default 400.0)
+    // yawRateMax:    yaw rate ceiling, deg/s                   (default 180.0)
+    // yawAccMax:     yaw acceleration limit, deg/s²            (default 720.0)
+    // jMax:          linear jerk limit, mm/s³ (0 = trapezoid)  (default 0.0)
+    // yawJerkMax:    yaw jerk limit, deg/s³   (0 = trapezoid)  (default 0.0)
+    // aMax/aDecel above are reused for the linear channel (not duplicated).
+    float vBodyMax;       // body forward speed ceiling, mm/s        (default 400.0)
+    float yawRateMax;     // yaw rate ceiling, deg/s                 (default 180.0)
+    float yawAccMax;      // yaw acceleration limit, deg/s²          (default 720.0)
+    float jMax;           // linear jerk limit, mm/s³  (0=trapezoid) (default 0.0)
+    float yawJerkMax;     // yaw jerk limit, deg/s³    (0=trapezoid) (default 0.0)
+
     // Command scaling
     float   distScale;
     float   turnScale;
@@ -218,6 +231,11 @@ inline RobotConfig defaultRobotConfig() {
     p.aDecel          = 250.0f;
     p.turnInPlaceGate = 45.0f;
     p.arriveTolMm     = 5.0f;
+    p.vBodyMax        = 400.0f;
+    p.yawRateMax      = 180.0f;
+    p.yawAccMax       = 720.0f;
+    p.jMax            = 0.0f;
+    p.yawJerkMax      = 0.0f;
     p.distScale       = 0.94f;
     p.turnScale       = 1.07f;
     p.minSpeedMms     = 50;
