@@ -1,15 +1,15 @@
 ---
 id: '017'
 title: Body velocity control and MotionCommand core
-status: ticketing
+status: done
 branch: sprint/017-body-velocity-control-and-motioncommand-core
 use-cases:
-  - SUC-001
-  - SUC-002
-  - SUC-003
-  - SUC-004
-  - SUC-005
-  - SUC-006
+- SUC-001
+- SUC-002
+- SUC-003
+- SUC-004
+- SUC-005
+- SUC-006
 issues:
 - motion-command-body-velocity-control.md
 ---
