@@ -57,6 +57,11 @@ public:
      * Reads live limits from cfg each call.  After clamping and ramping,
      * calls BodyKinematics::inverse → saturate → mc.setTarget.
      *
+     * When cfg.jMax > 0, uses the S-curve (jerk-limited) path: slews the
+     * live acceleration toward the demanded step under the jerk bound, then
+     * integrates velocity.  At cfg.jMax == 0 (default), degenerates to the
+     * pure trapezoid.  Same logic applies to the yaw channel via yawJerkMax.
+     *
      * Must be called exactly once per driveAdvance tick (via MotionCommand::tick).
      *
      * @param dt_s  Elapsed time since the previous advance call, seconds.
@@ -66,7 +71,8 @@ public:
     bool advance(float dt_s);
 
     /**
-     * reset — zero the profiler state (_v, _omega, _vTgt, _omegaTgt).
+     * reset — zero the profiler state (_v, _omega, _vTgt, _omegaTgt,
+     *         _aLive, _omegaALive).
      *
      * Does NOT call MotorController::stop() — the caller is responsible for
      * deciding whether to coast or brake.
@@ -109,10 +115,12 @@ private:
     MotorController&   _mc;
     const RobotConfig& _cfg;
 
-    float _v;         // live profiled body forward speed, mm/s
-    float _omega;     // live profiled yaw rate, rad/s
-    float _vTgt;      // commanded forward speed (caller-supplied), mm/s
-    float _omegaTgt;  // commanded yaw rate (caller-supplied), rad/s
+    float _v;           // live profiled body forward speed, mm/s
+    float _omega;       // live profiled yaw rate, rad/s
+    float _vTgt;        // commanded forward speed (caller-supplied), mm/s
+    float _omegaTgt;    // commanded yaw rate (caller-supplied), rad/s
+    float _aLive;       // current live linear acceleration, mm/s² (S-curve channel)
+    float _omegaALive;  // current live yaw acceleration, rad/s²   (S-curve channel)
 
     /**
      * approach — single-axis trapezoid step helper.

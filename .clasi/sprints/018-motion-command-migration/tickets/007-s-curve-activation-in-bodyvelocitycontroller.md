@@ -1,13 +1,13 @@
 ---
-id: "007"
-title: "S-curve activation in BodyVelocityController"
-status: open
+id: '007'
+title: S-curve activation in BodyVelocityController
+status: done
 use-cases:
 - SUC-007
 depends-on:
-- "006"
-github-issue: ""
-issue: ""
+- '006'
+github-issue: ''
+issue: ''
 completes_issue: true
 ---
 <!-- CLASI: Before changing code or making plans, review the SE process in CLAUDE.md -->
@@ -65,16 +65,19 @@ pre-018 BVC for any test that does not set `jMax`.
 
 ## Acceptance Criteria
 
-- [ ] `_aLive`, `_omegaALive` added to `BodyVelocityController.h` private section.
-- [ ] `reset()` zeroes both new members.
-- [ ] At `jMax = 0`: `advance()` output is byte-identical to pre-018 trapezoid.
-- [ ] At `jMax > 0`: ramp reaches target speed later than trapezoid at the same `aMax`
+- [x] `_aLive`, `_omegaALive` added to `BodyVelocityController.h` private section.
+- [x] `reset()` zeroes both new members.
+- [x] At `jMax = 0`: `advance()` output is byte-identical to pre-018 trapezoid.
+- [x] At `jMax > 0`: ramp reaches target speed later than trapezoid at the same `aMax`
   (host unit test: simulate N ticks with same dt, compare time-to-target).
-- [ ] All existing `test_body_velocity_controller.py` tests pass unchanged (trapezoid
+- [x] All existing `test_body_velocity_controller.py` tests pass unchanged (trapezoid
   behaviour preserved at default config).
-- [ ] `SET jMax=500` / `GET jMax` round-trips (pre-existing from Sprint 017 registry).
-- [ ] `uv run --with pytest python -m pytest -q` passes at 1179/8 baseline.
-- [ ] Clean build: `python3 build.py --clean` succeeds.
+- [x] `SET jMax=500` / `GET jMax` round-trips (pre-existing from Sprint 017 registry).
+- [x] `uv run --with pytest python -m pytest -q` passes at 1334/8 (sprint baseline; original
+  ticket said 1179/8 — the sprint added tests on earlier tickets; all 8 pre-existing failures unchanged).
+- [x] Clean build: `python3 build.py --clean` succeeds.
+- [ ] Bench: `SET jMax=500` then `VW 300 0` — observe smoother onset on velocity chart
+  (stakeholder-deferred; on-robot S-curve tuning is not required for sprint close).
 
 ## Implementation Plan
 

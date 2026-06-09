@@ -25,7 +25,8 @@ static constexpr float kDegToRad = (float)(M_PI / 180.0);
 BodyVelocityController::BodyVelocityController(MotorController& mc,
                                                  const RobotConfig& cfg)
     : _mc(mc), _cfg(cfg),
-      _v(0.0f), _omega(0.0f), _vTgt(0.0f), _omegaTgt(0.0f)
+      _v(0.0f), _omega(0.0f), _vTgt(0.0f), _omegaTgt(0.0f),
+      _aLive(0.0f), _omegaALive(0.0f)
 {
 }
 
@@ -49,35 +50,65 @@ bool BodyVelocityController::advance(float dt_s)
         return !atTarget();
     }
 
-    // TODO(017): S-curve when jMax > 0 (linear channel) or yawJerkMax > 0 (yaw channel).
-    // For now, pure trapezoid for both channels.
-
     // ------------------------------------------------------------------
-    // Linear channel — asymmetric accel / decel trapezoid.
+    // Linear channel — asymmetric accel/decel with optional jerk limit.
     //
-    // Choose acceleration based on whether we are speeding up or slowing
-    // down.  "Speeding up" means moving toward larger |v|, which is true
-    // when the error (clamped_tgt - _v) pushes v farther from zero.
+    // At jMax == 0 (default): pure trapezoid — approach v directly under
+    // the per-tick dv_max step (identical to pre-018 behaviour).
+    //
+    // At jMax > 0: S-curve — slew _aLive toward the demanded acceleration
+    // under the jerk bound (jMax * dt_s), then integrate v += _aLive*dt_s.
+    //
+    // "Demanded accel" = +aMax when target is farther from zero than v
+    // (speeding up), -aDecel otherwise (slowing down).
     // ------------------------------------------------------------------
     float vTgtClamped = clamp(_vTgt, -_cfg.vBodyMax, +_cfg.vBodyMax);
-    bool  accelerating = (vTgtClamped - _v) * _v >= 0.0f || _v == 0.0f;
-    // Use aDecel when the clamped target is closer to zero than current v
-    // (i.e. we are decelerating), otherwise aMax.
-    float dv_max = (fabsf(vTgtClamped) >= fabsf(_v) ? _cfg.aMax : _cfg.aDecel) * dt_s;
-    _v = approach(_v, vTgtClamped, dv_max);
+
+    if (_cfg.jMax > 0.0f) {
+        // S-curve path: jerk-limit the acceleration, then integrate toward
+        // the target using approach() so the integration cannot overshoot.
+        //
+        // aTarget: +aMax when v must increase to reach vTgtClamped, else -aDecel.
+        float aTarget = (vTgtClamped >= _v) ? _cfg.aMax : -_cfg.aDecel;
+        float jerkStep = _cfg.jMax * dt_s;
+        _aLive = approach(_aLive, aTarget, jerkStep);
+        // Integrate, but cap the step so we never overshoot vTgtClamped.
+        // fabsf guards against negative _aLive pointing away from target.
+        _v = approach(_v, vTgtClamped, fabsf(_aLive * dt_s));
+    } else {
+        // Trapezoid path (jMax == 0): identical to pre-018 behaviour.
+        // Use aDecel when the clamped target is closer to zero than current v
+        // (i.e. we are decelerating), otherwise aMax.
+        float dv_max = (fabsf(vTgtClamped) >= fabsf(_v) ? _cfg.aMax : _cfg.aDecel) * dt_s;
+        _v = approach(_v, vTgtClamped, dv_max);
+    }
 
     // ------------------------------------------------------------------
-    // Yaw channel — symmetric trapezoid (single acc/decel limit).
+    // Yaw channel — symmetric trapezoid with optional jerk limit.
     //
     // yawRateMax and yawAccMax are stored in deg/s and deg/s²; convert
     // to rad/s and rad/s² at the use site.
+    //
+    // At yawJerkMax == 0 (default): pure trapezoid (identical to pre-018).
+    // At yawJerkMax > 0: S-curve on omega via _omegaALive.
     // ------------------------------------------------------------------
     float yawRateMax_rad = _cfg.yawRateMax * kDegToRad;
     float yawAccMax_rad  = _cfg.yawAccMax  * kDegToRad;
 
     float omegaTgtClamped = clamp(_omegaTgt, -yawRateMax_rad, +yawRateMax_rad);
-    float domega_max      = yawAccMax_rad * dt_s;
-    _omega = approach(_omega, omegaTgtClamped, domega_max);
+
+    if (_cfg.yawJerkMax > 0.0f) {
+        // S-curve path for yaw.  Same approach-based integration as linear
+        // channel: prevents overshoot while preserving jerk-limited ramp.
+        float yawJerkMaxRad = _cfg.yawJerkMax * kDegToRad;
+        float omegaATarget  = (omegaTgtClamped >= _omega) ? +yawAccMax_rad : -yawAccMax_rad;
+        _omegaALive = approach(_omegaALive, omegaATarget, yawJerkMaxRad * dt_s);
+        _omega = approach(_omega, omegaTgtClamped, fabsf(_omegaALive * dt_s));
+    } else {
+        // Trapezoid path (yawJerkMax == 0): identical to pre-018 behaviour.
+        float domega_max = yawAccMax_rad * dt_s;
+        _omega = approach(_omega, omegaTgtClamped, domega_max);
+    }
 
     // ------------------------------------------------------------------
     // Per-tick ordering invariant:
@@ -97,10 +128,12 @@ bool BodyVelocityController::advance(float dt_s)
 
 void BodyVelocityController::reset()
 {
-    _v      = 0.0f;
-    _omega  = 0.0f;
-    _vTgt   = 0.0f;
-    _omegaTgt = 0.0f;
+    _v         = 0.0f;
+    _omega     = 0.0f;
+    _vTgt      = 0.0f;
+    _omegaTgt  = 0.0f;
+    _aLive     = 0.0f;
+    _omegaALive = 0.0f;
 }
 
 void BodyVelocityController::seedCurrent(float v_mms, float omega_rads)
