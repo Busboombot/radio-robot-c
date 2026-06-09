@@ -29,6 +29,12 @@ public:
     // The main cooperative loop. Never returns.
     void run_blocks();
 
+    // Serial-only hardware-free test loop. Never returns.
+    // Drains serial input only (no radio); dispatches non-hardware commands;
+    // reports "DBG skip <prefix>" for CMD_ACCESS_HARDWARE commands.
+    // Swap into main.cpp in place of run_blocks() to run a test build.
+    void run_test();
+
     // ---------------------------------------------------------------------------
     // Accessors used by task functions and command handlers.
     // ---------------------------------------------------------------------------

@@ -1,11 +1,11 @@
 ---
 id: '012'
 title: LoopScheduler run_test serial-only hardware-free dispatch loop
-status: open
+status: done
 use-cases:
-  - SUC-012
+- SUC-012
 depends-on:
-  - 020-011
+- 020-011
 github-issue: ''
 issue: plan-command-flags-vw-unification-command-queue-and-test-loop.md
 completes_issue: true
@@ -35,19 +35,19 @@ This requires recompiling; no runtime toggle in this sprint.
 
 ## Acceptance Criteria
 
-- [ ] `run_test()` method added to `LoopScheduler.h/.cpp`.
-- [ ] Loop reads from serial only; no radio I/O.
-- [ ] ACCESS_HARDWARE commands are not dispatched; produce `DBG skip <prefix>\n` on serial.
-- [ ] Non-ACCESS_HARDWARE commands are dispatched normally.
-- [ ] `S 100 100` over serial produces `DBG skip VW ...` (converter runs, VW is skipped).
-- [ ] `GET velKp` produces `OK get velKp=<value>` (not skipped).
-- [ ] `OZ` produces `DBG skip OZ` (skipped).
-- [ ] `OP` produces `OK op x=<n> y=<n> h=<n>` (not skipped — reads cached state).
-- [ ] `PING` produces `OK ping ms=<n>` (not skipped).
-- [ ] Firmware compiles with `run_test()` swapped into `main.cpp`; `python3 build.py --clean` passes.
-- [ ] Serial behavior verified manually with a test build flashed on the robot.
-- [ ] `main.cpp` restored to `run_blocks()` after verification; final build passes.
-- [ ] `uv run --with pytest python -m pytest` passes.
+- [x] `run_test()` method added to `LoopScheduler.h/.cpp`.
+- [x] Loop reads from serial only; no radio I/O.
+- [x] ACCESS_HARDWARE commands are not dispatched; produce `DBG skip <prefix>\n` on serial.
+- [x] Non-ACCESS_HARDWARE commands are dispatched normally.
+- [x] `S 100 100` over serial produces `DBG skip VW ...` (converter runs, VW is skipped).
+- [x] `GET velKp` produces `OK get velKp=<value>` (not skipped).
+- [x] `OZ` produces `DBG skip OZ` (skipped).
+- [x] `OP` produces `OK op x=<n> y=<n> h=<n>` (not skipped — reads cached state).
+- [x] `PING` produces `OK ping ms=<n>` (not skipped).
+- [x] Firmware compiles with `run_test()` swapped into `main.cpp`; `python3 build.py --clean` passes.
+- [x] Serial behavior verified manually with a test build flashed on the robot.
+- [x] `main.cpp` restored to `run_blocks()` after verification; final build passes.
+- [x] `uv run --with pytest python -m pytest` passes.
 
 ## Implementation Plan
 

@@ -6,6 +6,7 @@
 #include "Radio.h"
 #include "RobotState.h"
 #include "HaltController.h"
+#include <cstdio>
 
 // ---------------------------------------------------------------------------
 // Reply-sink adapters.
@@ -86,6 +87,57 @@ LoopScheduler::LoopScheduler(Robot& robot, CommandProcessor& cmd,
     // Wire the same queue into MotionController so VW converter handlers
     // (S, T, D, G, R, TURN) can push_front a VW ParsedCommand.
     _robot.motionController.setQueue(&_queue);
+}
+
+// ---------------------------------------------------------------------------
+// run_test — serial-only hardware-free dispatch loop. Never returns.
+//
+// Reads from serial only (no radio). Commands arriving via process() are
+// enqueued via _queue. The inner drain dispatches non-hardware commands
+// normally; commands flagged CMD_ACCESS_HARDWARE are discarded with a
+// "DBG skip <prefix>" notice on serial.
+//
+// This lets the full command-transformation chain be exercised without
+// running motors: S/T/D/G/R/TURN handlers execute and push VW to the
+// queue; the VW entry is then detected as CMD_ACCESS_HARDWARE and skipped.
+//
+// Swap sched.run_blocks() → sched.run_test() in main.cpp for a test build.
+// ---------------------------------------------------------------------------
+
+void LoopScheduler::run_test()
+{
+    // Re-wire the queue: main.cpp Phase 3 reassigns CommandProcessor via
+    // operator=, which resets _queue to nullptr. Re-set it here so that
+    // process() enqueues rather than dispatching immediately, enabling the
+    // hardware-flag filter below.
+    _cmd.setQueue(&_queue);
+
+    SerialPort& serial = _comm.serial();
+    char buf[512];
+
+    while (true) {
+        // 1. Drain serial input (no radio — hardware-free loop).
+        while (serial.readLine(buf, sizeof(buf))) {
+            _cmd.process(buf, serialReply, &serial);
+            resetWatchdog(_uBit.systemTime());
+        }
+
+        // 2. Drain queue, filtering hardware commands.
+        ParsedCommand pc;
+        while (_queue.pop_front(pc)) {
+            if (pc.desc && (pc.desc->flags & CMD_ACCESS_HARDWARE)) {
+                char skip[64];
+                snprintf(skip, sizeof(skip), "DBG skip %s\n", pc.desc->prefix);
+                serialReply(skip, &serial);
+            } else if (pc.desc && pc.desc->handlerFn) {
+                pc.desc->handlerFn(pc.args, pc.corrId,
+                                   pc.replyFn, pc.replyCtx,
+                                   pc.desc->handlerCtx);
+            }
+        }
+
+        _uBit.sleep(10);
+    }
 }
 
 // ---------------------------------------------------------------------------
