@@ -456,6 +456,32 @@ void MotionController::cancel(uint32_t now_ms, ReplyFn fn, void* ctx)
     (void)ctx;
 }
 
+void MotionController::softStop(uint32_t now_ms)
+{
+    if (_activeCmd.active()) {
+        // Active MotionCommand: arm its SOFT ramp-down.
+        // tick() will advance BVC toward (0,0) and emit EVT done when converged.
+        _activeCmd.softStop(now_ms);
+    } else {
+        // No active MotionCommand (STREAMING or IDLE mode): just set BVC target
+        // to (0,0) and let the profiler ramp down.  No EVT done in this case.
+        _bvc.setTarget(0.0f, 0.0f);
+    }
+}
+
+void MotionController::beginRawVelocity(float v_mms, float omega_rads)
+{
+    // Seed the profiler's current state to the target — no ramp from zero.
+    // Then set the target so advance() holds at this speed immediately.
+    _bvc.seedCurrent(v_mms, omega_rads);
+    _bvc.setTarget(v_mms, omega_rads);
+
+    // _VW is fire-and-forget: no MotionCommand, no stop conditions.
+    // The system watchdog in LoopScheduler owns keepalive enforcement.
+    // STREAMING mode: the BVC-tick path in driveAdvance will advance the profiler.
+    _mode = DriveMode::STREAMING;
+}
+
 // ---------------------------------------------------------------------------
 // driveAdvance — cooperative-loop task entry point (014-005).
 //
@@ -1099,6 +1125,44 @@ static void handleVW(const ArgList& args, const char* corrId,
     CommandProcessor::replyOK(rbuf, sizeof(rbuf), "vw", body, corrId, replyFn, replyCtx);
 }
 
+// ── _VW ──────────────────────────────────────────────────────────────────────
+// Raw velocity command: seeds BVC current state immediately (no ramp).
+// Fire-and-forget — no MotionCommand, system watchdog handles keepalive.
+
+static ParseResult parse_VW(const char* const* tokens, int ntokens,
+                             const KVPair* /*kvs*/, int /*nkv*/)
+{
+    ParseResult res;
+    if (ntokens < 2) {
+        res.ok = false; res.err.code = "badarg"; res.err.detail = nullptr; return res;
+    }
+    int v     = atoi(tokens[0]);
+    int omega = atoi(tokens[1]);
+    if (v < -1000 || v > 1000) {
+        res.ok = false; res.err.code = "range"; res.err.detail = "v"; return res;
+    }
+    if (omega < -3142 || omega > 3142) {
+        res.ok = false; res.err.code = "range"; res.err.detail = "omega"; return res;
+    }
+    res.ok = true;
+    res.args.count = 2;
+    setIntArg(res.args.args[0], v);
+    setIntArg(res.args.args[1], omega);
+    return res;
+}
+
+static void handle_VW(const ArgList& args, const char* corrId,
+                      ReplyFn replyFn, void* replyCtx, void* handlerCtx)
+{
+    MotionCtx* ctx = static_cast<MotionCtx*>(handlerCtx);
+    int v     = args.args[0].ival;
+    int omega = args.args[1].ival;
+    float omega_rads = (float)omega / 1000.0f;  // mrad/s → rad/s
+    ctx->mc->beginRawVelocity((float)v, omega_rads);
+    char rbuf[64];
+    CommandProcessor::replyOK(rbuf, sizeof(rbuf), "_VW", nullptr, corrId, replyFn, replyCtx);
+}
+
 // ── X and STOP ───────────────────────────────────────────────────────────────
 
 static ParseResult parseNoArgs(const char* const* /*tokens*/, int /*ntokens*/,
@@ -1110,12 +1174,45 @@ static ParseResult parseNoArgs(const char* const* /*tokens*/, int /*ntokens*/,
     return res;
 }
 
-static void handleX(const ArgList& /*args*/, const char* corrId,
+// parseX — optional "soft" positional token; stored as STR arg if present.
+static ParseResult parseX(const char* const* tokens, int ntokens,
+                           const KVPair* /*kvs*/, int /*nkv*/)
+{
+    ParseResult res;
+    res.ok = true;
+    if (ntokens >= 1 && strcmp(tokens[0], "soft") == 0) {
+        // Pack "soft" as STR arg[0].
+        res.args.count = 1;
+        res.args.args[0].type = ArgType::STR;
+        res.args.args[0].ival = 0;
+        res.args.args[0].fval = 0.0f;
+        res.args.args[0].sval[0] = 's';
+        res.args.args[0].sval[1] = 'o';
+        res.args.args[0].sval[2] = 'f';
+        res.args.args[0].sval[3] = 't';
+        res.args.args[0].sval[4] = '\0';
+    } else {
+        res.args.count = 0;
+    }
+    return res;
+}
+
+static void handleX(const ArgList& args, const char* corrId,
                     ReplyFn replyFn, void* replyCtx, void* handlerCtx)
 {
     MotionCtx* ctx = static_cast<MotionCtx*>(handlerCtx);
     uint32_t now = ctx->robot->systemTime();
-    ctx->mc->cancel(now, replyFn, replyCtx);
+
+    // Check for "soft" positional arg — soft stop ramps BVC to zero.
+    bool isSoft = (args.count >= 1 &&
+                   args.args[0].type == ArgType::STR &&
+                   strcmp(args.args[0].sval, "soft") == 0);
+
+    if (isSoft) {
+        ctx->mc->softStop(now);
+    } else {
+        ctx->mc->cancel(now, replyFn, replyCtx);
+    }
     char rbuf[64];
     CommandProcessor::replyOK(rbuf, sizeof(rbuf), "x", nullptr, corrId, replyFn, replyCtx);
 }
@@ -1141,7 +1238,8 @@ std::vector<CommandDescriptor> MotionController::getCommands() const {
         makeCmd("R",    parseR,      handleR,    ctx, "badarg"), // rotate in place (deg)
         makeCmd("TURN", parseTURN,   handleTURN, ctx, "badarg"), // arc turn (radius, deg)
         makeCmd("VW",   parseVW,     handleVW,   ctx, "badarg"), // velocity + angular vel (unicycle)
-        makeCmd("X",    parseNoArgs, handleX,    ctx, "badarg"), // stop immediately
+        makeCmd("_VW",  parse_VW,    handle_VW,  ctx, "badarg"), // raw velocity (no ramp): seed+set BVC immediately
+        makeCmd("X",    parseX,      handleX,    ctx, "badarg"), // stop immediately (or "X soft" for ramp)
         makeCmd("STOP", parseNoArgs, handleSTOP, ctx, "badarg"), // stop with deceleration
     };
 }

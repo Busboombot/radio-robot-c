@@ -176,6 +176,18 @@ void MotionCommand::cancel(StopStyle s)
     (void)s;  // style argument reserved for future use
 }
 
+void MotionCommand::softStop(uint32_t now_ms)
+{
+    // No-op if not active or already ramping down.
+    if (!_active || _stopping) return;
+
+    // Arm SOFT ramp-down: BVC target → (0,0); tick() will emit EVT done
+    // once the BVC converges or the 3 s deadline passes.
+    _stopping       = true;
+    _softDeadlineMs = now_ms + kSoftDeadlineMs;
+    if (_bvc) _bvc->setTarget(0.0f, 0.0f);
+}
+
 // ---------------------------------------------------------------------------
 // Private helpers
 // ---------------------------------------------------------------------------

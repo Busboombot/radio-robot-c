@@ -102,6 +102,18 @@ public:
     // Used by the X verb and STOP handler when a VW command is active.
     void cancel(uint32_t now_ms, ReplyFn fn, void* ctx);
 
+    // Soft-stop: ramp BVC target to (0,0) under aMax.
+    // If a MotionCommand is active, arms its SOFT ramp-down path so
+    // EVT done is emitted when speed reaches zero.
+    // If no MotionCommand is active (STREAMING mode), sets BVC target to (0,0)
+    // and lets the profiler ramp — no EVT done in that case.
+    void softStop(uint32_t now_ms);
+
+    // Begin a raw velocity command: seeds BVC current state AND sets target
+    // immediately (no trapezoid ramp-up).  Used by the _VW verb.
+    // The system watchdog owns keepalive enforcement; no MotionCommand created.
+    void beginRawVelocity(float v_mms, float omega_rads);
+
     // setCtx — bind the Robot* for Commandable handlers.
     // Called by Robot's constructor after motionController is fully constructed.
     void setCtx(struct Robot* r) { _ctx.mc = this; _ctx.robot = r; }

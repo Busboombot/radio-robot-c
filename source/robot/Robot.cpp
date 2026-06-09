@@ -872,6 +872,36 @@ static ParseResult parseSet(const char* const* /*tokens*/, int /*ntokens*/,
     return r;
 }
 
+// ---------------------------------------------------------------------------
+// + — keepalive command.
+//   prefix "+"; parseFn nullptr (no args).
+//   Resets the system watchdog timestamp.
+//   Reply: OK keepalive
+// ---------------------------------------------------------------------------
+
+static ParseResult parseKeepalive(const char* const* /*tokens*/, int /*ntokens*/,
+                                   const KVPair* /*kvs*/, int /*nkv*/)
+{
+    ParseResult r; r.ok = true; r.args.count = 0; return r;
+}
+
+static void handleKeepalive(const ArgList& /*args*/, const char* corrId,
+                              ReplyFn replyFn, void* replyCtx, void* handlerCtx)
+{
+#ifndef HOST_BUILD
+    LoopScheduler* sched = ctxFrom(handlerCtx).sched;
+    Robot*         robot = ctxFrom(handlerCtx).robot;
+    if (sched != nullptr) {
+        sched->resetWatchdog(robot->systemTime());
+    }
+#else
+    (void)handlerCtx;
+#endif
+    char rbuf[64];
+    CommandProcessor::replyOK(rbuf, sizeof(rbuf), "keepalive", nullptr,
+                               corrId, replyFn, replyCtx);
+}
+
 }  // anonymous namespace
 
 // ---------------------------------------------------------------------------
@@ -904,19 +934,20 @@ std::vector<CommandDescriptor> Robot::buildCommandTable(
 
     // ---- System commands ----
     // GET VEL before GET so the longer prefix wins the linear scan.
-    cmds.push_back(makeCmd("HELLO",   parseHello,  handleHello,  sysCtxPtr, "badarg")); // identify firmware + version
-    cmds.push_back(makeCmd("PING",    parsePing,   handlePing,   sysCtxPtr, "badarg")); // liveness check
-    cmds.push_back(makeCmd("ECHO",    parseEcho,   handleEcho,   sysCtxPtr, "badarg")); // echo tokens back
-    cmds.push_back(makeCmd("ID",      parseId,     handleId,     sysCtxPtr, "badarg")); // report robot identity string
-    cmds.push_back(makeCmd("VER",     parseVer,    handleVer,    sysCtxPtr, "badarg")); // report firmware version
-    cmds.push_back(makeCmd("HELP",    parseHelp,   handleHelp,   sysCtxPtr, "badarg")); // list available commands
-    cmds.push_back(makeCmd("SNAP",    parseSnap,   handleSnap,   sysCtxPtr, "badarg")); // emit one TLM frame on demand
-    cmds.push_back(makeCmd("ZERO",    parseZero,   handleZero,   sysCtxPtr, "badarg")); // zero encoders
-    cmds.push_back(makeCmd("STREAM",  parseStream, handleStream, sysCtxPtr, "badarg")); // start/stop periodic TLM stream
-    cmds.push_back(makeCmd("RF",      parseRf,     handleRf,     sysCtxPtr, "badarg")); // set radio channel
-    cmds.push_back(makeCmd("GET VEL", parseGetVel, handleGetVel, sysCtxPtr, "badarg")); // get velocity PID params
-    cmds.push_back(makeCmd("GET",     parseGet,    handleGet,    &_cfgCtx,  "badkey")); // get config value by key
-    cmds.push_back(makeCmd("SET",     parseSet,    handleSet,    &_cfgCtx,  "badkey")); // set config value by key
+    cmds.push_back(makeCmd("HELLO",     parseHello,     handleHello,     sysCtxPtr, "badarg")); // identify firmware + version
+    cmds.push_back(makeCmd("PING",     parsePing,      handlePing,      sysCtxPtr, "badarg")); // liveness check
+    cmds.push_back(makeCmd("ECHO",     parseEcho,      handleEcho,      sysCtxPtr, "badarg")); // echo tokens back
+    cmds.push_back(makeCmd("ID",       parseId,        handleId,        sysCtxPtr, "badarg")); // report robot identity string
+    cmds.push_back(makeCmd("VER",      parseVer,       handleVer,       sysCtxPtr, "badarg")); // report firmware version
+    cmds.push_back(makeCmd("HELP",     parseHelp,      handleHelp,      sysCtxPtr, "badarg")); // list available commands
+    cmds.push_back(makeCmd("SNAP",     parseSnap,      handleSnap,      sysCtxPtr, "badarg")); // emit one TLM frame on demand
+    cmds.push_back(makeCmd("ZERO",     parseZero,      handleZero,      sysCtxPtr, "badarg")); // zero encoders
+    cmds.push_back(makeCmd("STREAM",   parseStream,    handleStream,    sysCtxPtr, "badarg")); // start/stop periodic TLM stream
+    cmds.push_back(makeCmd("RF",       parseRf,        handleRf,        sysCtxPtr, "badarg")); // set radio channel
+    cmds.push_back(makeCmd("+",        parseKeepalive, handleKeepalive, sysCtxPtr, "badarg")); // keepalive: reset watchdog
+    cmds.push_back(makeCmd("GET VEL",  parseGetVel,    handleGetVel,    sysCtxPtr, "badarg")); // get velocity PID params
+    cmds.push_back(makeCmd("GET",      parseGet,       handleGet,       &_cfgCtx,  "badkey")); // get config value by key
+    cmds.push_back(makeCmd("SET",      parseSet,       handleSet,       &_cfgCtx,  "badkey")); // set config value by key
 
     return cmds;
 }

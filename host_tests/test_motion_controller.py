@@ -89,3 +89,94 @@ def test_vw_keepalive_timeout_stops_motor(sim):
     )
     pwm_l = float(sim._lib.sim_get_pwm_l(sim._h))
     assert pwm_l == 0.0, f"Expected motor stopped after safety_stop, pwm_l={pwm_l}"
+
+
+def test_raw_vw_command_no_ramp(sim):
+    """_VW immediately seeds BVC current state — no trapezoid ramp from zero.
+
+    After _VW 300 0, the BVC seeds current speed to 300 mm/s and sets target.
+    Because there is no ramp from zero, the motor target is applied from the
+    very first driveAdvance tick, so the encoders accumulate much faster than
+    they would with a VW 300 0 command starting from zero.
+
+    Compare: after 300 ms, _VW 300 0 should reach near-target speed, while
+    VW 300 0 would still be ramping.  We verify _VW drives encoders in 300 ms.
+    """
+    sim.send_command("SET sTimeout=30000")
+
+    r = sim.send_command("_VW 300 0")
+    assert "OK" in r.upper(), f"Expected OK from _VW command, got {repr(r)}"
+
+    # Tick for 300 ms.  Motor ramp-up and PID convergence take a few ticks;
+    # 300 ms at 300 mm/s yields ~90 mm per wheel at full speed.
+    # We expect at least 5 mm to confirm the seed took effect.
+    sim.tick_for(300)
+
+    enc_l = float(sim._lib.sim_get_enc_l(sim._h))
+    enc_r = float(sim._lib.sim_get_enc_r(sim._h))
+
+    assert enc_l >= 5.0 and enc_r >= 5.0, (
+        f"Expected encoder to grow after _VW 300 0 in 300 ms, "
+        f"got enc_l={enc_l:.3f}, enc_r={enc_r:.3f}"
+    )
+
+
+def test_plus_keepalive_replies_ok(sim):
+    """+ command replies OK keepalive and does not start motion."""
+    r = sim.send_command("+")
+    assert "OK" in r.upper(), f"Expected OK from + command, got {repr(r)}"
+    assert "keepalive" in r.lower(), f"Expected 'keepalive' in reply, got {repr(r)}"
+
+    # Encoders should not have moved.
+    enc_l = float(sim._lib.sim_get_enc_l(sim._h))
+    enc_r = float(sim._lib.sim_get_enc_r(sim._h))
+    assert enc_l == 0.0 and enc_r == 0.0, (
+        f"Expected no motion after +, got enc_l={enc_l}, enc_r={enc_r}"
+    )
+
+
+def test_x_soft_ramps_to_zero_and_emits_done(sim):
+    """X soft ramps BVC to zero and emits EVT done (via open-ended VW → soft stop).
+
+    Send VW to start open-ended motion, then X soft.  The BVC should ramp to
+    zero under aMax.  The MotionCommand SOFT ramp-down should fire EVT done.
+    """
+    sim.send_command("SET sTimeout=30000")
+    sim.send_command("VW 200 0")
+
+    # Let the robot accelerate for 500 ms.
+    sim.tick_for(500)
+
+    r = sim.send_command("X soft")
+    assert "OK" in r.upper(), f"Expected OK from X soft, got {repr(r)}"
+
+    # Tick up to 4 s for the ramp-down and EVT done to fire.
+    sim.tick_for(4000)
+
+    # Motor should have ramped to zero.
+    pwm_l = float(sim._lib.sim_get_pwm_l(sim._h))
+    pwm_r = float(sim._lib.sim_get_pwm_r(sim._h))
+    assert pwm_l == 0.0 and pwm_r == 0.0, (
+        f"Expected motors stopped after X soft, got pwm_l={pwm_l}, pwm_r={pwm_r}"
+    )
+
+    # EVT done should have been emitted.
+    evts = sim.get_async_evts()
+    assert "EVT done" in evts, (
+        f"Expected 'EVT done' after X soft ramp-down, got {repr(evts)}"
+    )
+
+
+def test_x_hard_stops_immediately(sim):
+    """Hard X (no suffix) still stops immediately — unchanged behavior."""
+    sim.send_command("SET sTimeout=30000")
+    sim.send_command("VW 200 0")
+    sim.tick_for(500)
+
+    r = sim.send_command("X")
+    assert "OK" in r.upper(), f"Expected OK from X, got {repr(r)}"
+
+    # After hard stop, PWM should go to 0 within one tick.
+    sim.tick_for(24)
+    pwm_l = float(sim._lib.sim_get_pwm_l(sim._h))
+    assert pwm_l == 0.0, f"Expected PWM 0 immediately after X, got pwm_l={pwm_l}"

@@ -149,6 +149,17 @@ public:
     void cancel(StopStyle s = StopStyle::HARD);
 
     /**
+     * softStop — arm SOFT ramp-down from outside (no stop condition needed).
+     *
+     * Sets BVC target to (0, 0) and enters the _stopping sub-phase so that
+     * tick() will emit EVT done when the BVC converges to zero.
+     * No-op if already stopping or not active.
+     *
+     * @param now_ms  Current system time (for soft deadline).
+     */
+    void softStop(uint32_t now_ms);
+
+    /**
      * active — true while the command is running or during SOFT ramp-down.
      *
      * False when in IDLE state (not yet started, or fully terminated).

@@ -1,13 +1,13 @@
 ---
 id: '006'
 title: _VW raw command, + keepalive, X soft variant
-status: open
+status: done
 use-cases:
-  - SUC-007
-  - SUC-008
-  - SUC-006
+- SUC-007
+- SUC-008
+- SUC-006
 depends-on:
-  - 020-005
+- 020-005
 github-issue: ''
 issue: issue-motion-system-overhaul.md
 completes_issue: false
@@ -32,16 +32,16 @@ immediate-stop behavior (no change).
 
 ## Acceptance Criteria
 
-- [ ] `_VW v omega` registered in `MotionController::getCommands()`; handler calls `bvc.seedCurrent(v, omega)` then `bvc.setTarget(v, omega)`; replies `OK _VW`.
-- [ ] After `_VW 300 0`, `bvc.currentV()` returns 300.0 (or close) on the very next `driveAdvance` tick — no ramp from zero.
-- [ ] `+` registered in `MotionController::getCommands()` (or in system commands in Robot); handler resets `sched._watchdogMs`; replies `OK keepalive`.
-- [ ] `X soft` handled: when the token following `X` is `soft`, calls new `MotionController::softStop()` method; hard `X` (no suffix) unchanged.
-- [ ] `MotionController::softStop()` sets `_bvc.setTarget(0, 0)` (ramp to zero); MotionCommand continues until BVC reaches target; then emits `EVT done`.
+- [x] `_VW v omega` registered in `MotionController::getCommands()`; handler calls `bvc.seedCurrent(v, omega)` then `bvc.setTarget(v, omega)`; replies `OK _VW`.
+- [x] After `_VW 300 0`, `bvc.currentV()` returns 300.0 (or close) on the very next `driveAdvance` tick — no ramp from zero.
+- [x] `+` registered in `MotionController::getCommands()` (or in system commands in Robot); handler resets `sched._watchdogMs`; replies `OK keepalive`.
+- [x] `X soft` handled: when the token following `X` is `soft`, calls new `MotionController::softStop()` method; hard `X` (no suffix) unchanged.
+- [x] `MotionController::softStop()` sets `_bvc.setTarget(0, 0)` (ramp to zero); MotionCommand continues until BVC reaches target; then emits `EVT done`.
 - [ ] Bench: `_VW 300 0` → motor immediately at ~300 mm/s with no visible ramp.
 - [ ] Bench: `VW v=300 w=0; X soft` → motor ramps to zero; `EVT done` received.
 - [ ] Bench: `+` while robot idle → no motion change; no error.
-- [ ] `python3 build.py --clean` passes.
-- [ ] `uv run --with pytest python -m pytest` passes.
+- [x] `python3 build.py --clean` passes.
+- [x] `uv run --with pytest python -m pytest` passes.
 
 ## Implementation Plan
 
