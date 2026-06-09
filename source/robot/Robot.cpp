@@ -11,7 +11,7 @@
 //
 // Declaration order (from Robot.h):
 //   config, state, motorL, motorR, otos, line, colorSensor, gripper, portio,
-//   motorController, odometry, motionController
+//   motorController, odometry, motionController, portController
 //
 // Two post-construction binds:
 //   motionController.setHardwareState(&state.inputs)  — MotionController reads pose
@@ -27,7 +27,8 @@ Robot::Robot(Motor& mL, Motor& mR, OtosSensor& o, LineSensor& l,
       otos(o), line(l), colorSensor(c), gripper(g), portio(p),
       motorController(motorL, motorR, config),
       odometry(),
-      motionController(motorController, odometry, config)
+      motionController(motorController, odometry, config),
+      portController(portio)
 {
     motionController.setHardwareState(&state.inputs);
     motorController.setCommandsRef(&state.commands);

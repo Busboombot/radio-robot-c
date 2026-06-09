@@ -9,6 +9,7 @@
 #include "MotorController.h"
 #include "Odometry.h"
 #include "MotionController.h"
+#include "PortController.h"
 #include "RobotState.h"
 #include "Protocol.h"
 
@@ -33,6 +34,7 @@
  *   4. motorController         — needs motorL, motorR, config refs
  *   5. odometry                — default ctor
  *   6. motionController        — needs motorController, odometry, config
+ *   7. portController          — needs portio ref
  */
 struct Robot {
     // ---- Owned value members (initialized first) ----
@@ -54,6 +56,7 @@ struct Robot {
     MotorController     motorController;   // (motorL, motorR, config)
     Odometry            odometry;          // default ctor
     MotionController    motionController;  // (motorController, odometry, config)
+    PortController      portController;    // (portio)
 
     // ---- Constructor ----
     Robot(Motor& mL, Motor& mR, OtosSensor& o, LineSensor& l,
