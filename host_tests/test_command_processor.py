@@ -93,3 +93,26 @@ def test_vw_then_vel(sim):
     # After 2 s of VW 200 0, both wheels should be moving forward.
     assert vl > 0, f"Expected positive left velocity after VW 200 0, got {vl}"
     assert vr > 0, f"Expected positive right velocity after VW 200 0, got {vr}"
+
+
+def test_multiple_commands_dispatch_correctly(sim):
+    """Multiple sequential commands each get a correct reply (queue transparency)."""
+    # Each sim.send_command() calls cmd.process() directly in sim_api (no queue
+    # wired in SimHandle), exercising the non-queue dispatch path.
+    r1 = sim.send_command("PING")
+    assert "OK" in r1.upper(), f"PING should return OK, got {repr(r1)}"
+
+    r2 = sim.send_command("SET vel.kP=1.5")
+    assert "OK" in r2.upper(), f"SET should return OK, got {repr(r2)}"
+
+    r3 = sim.send_command("GET vel.kP")
+    assert "CFG" in r3, f"GET should return CFG, got {repr(r3)}"
+    assert "vel.kP=1.5" in r3 or "vel.kP=1.500" in r3, (
+        f"Expected vel.kP=1.5 in GET reply, got {repr(r3)}"
+    )
+
+
+def test_corr_id_echoed_in_reply(sim):
+    """Correlation id '#123' is echoed in the reply."""
+    r = sim.send_command("PING #123")
+    assert "#123" in r, f"Expected #123 in PING reply, got {repr(r)}"

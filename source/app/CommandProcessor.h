@@ -2,6 +2,7 @@
 #include <stdint.h>
 #include "Protocol.h"
 #include "CommandTypes.h"
+#include "CommandQueue.h"
 
 /**
  * CommandProcessor — protocol v2 wire-protocol parser and dispatcher.
@@ -40,6 +41,15 @@ public:
     // Override the serial reply channel for ForceReply::SERIAL descriptors.
     // Optional — if unset, ForceReply::SERIAL uses the incoming replyFn/ctx.
     void setSerialReply(ReplyFn fn, void* ctx) { _serialFn = fn; _serialCtx = ctx; }
+
+    // Attach a CommandQueue. When non-null, process() enqueues parsed commands
+    // into the queue instead of dispatching them immediately.
+    void setQueue(CommandQueue* q) { _queue = q; }
+
+    // Dispatch one item from q. Returns false if q is empty.
+    // Calls the descriptor's handlerFn directly (not process()) to avoid
+    // re-enqueuing when _queue is still set.
+    bool dequeueOne(CommandQueue& q);
 
     // -------------------------------------------------------------------------
     // Static parse helpers — public so dependent tickets can call them
@@ -111,6 +121,7 @@ private:
     std::vector<CommandDescriptor> _cmds;
     ReplyFn                        _serialFn  = nullptr;
     void*                          _serialCtx = nullptr;
+    CommandQueue*                  _queue     = nullptr;
 
     void dispatchTable(char** tokens, int ntok, KVPair* kvs, int nkv,
                        const char* corrId, ReplyFn replyFn, void* ctx);

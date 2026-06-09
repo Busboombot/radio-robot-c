@@ -1,6 +1,7 @@
 #pragma once
 #include "MicroBit.h"
 #include "Protocol.h"
+#include "CommandQueue.h"
 
 // Forward declarations to avoid pulling in the full header graph.
 struct Robot;
@@ -57,4 +58,9 @@ private:
     // Fires EVT safety_stop + X if sTimeoutMs passes without any inbound command.
     // 0 = not yet armed (no command received yet this session).
     uint32_t _watchdogMs = 0;
+
+    // Command queue — owned by LoopScheduler, set on CommandProcessor at boot.
+    // Commands arriving via runCommsIn() are enqueued; the tick body drains one
+    // per iteration via cmd.dequeueOne(_queue), keeping behaviour transparent.
+    CommandQueue _queue;
 };

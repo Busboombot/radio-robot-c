@@ -1,11 +1,11 @@
 ---
 id: '010'
 title: CommandQueue ring buffer + CommandProcessor queue integration
-status: open
+status: done
 use-cases:
-  - SUC-013
+- SUC-013
 depends-on:
-  - 020-009
+- 020-009
 github-issue: ''
 issue: plan-command-flags-vw-unification-command-queue-and-test-loop.md
 completes_issue: false
@@ -30,18 +30,18 @@ current dispatch-immediate path.
 
 ## Acceptance Criteria
 
-- [ ] `source/app/CommandQueue.h` created: `ParsedCommand _buf[16]`; `int _head`, `_count`; `push_back`, `push_front`, `pop_front`, `empty()`, `size()`; all no-heap, no-STL.
-- [ ] `push_front` inserts at head (decrements `_head` modulo capacity); items dequeue in LIFO order for head, FIFO for back.
-- [ ] `push_back` returns false when full; `push_front` returns false when full.
-- [ ] `CommandProcessor` has `CommandQueue* _queue = nullptr` member; `setQueue(CommandQueue*)` setter.
-- [ ] When `_queue != nullptr`, `process()` parses the command and calls `_queue->push_back()` instead of dispatching.
-- [ ] `bool dequeueOne(CommandQueue& q)` added to CommandProcessor: dispatches one item from q; returns false if empty.
-- [ ] `LoopScheduler` owns `CommandQueue _queue`; calls `cmd.setQueue(&_queue)` at boot.
-- [ ] `LoopScheduler::run_blocks()` calls `cmd.dequeueOne(_queue)` in the tick body after processing inbound commands.
-- [ ] Behavior in `run_blocks()` mode is unchanged: commands arrive, are enqueued, and dequeued in the same tick — net effect is identical to immediate dispatch.
-- [ ] `push_front` / `pop_front` ordering verified: push_back A, B, C then push_front Z → pop order is Z, A, B, C.
-- [ ] `python3 build.py --clean` passes.
-- [ ] `uv run --with pytest python -m pytest` passes.
+- [x] `source/app/CommandQueue.h` created: `ParsedCommand _buf[16]`; `int _head`, `_count`; `push_back`, `push_front`, `pop_front`, `empty()`, `size()`; all no-heap, no-STL.
+- [x] `push_front` inserts at head (decrements `_head` modulo capacity); items dequeue in LIFO order for head, FIFO for back.
+- [x] `push_back` returns false when full; `push_front` returns false when full.
+- [x] `CommandProcessor` has `CommandQueue* _queue = nullptr` member; `setQueue(CommandQueue*)` setter.
+- [x] When `_queue != nullptr`, `process()` parses the command and calls `_queue->push_back()` instead of dispatching.
+- [x] `bool dequeueOne(CommandQueue& q)` added to CommandProcessor: dispatches one item from q; returns false if empty.
+- [x] `LoopScheduler` owns `CommandQueue _queue`; calls `cmd.setQueue(&_queue)` at boot.
+- [x] `LoopScheduler::run_blocks()` calls `cmd.dequeueOne(_queue)` in the tick body after processing inbound commands.
+- [x] Behavior in `run_blocks()` mode is unchanged: commands arrive, are enqueued, and dequeued in the same tick — net effect is identical to immediate dispatch.
+- [x] `push_front` / `pop_front` ordering verified: push_back A, B, C then push_front Z → pop order is Z, A, B, C.
+- [x] `python3 build.py --clean` passes.
+- [x] `uv run --with pytest python -m pytest` passes.
 
 ## Implementation Plan
 

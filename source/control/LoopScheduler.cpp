@@ -78,6 +78,10 @@ LoopScheduler::LoopScheduler(Robot& robot, CommandProcessor& cmd,
       _comm(comm),
       _uBit(uBit)
 {
+    // Wire the queue: commands arriving via process() are enqueued; the tick
+    // body drains one per iteration via dequeueOne(), keeping behaviour
+    // transparent in run_blocks() mode (enqueue + dequeue in same tick).
+    _cmd.setQueue(&_queue);
 }
 
 // ---------------------------------------------------------------------------
@@ -138,6 +142,12 @@ void LoopScheduler::run_blocks()
             runCommsIn(*this, now);
         }
 
+        // ===== QUEUE: dispatch one enqueued command per tick =================
+        // runCommsIn() enqueues commands via cmd.process() → _queue.push_back().
+        // dequeueOne() dispatches the front command, keeping behaviour identical
+        // to the former immediate-dispatch path (enqueue + dequeue in same tick).
+        _cmd.dequeueOne(_queue);
+
         // ===== SYSTEM WATCHDOG: fire safety_stop + X after sTimeoutMs of silence =====
         // _watchdogMs == 0 means no command has been received yet this session;
         // the watchdog stays disarmed until the first command arrives.
@@ -162,7 +172,11 @@ void LoopScheduler::run_blocks()
                     CommandProcessor::replyEvt(wdBuf, sizeof(wdBuf),
                                                "safety_stop", "",
                                                activeFn, activeCtx);
+                    // Bypass the queue for internal emergency stop: set queue to
+                    // null so process() dispatches X immediately, then restore.
+                    _cmd.setQueue(nullptr);
                     _cmd.process("X", activeFn, activeCtx);
+                    _cmd.setQueue(&_queue);
                 }
             }
         }
@@ -175,10 +189,16 @@ void LoopScheduler::run_blocks()
             if (activeFn != nullptr) {
                 HaltAction ha = _robot.haltController.evaluate(
                     _robot.state.inputs, now, activeFn, activeCtx);
+                // Bypass the queue for halt-triggered emergency stops: detach
+                // queue so process() dispatches immediately, then restore.
                 if (ha == HaltAction::HARD) {
+                    _cmd.setQueue(nullptr);
                     _cmd.process("X", activeFn, activeCtx);
+                    _cmd.setQueue(&_queue);
                 } else if (ha == HaltAction::SOFT) {
+                    _cmd.setQueue(nullptr);
                     _cmd.process("X soft", activeFn, activeCtx);
+                    _cmd.setQueue(&_queue);
                 }
             }
         }
