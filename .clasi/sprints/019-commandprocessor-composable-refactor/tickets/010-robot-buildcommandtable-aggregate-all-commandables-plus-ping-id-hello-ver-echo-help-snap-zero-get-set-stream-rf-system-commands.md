@@ -1,15 +1,16 @@
 ---
-id: "010"
-title: "Robot::buildCommandTable() — aggregate all Commandables plus PING, ID, HELLO, VER, ECHO, HELP, SNAP, ZERO, GET, SET, STREAM, RF system commands"
-status: open
+id: '010'
+title: "Robot::buildCommandTable() \u2014 aggregate all Commandables plus PING, ID,\
+  \ HELLO, VER, ECHO, HELP, SNAP, ZERO, GET, SET, STREAM, RF system commands"
+status: done
 use-cases:
 - SUC-001
 - SUC-003
 - SUC-005
 depends-on:
-- '009'
-github-issue: ""
-issue: ""
+- 009
+github-issue: ''
+issue: ''
 completes_issue: false
 ---
 
@@ -33,13 +34,13 @@ full table is ready to pass to the new `CommandProcessor` constructor. The cutov
 
 ## Acceptance Criteria
 
-- [ ] `Robot.h` declares `int buildCommandTable(CommandDescriptor* buf, int max, DebugCommandable* dbg)` (or `dbg` passed another way consistent with main.cpp wiring)
-- [ ] `Robot.cpp` implements `buildCommandTable()` filling `buf` with descriptors from all Commandables plus system commands
-- [ ] System command handlers (PING, ID, HELLO, VER, ECHO, HELP, SNAP, ZERO, STREAM, RF) produce wire output identical to the corresponding old switch cases; `handlerCtx = this` (i.e., `Robot*`)
-- [ ] GET and SET descriptors use `handleGet`/`handleSet` from `ConfigRegistry.h`; `CfgCtx` is a static value member on `Robot` or in `main.cpp`
-- [ ] Total descriptor count does not exceed 60 (stays well within static buffer); assert or static_assert in `buildCommandTable()`
-- [ ] `python3 build.py` passes with no errors
-- [ ] `buildCommandTable()` is callable from `main.cpp` (wiring is in place) even though the new constructor is not yet activated
+- [x] `Robot.h` declares `int buildCommandTable(CommandDescriptor* buf, int max, DebugCommandable* dbg)` (or `dbg` passed another way consistent with main.cpp wiring)
+- [x] `Robot.cpp` implements `buildCommandTable()` filling `buf` with descriptors from all Commandables plus system commands
+- [x] System command handlers (PING, ID, HELLO, VER, ECHO, HELP, SNAP, ZERO, STREAM, RF) produce wire output identical to the corresponding old switch cases; `handlerCtx = this` (i.e., `Robot*`)
+- [x] GET and SET descriptors use `handleGet`/`handleSet` from `ConfigRegistry.h`; `CfgCtx` is a static value member on `Robot` or in `main.cpp`
+- [x] Total descriptor count does not exceed 60 (stays well within static buffer); assert or static_assert in `buildCommandTable()`
+- [x] `python3 build.py` passes with no errors
+- [x] `buildCommandTable()` is callable from `main.cpp` (wiring is in place) even though the new constructor is not yet activated
 
 ## Implementation Plan
 

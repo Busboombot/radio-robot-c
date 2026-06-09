@@ -13,6 +13,22 @@
 #include "ServoController.h"
 #include "RobotState.h"
 #include "Protocol.h"
+#include "../types/CommandTypes.h"
+#include "../robot/ConfigRegistry.h"
+
+// Forward declarations — keeps the header-graph shallow.
+class DebugCommandable;
+class LoopScheduler;
+struct Robot;
+
+// ---------------------------------------------------------------------------
+// RobotSysCtx — context bundle for system command handlers (HELLO, PING, …).
+// handlerCtx for system CommandDescriptors is a RobotSysCtx*.
+// ---------------------------------------------------------------------------
+struct RobotSysCtx {
+    Robot*         robot;
+    LoopScheduler* sched;
+};
 
 /**
  * Robot — open struct that owns and wires all robot firmware subsystems.
@@ -96,9 +112,27 @@ struct Robot {
     // systemTime — robot system time in ms since boot.
     uint32_t systemTime() const;
 
+    // ---- Command-table building ----
+    // Fill buf[0..max-1] with all command descriptors:
+    //   Commandable members (motionController, odometry, portController,
+    //   servoController), optional DebugCommandable, then system commands
+    //   (HELLO, PING, ECHO, ID, VER, HELP, SNAP, ZERO, STREAM, RF,
+    //    GET, GET VEL, SET).
+    // Returns the total count written. Asserts count <= max.
+    // sched may be nullptr; RF will reply ERR noradio if it is.
+    int buildCommandTable(CommandDescriptor* buf, int max,
+                          DebugCommandable* dbg,
+                          LoopScheduler*    sched = nullptr) const;
+
     // ---- Gating state that pairs with the kept methods ----
     uint32_t _lastTlmMs     = 0;
     uint32_t _lastActiveMs  = 0;
     uint32_t _lastControlMs = 0;
     bool     _prevDriving   = false;
+
+private:
+    // Stable storage for command contexts; pointers into these are placed in
+    // CommandDescriptors, which must outlive the CommandProcessor.
+    mutable CfgCtx      _cfgCtx  = {};  // GET / SET
+    mutable RobotSysCtx _sysCtx  = {};  // HELLO, PING, ECHO, ID, VER, …, RF
 };

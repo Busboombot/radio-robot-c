@@ -14,6 +14,7 @@
 #include "Icons.h"
 #include "RadioChannel.h"
 #include "DebugCommandable.h"
+#include <cstdio>
 
 // ---------------------------------------------------------------------------
 // MicroBit uBit singleton — file-scope so CODAL peripherals are fully
@@ -212,6 +213,17 @@ int main() {
     static DbgCtx dbgCtx = { &sched, &bus, &robot };
     static DebugCommandable dbgCmd(dbgCtx);
     cmd.setSerialReply(serialReply, &comm.serial());
+
+    // T010 dry run — build the full command table and log the descriptor count.
+    // Confirms the table is well-formed before T011 cuts over to the new
+    // constructor.  The static buffer must be ≥ the descriptor count (~42).
+    {
+        static CommandDescriptor cmdTable[60];
+        int n = robot.buildCommandTable(cmdTable, 60, &dbgCmd, &sched);
+        char countMsg[48];
+        snprintf(countMsg, sizeof(countMsg), "DBG cmdtable n=%d", n);
+        serialReply(countMsg, &comm.serial());
+    }
 
     // Wire the I2CBus and EVT sink into MotorController so enc_wedged events
     // are emitted with bus stats and go to the active serial/radio channel.
