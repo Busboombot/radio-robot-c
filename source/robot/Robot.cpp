@@ -34,6 +34,7 @@ Robot::Robot(Motor& mL, Motor& mR, OtosSensor& o, LineSensor& l,
     motionController.setHardwareState(&state.inputs);
     motorController.setCommandsRef(&state.commands);
     motionController.setCtx(this);
+    odometry.setCtx(&otos);
 }
 
 // ---------------------------------------------------------------------------

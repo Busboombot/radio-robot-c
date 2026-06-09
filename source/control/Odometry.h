@@ -1,6 +1,24 @@
 #pragma once
 #include <stdint.h>
 #include "RobotState.h"
+#include "CommandTypes.h"
+#include "OtosSensor.h"
+
+// Forward-declare Odometry so OdomCtx can hold a pointer to it.
+// The full class definition follows immediately below.
+class Odometry;
+
+/**
+ * OdomCtx — context bundle for Odometry Commandable handlers.
+ *
+ * Both pointers are populated by Odometry::setCtx() before any command
+ * can arrive.  All seven OTOS command handlers (OI, OZ, OR, OP, OV, OL, OA)
+ * reach the OtosSensor through this struct.
+ */
+struct OdomCtx {
+    Odometry*   odo;
+    OtosSensor* otos;
+};
 
 /**
  * Odometry — differential-drive dead-reckoning pose tracker.
@@ -26,9 +44,16 @@
  * Sprint 010, Ticket 006: adds correct() for OTOS complementary fusion.
  * Sprint 014, Ticket 004: pose moved to HardwareState; struct-based API.
  */
-class Odometry {
+class Odometry : public Commandable {
 public:
     Odometry();
+
+    // Commandable interface — returns descriptors for all 7 OTOS commands.
+    virtual int getCommands(CommandDescriptor* buf, int max) const override;
+
+    // Bind the OtosSensor so command handlers can reach it.
+    // Called by Robot after construction.
+    void setCtx(OtosSensor* otos) { _odomCtx.odo = this; _odomCtx.otos = otos; }
 
     // ---------------------------------------------------------------------------
     // Primary API — struct-based (014-004)
@@ -98,6 +123,8 @@ private:
     float    _prevEncR;   // last encoder snapshot, mm
 
     uint32_t _otosRejected; // count of OTOS samples rejected by outlier gate
+
+    mutable OdomCtx _odomCtx; // context bundle for Commandable handlers
 
     // Wrap heading to (-π, π] using atan2f identity.
     static float wrapPi(float theta);

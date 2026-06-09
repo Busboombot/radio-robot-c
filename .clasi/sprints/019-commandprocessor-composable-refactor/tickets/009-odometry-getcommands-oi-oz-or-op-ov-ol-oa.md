@@ -1,13 +1,13 @@
 ---
-id: "009"
-title: "Odometry::getCommands() — OI, OZ, OR, OP, OV, OL, OA"
-status: open
+id: 009
+title: "Odometry::getCommands() \u2014 OI, OZ, OR, OP, OV, OL, OA"
+status: done
 use-cases:
 - SUC-001
 depends-on:
-- '008'
-github-issue: ""
-issue: ""
+- 008
+github-issue: ''
+issue: ''
 completes_issue: false
 ---
 
@@ -25,12 +25,12 @@ The old switch still handles all OI/OZ/OR/OP/OV/OL/OA commands. No behavior chan
 
 ## Acceptance Criteria
 
-- [ ] `source/control/Odometry.h` declares `class Odometry : public Commandable`; includes `CommandTypes.h`; adds `virtual int getCommands(CommandDescriptor* buf, int max) const override`; defines `OdomCtx { Odometry* odo; OtosSensor* otos; }`
-- [ ] `source/control/Odometry.cpp` implements `getCommands()` returning descriptors for: `"OI"`, `"OZ"`, `"OR"`, `"OP"`, `"OV"`, `"OL"`, `"OA"`
-- [ ] All seven handlers produce wire output identical to the corresponding old switch cases
-- [ ] Context is `OdomCtx*` — stored as a value member in `Odometry`, populated by `Robot` at wiring time (or passed via `Robot*` if simpler)
-- [ ] `python3 build.py` passes with no errors
-- [ ] OTOS commands continue to work correctly: `OZ` (zero), `OL <val>` (set linear scale), `OA <val>` (set angular scale) via `uv run rogo`
+- [x] `source/control/Odometry.h` declares `class Odometry : public Commandable`; includes `CommandTypes.h`; adds `virtual int getCommands(CommandDescriptor* buf, int max) const override`; defines `OdomCtx { Odometry* odo; OtosSensor* otos; }`
+- [x] `source/control/Odometry.cpp` implements `getCommands()` returning descriptors for: `"OI"`, `"OZ"`, `"OR"`, `"OP"`, `"OV"`, `"OL"`, `"OA"`
+- [x] All seven handlers produce wire output identical to the corresponding old switch cases
+- [x] Context is `OdomCtx*` — stored as a value member in `Odometry`, populated by `Robot` at wiring time (or passed via `Robot*` if simpler)
+- [x] `python3 build.py` passes with no errors
+- [x] OTOS commands continue to work correctly: `OZ` (zero), `OL <val>` (set linear scale), `OA <val>` (set angular scale) via `uv run rogo`
 
 ## Implementation Plan
 
