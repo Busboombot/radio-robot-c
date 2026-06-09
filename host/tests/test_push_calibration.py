@@ -165,7 +165,7 @@ class TestPushCalibrationValues:
     """The values sent match the tovez.json config."""
 
     def test_set_ml_value(self):
-        """SET ml encodes mm_per_wheel_deg_left from tovez (0.487)."""
+        """SET ml encodes mm_per_wheel_deg_left from tovez (0.71659)."""
         conn = _make_conn()
         _push_calibration(conn)
         cmds = _sent_cmds(conn)
@@ -173,10 +173,10 @@ class TestPushCalibrationValues:
         assert ml_cmds, "No SET ml= command found"
         val_str = ml_cmds[0].split("=", 1)[1]
         val = float(val_str)
-        assert abs(val - 0.487) < 1e-4, f"Expected ml≈0.487, got {val}"
+        assert abs(val - 0.71659) < 1e-4, f"Expected ml≈0.71659, got {val}"
 
     def test_set_mr_value(self):
-        """SET mr encodes mm_per_wheel_deg_right from tovez (0.481)."""
+        """SET mr encodes mm_per_wheel_deg_right from tovez (0.70777)."""
         conn = _make_conn()
         _push_calibration(conn)
         cmds = _sent_cmds(conn)
@@ -184,7 +184,7 @@ class TestPushCalibrationValues:
         assert mr_cmds, "No SET mr= command found"
         val_str = mr_cmds[0].split("=", 1)[1]
         val = float(val_str)
-        assert abs(val - 0.481) < 1e-4, f"Expected mr≈0.481, got {val}"
+        assert abs(val - 0.70777) < 1e-4, f"Expected mr≈0.70777, got {val}"
 
     def test_set_tw_value(self):
         """SET tw encodes trackwidth from tovez (126 mm)."""
@@ -197,14 +197,14 @@ class TestPushCalibrationValues:
         assert val == 126, f"Expected tw=126, got {val}"
 
     def test_ol_value(self):
-        """OL value matches tovez otos_linear_scale=1.05 → int8=50."""
+        """OL value matches tovez otos_linear_scale=1.127 → int8=127."""
         conn = _make_conn()
         _push_calibration(conn)
         cmds = _sent_cmds(conn)
         ol_cmds = [c for c in cmds if c.startswith("OL ")]
         assert ol_cmds, "No OL command found"
         val = int(ol_cmds[0].split()[1])
-        assert val == 50, f"Expected OL 50, got {val}"
+        assert val == 127, f"Expected OL 127, got {val}"
 
     def test_oa_value(self):
         """OA value matches tovez otos_angular_scale=0.987 → int8=-13."""

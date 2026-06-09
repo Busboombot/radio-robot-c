@@ -103,13 +103,13 @@ else if (action == HaltAction::SOFT)
     cmd.process("X soft", activeFn, activeCtx);
 ```
 
-`HaltController` never calls into `DriveController` directly. The `EVT stop id=<n>` is emitted by `HaltController` before the injected command is processed. When a stop fires, all registered stops are cleared.
+`HaltController` never calls into `MotionController` directly. The `EVT halt id=<n>` is emitted by `HaltController` before the injected command is processed. When a halt condition fires, all registered conditions are cleared.
 
 **Per-condition stop style:**
 
 ```
-STOP TIME 1000         → hard stop (default)
-STOP DIST 500 SOFT     → soft stop (ramp to zero via X soft)
+HALT TIME 1000         → hard stop (default)
+HALT DIST 500 SOFT     → soft stop (ramp to zero via X soft)
 ```
 
 ### ZERO T and ZERO D — independent baseline resets
@@ -123,23 +123,26 @@ ZERO D          → resets distance odometer baseline to current encoder average
 
 These are independent of each other and of any motion command. Distinct from the system watchdog — `ZERO T` is a user-controlled elapsed-time origin for stop conditions, not a keepalive.
 
-### STOP command family
+### HALT command family
+
+> **Note:** The bare `STOP` command (decelerated motor stop) is kept unchanged.
+> `HALT` is the new prefix for user-registered stop conditions.
 
 ```
-STOP TIME <ms>                      → OK STOP id=<n>
-STOP DIST <mm>                      → OK STOP id=<n>
-STOP POS <x_mm> <y_mm> <radius_mm>  → OK STOP id=<n>
-STOP COLOR <h> <s> <v> <dist>       → OK STOP id=<n>
-STOP LINE <ch|ANY> GE|LE <thresh>   → OK STOP id=<n>
-STOP CLEAR                          → OK STOP cleared=<count>
-STOP CLEAR <id>                     → OK STOP cleared id=<n>
-STOP INFO <id>                      → OK STOP id=<n> str="<original command>"
-STOP LIST                           → OK STOP count=<n> [id=<n> str="..." ...]
+HALT TIME <ms>                      → OK HALT id=<n>
+HALT DIST <mm>                      → OK HALT id=<n>
+HALT POS <x_mm> <y_mm> <radius_mm>  → OK HALT id=<n>
+HALT COLOR <h> <s> <v> <dist>       → OK HALT id=<n>
+HALT LINE <ch|ANY> GE|LE <thresh>   → OK HALT id=<n>
+HALT CLEAR                          → OK HALT cleared=<count>
+HALT CLEAR <id>                     → OK HALT cleared id=<n>
+HALT INFO <id>                      → OK HALT id=<n> str="<original command>"
+HALT LIST                           → OK HALT count=<n> [id=<n> str="..." ...]
 ```
 
-When a stop fires:
+When a halt condition fires:
 ```
-EVT stop id=<n> [#<corrId>]
+EVT halt id=<n> [#<corrId>]
 ```
 
 ### Stop condition types
@@ -159,9 +162,9 @@ EVT stop id=<n> [#<corrId>]
 ## Files affected
 
 - `source/control/BodyVelocityController.h/.cpp` — `seedCurrent(v, omega)` method
-- `source/control/DriveController.cpp/.h` — `beginStream` → BVC, `beginVelocity`, `driveAdvance`, new `softStop`; remove `_lastSMs`
+- `source/control/MotionController.cpp/.h` — `beginStream` → BVC, `beginVelocity`, `driveAdvance`, new `softStop`; remove `_lastSMs`
 - `source/control/MotionCommand.cpp/.h` — remove `armTime`, `setDoneEvt`; remove VW keepalive TIME stop; retain T/D/G/TURN embedded stops
-- `source/app/CommandProcessor.cpp` — add `_VW`, add `+`, update `X` for soft variant, remove VW keepalive re-arm; add `STOP` family; extend `ZERO` with `T` and `D` variants
+- `source/app/CommandProcessor.cpp` — add `_VW`, add `+`, update `X` for soft variant, remove VW keepalive re-arm; add `HALT` family; extend `ZERO` with `T` and `D` variants
 - `source/control/LoopScheduler.cpp/.h` — add `_watchdogMs` (system watchdog, reset in `runCommsIn()`); add watchdog-check task; add `HaltController haltController` member; call `haltController.evaluate()` each tick; inject `"X"` / `"X soft"` at each injection point
 - New `source/control/HaltController.h/.cpp` — HaltController class; owns stop registry + baselines
 - `source/control/StopCondition.h/.cpp` — add `KIND::COLOR`, `KIND::LINE_ANY`; add `float ay` field; new factory helpers `makeColorStop`, `makeLineAnyStop`; update `evaluate()` for new kinds; add HSV conversion utility
@@ -178,11 +181,11 @@ EVT stop id=<n> [#<corrId>]
 4. `_VW 300 0` → motor immediately at target speed, no ramp delay.
 
 **Phase 2:**
-5. `ZERO T; VW 300 0; STOP TIME 1500` → robot drives ~1.5 s then stops; `EVT stop id=0` received.
-6. `ZERO D; VW 300 0; STOP DIST 400` → robot drives ~400 mm then stops; `EVT stop id=0` received.
-7. Both stops registered: first to fire wins; `STOP INFO 0` returns original string.
-8. `STOP CLEAR` while driving → conditions cleared, motor keeps running.
-9. `STOP COLOR 120 0.8 0.6 0.3` → robot stops when color sensor reaches that HSV neighborhood.
-10. `STOP LINE ANY GE 200` → robot stops when any line sensor exceeds 200.
-11. `STOP DIST 500 SOFT` → robot ramps to zero (soft stop) when distance reached; `EVT stop id=<n>` received.
+5. `ZERO T; VW 300 0; HALT TIME 1500` → robot drives ~1.5 s then stops; `EVT halt id=0` received.
+6. `ZERO D; VW 300 0; HALT DIST 400` → robot drives ~400 mm then stops; `EVT halt id=0` received.
+7. Both halts registered: first to fire wins; `HALT INFO 0` returns original string.
+8. `HALT CLEAR` while driving → conditions cleared, motor keeps running.
+9. `HALT COLOR 120 0.8 0.6 0.3` → robot stops when color sensor reaches that HSV neighborhood.
+10. `HALT LINE ANY GE 200` → robot stops when any line sensor exceeds 200.
+11. `HALT DIST 500 SOFT` → robot ramps to zero (soft stop) when distance reached; `EVT halt id=<n>` received.
 12. `uv run --with pytest python -m pytest tests/` passes.

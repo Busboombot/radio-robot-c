@@ -44,7 +44,8 @@
       "additionalProperties": false,
       "properties": {
         "robot_tag_id": { "type": "integer", "minimum": 0 },
-        "tag_offset_mm": { "$ref": "#/$defs/OffsetXYYaw" }
+        "tag_offset_mm": { "$ref": "#/$defs/OffsetXYYaw" },
+        "camera_distance_scale": { "type": "number", "description": "Multiplicative correction for camera-measured distances." }
       }
     },
 

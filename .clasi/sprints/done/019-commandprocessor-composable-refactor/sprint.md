@@ -1,7 +1,7 @@
 ---
 id: 019
 title: CommandProcessor Composable Refactor
-status: planning-docs
+status: done
 branch: sprint/019-commandprocessor-composable-refactor
 use-cases: []
 issues:

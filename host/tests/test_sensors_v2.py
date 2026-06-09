@@ -155,8 +155,8 @@ class TestOdomTrackerRobotConfig:
         cfg = load_robot_config(cfg_path)
         tracker = OdomTracker(config=cfg)
         assert tracker.trackwidth_mm == 126.0
-        assert abs(tracker.mm_per_deg_l - 0.487) < 1e-6
-        assert abs(tracker.mm_per_deg_r - 0.481) < 1e-6
+        assert abs(tracker.mm_per_deg_l - 0.71659) < 1e-6
+        assert abs(tracker.mm_per_deg_r - 0.70777) < 1e-6
 
     def test_bare_keyword_args(self) -> None:
         from robot_radio.sensors.odom_tracker import OdomTracker
