@@ -1,5 +1,5 @@
 ---
-status: in-progress
+status: done
 supersedes:
 - velocity-profiler-arc-r-command.md
 - body-velocity-controller.md
