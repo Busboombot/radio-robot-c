@@ -345,12 +345,12 @@ std::vector<CommandDescriptor> Odometry::getCommands() const
 {
     void* ctx = const_cast<OdomCtx*>(&_odomCtx);
     return {
-        makeCmd("OI", parseOI, handleOI, ctx, "badarg"), // OTOS init: re-initialise sensor
-        makeCmd("OZ", parseOZ, handleOZ, ctx, "badarg"), // OTOS zero: reset position to 0,0,0
-        makeCmd("OR", parseOR, handleOR, ctx, "badarg"), // OTOS read: one-shot position snapshot
-        makeCmd("OP", parseOP, handleOP, ctx, "badarg"), // OTOS position: report current x,y,h
-        makeCmd("OV", parseOV, handleOV, ctx, "badarg"), // OTOS velocity: report vx,vy,omega
-        makeCmd("OL", parseOL, handleOL, ctx, "badarg"), // OTOS linear scalar calibration
-        makeCmd("OA", parseOA, handleOA, ctx, "badarg"), // OTOS angular scalar calibration
+        makeCmd("OI", parseOI, handleOI, ctx, "badarg", ForceReply::NONE, CMD_ACCESS_HARDWARE), // OTOS init: re-initialise sensor
+        makeCmd("OZ", parseOZ, handleOZ, ctx, "badarg", ForceReply::NONE, CMD_ACCESS_HARDWARE), // OTOS zero: reset position to 0,0,0
+        makeCmd("OR", parseOR, handleOR, ctx, "badarg", ForceReply::NONE, CMD_ACCESS_HARDWARE), // OTOS read: one-shot position snapshot
+        makeCmd("OP", parseOP, handleOP, ctx, "badarg"), // OTOS position: report current x,y,h (reads cached state)
+        makeCmd("OV", parseOV, handleOV, ctx, "badarg", ForceReply::NONE, CMD_ACCESS_HARDWARE), // OTOS velocity: report vx,vy,omega
+        makeCmd("OL", parseOL, handleOL, ctx, "badarg", ForceReply::NONE, CMD_ACCESS_HARDWARE), // OTOS linear scalar calibration
+        makeCmd("OA", parseOA, handleOA, ctx, "badarg", ForceReply::NONE, CMD_ACCESS_HARDWARE), // OTOS angular scalar calibration
     };
 }

@@ -1237,9 +1237,9 @@ std::vector<CommandDescriptor> MotionController::getCommands() const {
         makeCmd("G",    parseG,      handleG,    ctx, "badarg"), // goto encoder position
         makeCmd("R",    parseR,      handleR,    ctx, "badarg"), // rotate in place (deg)
         makeCmd("TURN", parseTURN,   handleTURN, ctx, "badarg"), // arc turn (radius, deg)
-        makeCmd("VW",   parseVW,     handleVW,   ctx, "badarg"), // velocity + angular vel (unicycle)
-        makeCmd("_VW",  parse_VW,    handle_VW,  ctx, "badarg"), // raw velocity (no ramp): seed+set BVC immediately
-        makeCmd("X",    parseX,      handleX,    ctx, "badarg"), // stop immediately (or "X soft" for ramp)
-        makeCmd("STOP", parseNoArgs, handleSTOP, ctx, "badarg"), // stop with deceleration
+        makeCmd("VW",   parseVW,     handleVW,   ctx, "badarg", ForceReply::NONE, CMD_ACCESS_HARDWARE), // velocity + angular vel (unicycle)
+        makeCmd("_VW",  parse_VW,    handle_VW,  ctx, "badarg", ForceReply::NONE, CMD_ACCESS_HARDWARE), // raw velocity (no ramp): seed+set BVC immediately
+        makeCmd("X",    parseX,      handleX,    ctx, "badarg", ForceReply::NONE, CMD_ACCESS_HARDWARE), // stop immediately (or "X soft" for ramp)
+        makeCmd("STOP", parseNoArgs, handleSTOP, ctx, "badarg", ForceReply::NONE, CMD_ACCESS_HARDWARE), // stop with deceleration
     };
 }

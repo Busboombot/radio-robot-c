@@ -1,11 +1,11 @@
 ---
-id: '009'
+id: 009
 title: ACCESS_HARDWARE flag in CommandDescriptor + annotate all makeCmd calls
-status: open
+status: done
 use-cases:
-  - SUC-012
+- SUC-012
 depends-on:
-  - 020-008
+- 020-008
 github-issue: ''
 issue: plan-command-flags-vw-unification-command-queue-and-test-loop.md
 completes_issue: false
@@ -28,11 +28,11 @@ the queue).
 
 ## Acceptance Criteria
 
-- [ ] `CommandDescriptor` has `uint8_t flags` field; struct size verified (expected 28 bytes with alignment).
-- [ ] `CMD_NONE = 0` and `CMD_ACCESS_HARDWARE = 1` constants defined in `CommandTypes.h`.
-- [ ] `makeCmd()` signature updated with `uint8_t flags = CMD_NONE` as last parameter; all existing callers compile unchanged.
-- [ ] `ParsedCommand` struct added to `CommandTypes.h`: `{const CommandDescriptor* desc; ArgList args; ReplyFn replyFn; void* replyCtx; char corrId[8]}`.
-- [ ] All `makeCmd()` calls annotated per the flag table:
+- [x] `CommandDescriptor` has `uint8_t flags` field; struct size verified (expected 28 bytes with alignment).
+- [x] `CMD_NONE = 0` and `CMD_ACCESS_HARDWARE = 1` constants defined in `CommandTypes.h`.
+- [x] `makeCmd()` signature updated with `uint8_t flags = CMD_NONE` as last parameter; all existing callers compile unchanged.
+- [x] `ParsedCommand` struct added to `CommandTypes.h`: `{const CommandDescriptor* desc; ArgList args; ReplyFn replyFn; void* replyCtx; char corrId[8]}`.
+- [x] All `makeCmd()` calls annotated per the flag table:
   - S, T, D, G, R, TURN: `CMD_NONE` (will become VW converters in ticket 020-010)
   - VW, `_VW`, X, STOP: `CMD_ACCESS_HARDWARE`
   - OI, OZ, OR, OV, OL, OA: `CMD_ACCESS_HARDWARE`
@@ -45,8 +45,8 @@ the queue).
   - HELLO, PING, ECHO, ID, VER, HELP, SNAP, ZERO, STREAM, RF, GET, SET, GET VEL: `CMD_NONE`
   - HALT TIME/DIST/POS/COLOR/LINE/CLEAR/INFO/LIST: `CMD_NONE` (registers conditions, no direct hardware write)
   - `+` keepalive: `CMD_NONE`
-- [ ] `python3 build.py --clean` passes.
-- [ ] `uv run --with pytest python -m pytest` passes.
+- [x] `python3 build.py --clean` passes.
+- [x] `uv run --with pytest python -m pytest` passes.
 
 ## Implementation Plan
 
