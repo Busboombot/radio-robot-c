@@ -21,7 +21,7 @@ class MotorController;
  *   4. MotorController::setTarget(sL, sR).
  *
  * Clock discipline: advance(dt_s) is ticked exactly once per control tick
- * by the owner (MotionCommand::tick, called from DriveController::driveAdvance).
+ * by the owner (MotionCommand::tick, called from MotionController::driveAdvance).
  * It must NOT be called from any other path — double-advancing the profiler
  * double-counts the ramp step and over-accelerates the robot.
  *

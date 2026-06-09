@@ -1,7 +1,7 @@
 #include "Robot.h"
 #include "LineSensor.h"
 #include "ColorSensor.h"
-#include "DriveController.h"
+#include "MotionController.h"
 #include "MicroBit.h"
 #include <cstdio>
 #include <cmath>
@@ -11,10 +11,10 @@
 //
 // Declaration order (from Robot.h):
 //   config, state, motorL, motorR, otos, line, colorSensor, gripper, portio,
-//   motorController, odometry, driveController
+//   motorController, odometry, motionController
 //
 // Two post-construction binds:
-//   driveController.setHardwareState(&state.inputs)  — DriveController reads pose
+//   motionController.setHardwareState(&state.inputs)  — MotionController reads pose
 //   motorController.setCommandsRef(&state.commands)  — MotorController writes tgt*/pwm*
 // ---------------------------------------------------------------------------
 
@@ -27,9 +27,9 @@ Robot::Robot(Motor& mL, Motor& mR, OtosSensor& o, LineSensor& l,
       otos(o), line(l), colorSensor(c), gripper(g), portio(p),
       motorController(motorL, motorR, config),
       odometry(),
-      driveController(motorController, odometry, config)
+      motionController(motorController, odometry, config)
 {
-    driveController.setHardwareState(&state.inputs);
+    motionController.setHardwareState(&state.inputs);
     motorController.setCommandsRef(&state.commands);
 }
 
@@ -187,7 +187,7 @@ void Robot::portsRead()
 // ---------------------------------------------------------------------------
 // distanceDrive — begin a distance drive and reset encoder outlier baseline.
 //
-// The encoder-reset workaround: beginDistance resets the DriveController's
+// The encoder-reset workaround: beginDistance resets the MotionController's
 // accumulator to 0, but state.inputs.encLMm/R still hold the previous
 // drive's final value. The outlier filter compares new reads to those stale
 // values; the ~target→0 jump looks like a huge backward outlier and gets
@@ -198,7 +198,7 @@ void Robot::portsRead()
 void Robot::distanceDrive(int32_t l, int32_t r, int32_t targetMm,
                                 ReplyFn fn, void* ctx, const char* corr_id)
 {
-    driveController.beginDistance((float)l, (float)r, targetMm,
+    motionController.beginDistance((float)l, (float)r, targetMm,
                                    systemTime(), state.target, fn, ctx, corr_id);
     state.inputs.encLMm = 0.0f;
     state.inputs.encRMm = 0.0f;
@@ -207,7 +207,7 @@ void Robot::distanceDrive(int32_t l, int32_t r, int32_t targetMm,
 // ---------------------------------------------------------------------------
 // buildTlmFrame — assemble the unified TLM frame; returns length.
 //
-// Reads state.inputs, config, driveController.mode(). Shared by the periodic
+// Reads state.inputs, config, motionController.mode(). Shared by the periodic
 // STREAM (telemetryEmit) and the synchronous SNAP command.
 // ---------------------------------------------------------------------------
 
@@ -230,7 +230,7 @@ int Robot::buildTlmFrame(char* buf, int len)
     float velR = haveVel ? state.inputs.velRMms : 0.0f;
 
     char modeChar = 'I';
-    switch (driveController.mode()) {
+    switch (motionController.mode()) {
         case DriveMode::STREAMING: modeChar = 'S'; break;
         case DriveMode::TIMED:     modeChar = 'T'; break;
         case DriveMode::DISTANCE:  modeChar = 'D'; break;
@@ -283,7 +283,7 @@ int Robot::buildTlmFrame(char* buf, int len)
 void Robot::telemetryEmit(uint32_t now_ms, ReplyFn fn, void* ctx)
 {
     static constexpr uint32_t kGraceMs = 400;
-    if (driveController.mode() != DriveMode::IDLE) _lastActiveMs = now_ms;
+    if (motionController.mode() != DriveMode::IDLE) _lastActiveMs = now_ms;
     bool stopped = (now_ms - _lastActiveMs) > kGraceMs;
 
     bool periodic = (config.tlmPeriodMs > 0) && !stopped &&

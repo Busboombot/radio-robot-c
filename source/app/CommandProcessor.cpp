@@ -22,7 +22,7 @@
 #include "MotorController.h"
 #include "Odometry.h"
 #include "WedgeTest.h"
-#include "DriveController.h"
+#include "MotionController.h"
 #include "LoopScheduler.h"
 #include "Communicator.h"
 #include "RadioChannel.h"
@@ -1031,7 +1031,7 @@ void CommandProcessor::process(const char* line, ReplyFn replyFn, void* ctx)
 
     // ── S — streaming velocity ────────────────────────────────────────────────
     // S <l> <r>  → OK drive l=<l> r=<r>
-    // Watchdog reset is implicit: DriveController::beginStream() updates _lastSMs.
+    // Watchdog reset is implicit: MotionController::beginStream() updates _lastSMs.
     if (strcmp(verb, "S") == 0) {
         if (ntok < 3) {
             replyErr(rbuf, sizeof(rbuf), "badarg", nullptr, corr_id, replyFn, ctx);
@@ -1048,7 +1048,7 @@ void CommandProcessor::process(const char* line, ReplyFn replyFn, void* ctx)
             replyErr(rbuf, sizeof(rbuf), "range", "r", corr_id, replyFn, ctx);
             return;
         }
-        _robot->driveController.beginStream((float)l, (float)r, _robot->systemTime(), _robot->state.target, replyFn, ctx);
+        _robot->motionController.beginStream((float)l, (float)r, _robot->systemTime(), _robot->state.target, replyFn, ctx);
         char body[32];
         snprintf(body, sizeof(body), "l=%d r=%d", l, r);
         replyOK(rbuf, sizeof(rbuf), "drive", body, corr_id, replyFn, ctx);
@@ -1077,7 +1077,7 @@ void CommandProcessor::process(const char* line, ReplyFn replyFn, void* ctx)
             replyErr(rbuf, sizeof(rbuf), "range", "ms", corr_id, replyFn, ctx);
             return;
         }
-        _robot->driveController.beginTimed((float)l, (float)r, (uint32_t)ms, _robot->systemTime(), _robot->state.target, replyFn, ctx, corr_id);
+        _robot->motionController.beginTimed((float)l, (float)r, (uint32_t)ms, _robot->systemTime(), _robot->state.target, replyFn, ctx, corr_id);
 
         // Optional sensor= modifier: appended after begin*() returns.
         // Safe: addStop() after start() is allowed — start() snapshots the
@@ -1089,10 +1089,10 @@ void CommandProcessor::process(const char* line, ReplyFn replyFn, void* ctx)
                 uint8_t ch; float thr; StopCondition::Cmp cmp;
                 if (!parseSensorToken(kvs[i].value, ch, thr, cmp)) {
                     replyErr(rbuf, sizeof(rbuf), "badarg", "sensor", corr_id, replyFn, ctx);
-                    _robot->driveController.cancel(_robot->systemTime(), replyFn, ctx);
+                    _robot->motionController.cancel(_robot->systemTime(), replyFn, ctx);
                     return;
                 }
-                _robot->driveController.activeCmd().addStop(makeSensorStop(ch, thr, cmp));
+                _robot->motionController.activeCmd().addStop(makeSensorStop(ch, thr, cmp));
                 break;
             }
         }
@@ -1134,10 +1134,10 @@ void CommandProcessor::process(const char* line, ReplyFn replyFn, void* ctx)
                 uint8_t ch; float thr; StopCondition::Cmp cmp;
                 if (!parseSensorToken(kvs[i].value, ch, thr, cmp)) {
                     replyErr(rbuf, sizeof(rbuf), "badarg", "sensor", corr_id, replyFn, ctx);
-                    _robot->driveController.cancel(_robot->systemTime(), replyFn, ctx);
+                    _robot->motionController.cancel(_robot->systemTime(), replyFn, ctx);
                     return;
                 }
-                _robot->driveController.activeCmd().addStop(makeSensorStop(ch, thr, cmp));
+                _robot->motionController.activeCmd().addStop(makeSensorStop(ch, thr, cmp));
                 break;
             }
         }
@@ -1170,7 +1170,7 @@ void CommandProcessor::process(const char* line, ReplyFn replyFn, void* ctx)
             replyErr(rbuf, sizeof(rbuf), "range", "speed", corr_id, replyFn, ctx);
             return;
         }
-        _robot->driveController.beginGoTo((float)x, (float)y, (float)speed, _robot->systemTime(), _robot->state.target, replyFn, ctx, corr_id);
+        _robot->motionController.beginGoTo((float)x, (float)y, (float)speed, _robot->systemTime(), _robot->state.target, replyFn, ctx, corr_id);
         char body[64];
         snprintf(body, sizeof(body), "x=%d y=%d speed=%d", x, y, speed);
         replyOK(rbuf, sizeof(rbuf), "goto", body, corr_id, replyFn, ctx);
@@ -1199,7 +1199,7 @@ void CommandProcessor::process(const char* line, ReplyFn replyFn, void* ctx)
             return;
         }
         uint32_t now = _robot->systemTime();
-        _robot->driveController.beginArc((float)speed, (float)radius, now,
+        _robot->motionController.beginArc((float)speed, (float)radius, now,
                                         _robot->state.target, replyFn, ctx, corr_id);
         char body[48];
         snprintf(body, sizeof(body), "speed=%d radius=%d", speed, radius);
@@ -1240,7 +1240,7 @@ void CommandProcessor::process(const char* line, ReplyFn replyFn, void* ctx)
         }
 
         uint32_t now = _robot->systemTime();
-        _robot->driveController.beginTurn((float)heading_cdeg, (float)eps_cdeg, now,
+        _robot->motionController.beginTurn((float)heading_cdeg, (float)eps_cdeg, now,
                                          _robot->state.target, replyFn, ctx, corr_id);
 
         // Optional sensor= modifier: appended after begin*() returns.
@@ -1250,10 +1250,10 @@ void CommandProcessor::process(const char* line, ReplyFn replyFn, void* ctx)
                 uint8_t ch; float thr; StopCondition::Cmp cmp;
                 if (!parseSensorToken(kvs[i].value, ch, thr, cmp)) {
                     replyErr(rbuf, sizeof(rbuf), "badarg", "sensor", corr_id, replyFn, ctx);
-                    _robot->driveController.cancel(_robot->systemTime(), replyFn, ctx);
+                    _robot->motionController.cancel(_robot->systemTime(), replyFn, ctx);
                     return;
                 }
-                _robot->driveController.activeCmd().addStop(makeSensorStop(ch, thr, cmp));
+                _robot->motionController.activeCmd().addStop(makeSensorStop(ch, thr, cmp));
                 break;
             }
         }
@@ -1294,13 +1294,13 @@ void CommandProcessor::process(const char* line, ReplyFn replyFn, void* ctx)
         float omega_rads = (float)omega / 1000.0f;  // mrad/s → rad/s
         uint32_t now = _robot->systemTime();
 
-        if (_robot->driveController.hasActiveCommand()) {
+        if (_robot->motionController.hasActiveCommand()) {
             // Keepalive re-send: update target and re-arm TIME baseline.
             // This avoids resetting the profiler ramp on every VW packet.
-            _robot->driveController.activeCmd().setTarget((float)v, omega_rads);
+            _robot->motionController.activeCmd().setTarget((float)v, omega_rads);
         } else {
             // New VW command: configure MotionCommand from scratch.
-            _robot->driveController.beginVelocity((float)v, omega_rads, now,
+            _robot->motionController.beginVelocity((float)v, omega_rads, now,
                                                  _robot->state.target,
                                                  replyFn, ctx, corr_id);
         }
@@ -1358,17 +1358,17 @@ void CommandProcessor::process(const char* line, ReplyFn replyFn, void* ctx)
     // MotionCommand emits EVT cancelled, mode goes IDLE. If no command is
     // active, _mc.stop() is still called (motor safety) but no EVT is emitted.
     if (strcmp(verb, "X") == 0) {
-        { uint32_t now = _robot->systemTime(); _robot->driveController.cancel(now, replyFn, ctx); }
+        { uint32_t now = _robot->systemTime(); _robot->motionController.cancel(now, replyFn, ctx); }
         replyOK(rbuf, sizeof(rbuf), "x", nullptr, corr_id, replyFn, ctx);
         return;
     }
 
     // ── STOP — stop motors immediately (alias for X; preserved for backward compat) ─
     // STOP  → OK stop
-    // Routes through DriveController::cancel() just like X so any active
+    // Routes through MotionController::cancel() just like X so any active
     // MotionCommand is torn down cleanly. Replies OK stop (not OK x).
     if (strcmp(verb, "STOP") == 0) {
-        { uint32_t now = _robot->systemTime(); _robot->driveController.cancel(now, replyFn, ctx); }
+        { uint32_t now = _robot->systemTime(); _robot->motionController.cancel(now, replyFn, ctx); }
         replyOK(rbuf, sizeof(rbuf), "stop", nullptr, corr_id, replyFn, ctx);
         return;
     }

@@ -1,13 +1,14 @@
 ---
-id: "004"
-title: "Rename DriveController to MotionController — class name, file names, all include sites"
-status: open
+id: '004'
+title: "Rename DriveController to MotionController \u2014 class name, file names,\
+  \ all include sites"
+status: done
 use-cases:
 - SUC-001
 depends-on:
 - '003'
-github-issue: ""
-issue: ""
+github-issue: ''
+issue: ''
 completes_issue: false
 ---
 
@@ -23,14 +24,14 @@ No behavior changes. The class inherits `Commandable` at the declaration level (
 
 ## Acceptance Criteria
 
-- [ ] `source/control/DriveController.h` renamed to `source/control/MotionController.h`; class name inside changed to `MotionController`
-- [ ] `source/control/DriveController.cpp` renamed to `source/control/MotionController.cpp`; all `DriveController::` definitions updated to `MotionController::`
-- [ ] `source/control/MotionController.h` declares `class MotionController : public Commandable` (includes `CommandTypes.h`); adds `virtual int getCommands(CommandDescriptor* buf, int max) const override` declaration
-- [ ] `source/robot/Robot.h`: `#include "DriveController.h"` updated to `#include "MotionController.h"`; `DriveController driveController` member renamed to `MotionController motionController`
-- [ ] `source/app/CommandProcessor.cpp`: `#include "DriveController.h"` updated to `#include "MotionController.h"`; all `_robot.driveController` references updated to `_robot.motionController`
-- [ ] `source/main.cpp`: any `DriveController` or `driveController` references updated
-- [ ] No other files contain `DriveController` after this ticket (grep to verify)
-- [ ] `python3 build.py` passes with no errors
+- [x] `source/control/DriveController.h` renamed to `source/control/MotionController.h`; class name inside changed to `MotionController`
+- [x] `source/control/DriveController.cpp` renamed to `source/control/MotionController.cpp`; all `DriveController::` definitions updated to `MotionController::`
+- [x] `source/control/MotionController.h` declares `class MotionController : public Commandable` (includes `CommandTypes.h`); adds `virtual int getCommands(CommandDescriptor* buf, int max) const override` declaration
+- [x] `source/robot/Robot.h`: `#include "DriveController.h"` updated to `#include "MotionController.h"`; `DriveController driveController` member renamed to `MotionController motionController`
+- [x] `source/app/CommandProcessor.cpp`: `#include "DriveController.h"` updated to `#include "MotionController.h"`; all `_robot.driveController` references updated to `_robot.motionController`
+- [x] `source/main.cpp`: any `DriveController` or `driveController` references updated
+- [x] No other files contain `DriveController` after this ticket (grep to verify)
+- [x] `python3 build.py` passes with no errors
 - [ ] Bench smoke: S command and D command (drive + EVT done D) still work correctly
 
 ## Implementation Plan

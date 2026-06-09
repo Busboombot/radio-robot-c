@@ -1,4 +1,4 @@
-// DriveController.cpp — S/T/D/G drive state machines, S-mode watchdog,
+// MotionController.cpp — S/T/D/G drive state machines, S-mode watchdog,
 // streaming encoder counter, and odometry delta tracking.
 //
 // Transplanted from CommandProcessor.cpp (Sprint 007, Ticket 003).
@@ -17,7 +17,7 @@
 // a MotionCommand with a TIME stop condition (keepalive watchdog at sTimeoutMs).
 // driveAdvance ticks _activeCmd when active; STREAMING watchdog fires only for S.
 
-#include "DriveController.h"
+#include "MotionController.h"
 #include "MotorController.h"
 #include "Odometry.h"
 #include "BodyKinematics.h"
@@ -31,7 +31,7 @@
 // Constructor
 // ---------------------------------------------------------------------------
 
-DriveController::DriveController(MotorController& mc, Odometry& odo, const RobotConfig& cfg)
+MotionController::MotionController(MotorController& mc, Odometry& odo, const RobotConfig& cfg)
     : _mc(mc)
     , _odo(odo)
     , _cfg(cfg)
@@ -78,7 +78,7 @@ static void applySaturation(float vL, float vR,
 // fiber boundary that would block I/O in driveAdvance().
 // ---------------------------------------------------------------------------
 
-/*static*/ void DriveController::emitEvt(const char* base, TargetState& target)
+/*static*/ void MotionController::emitEvt(const char* base, TargetState& target)
 {
     if (!target.replyFn) return;
 
@@ -102,7 +102,7 @@ static void applySaturation(float vL, float vR,
 // Entry points
 // ---------------------------------------------------------------------------
 
-void DriveController::beginStream(float leftMms, float rightMms, uint32_t now_ms,
+void MotionController::beginStream(float leftMms, float rightMms, uint32_t now_ms,
                                    TargetState& target, ReplyFn fn, void* ctx)
 {
     float sL, sR;
@@ -121,7 +121,7 @@ void DriveController::beginStream(float leftMms, float rightMms, uint32_t now_ms
     target.corrId[0] = '\0';
 }
 
-void DriveController::beginVelocity(float v_mms, float omega_rads, uint32_t now_ms,
+void MotionController::beginVelocity(float v_mms, float omega_rads, uint32_t now_ms,
                                      TargetState& target, ReplyFn fn, void* ctx,
                                      const char* corr_id)
 {
@@ -151,7 +151,7 @@ void DriveController::beginVelocity(float v_mms, float omega_rads, uint32_t now_
     target.mode = DriveMode::VELOCITY;
 }
 
-void DriveController::beginArc(float speedMms, float radiusMm, uint32_t now_ms,
+void MotionController::beginArc(float speedMms, float radiusMm, uint32_t now_ms,
                                 TargetState& target, ReplyFn fn, void* ctx,
                                 const char* corr_id)
 {
@@ -184,7 +184,7 @@ void DriveController::beginArc(float speedMms, float radiusMm, uint32_t now_ms,
     target.mode = DriveMode::VELOCITY;
 }
 
-void DriveController::beginTimed(float leftMms, float rightMms,
+void MotionController::beginTimed(float leftMms, float rightMms,
                                   uint32_t durationMs, uint32_t now_ms,
                                   TargetState& target, ReplyFn fn, void* ctx,
                                   const char* corr_id)
@@ -217,7 +217,7 @@ void DriveController::beginTimed(float leftMms, float rightMms,
     target.mode = DriveMode::VELOCITY;
 }
 
-void DriveController::beginDistance(float leftMms, float rightMms,
+void MotionController::beginDistance(float leftMms, float rightMms,
                                      int32_t targetMm, uint32_t now_ms,
                                      TargetState& target, ReplyFn fn, void* ctx,
                                      const char* corr_id)
@@ -281,7 +281,7 @@ void DriveController::beginDistance(float leftMms, float rightMms,
     target.distanceTargetMm = static_cast<float>(targetMm);
 }
 
-void DriveController::beginGoTo(float tx, float ty, float speedMms, uint32_t now_ms,
+void MotionController::beginGoTo(float tx, float ty, float speedMms, uint32_t now_ms,
                                  TargetState& target, ReplyFn fn, void* ctx,
                                  const char* corr_id)
 {
@@ -364,7 +364,7 @@ void DriveController::beginGoTo(float tx, float ty, float speedMms, uint32_t now
     }
 }
 
-void DriveController::beginTurn(float headingCdeg, float epsCdeg, uint32_t now_ms,
+void MotionController::beginTurn(float headingCdeg, float epsCdeg, uint32_t now_ms,
                                 TargetState& target, ReplyFn fn, void* ctx,
                                 const char* corr_id)
 {
@@ -434,7 +434,7 @@ void DriveController::beginTurn(float headingCdeg, float epsCdeg, uint32_t now_m
     target.mode = DriveMode::VELOCITY;
 }
 
-void DriveController::stop(uint32_t now_ms, ReplyFn fn, void* ctx)
+void MotionController::stop(uint32_t now_ms, ReplyFn fn, void* ctx)
 {
     // Cancel any active MotionCommand before calling fullStop().
     if (_activeCmd.active()) {
@@ -445,7 +445,7 @@ void DriveController::stop(uint32_t now_ms, ReplyFn fn, void* ctx)
     (void)now_ms;
 }
 
-void DriveController::cancel(uint32_t now_ms, ReplyFn fn, void* ctx)
+void MotionController::cancel(uint32_t now_ms, ReplyFn fn, void* ctx)
 {
     _activeCmd.cancel(MotionCommand::StopStyle::HARD);
     _mc.stop();
@@ -473,7 +473,7 @@ void DriveController::cancel(uint32_t now_ms, ReplyFn fn, void* ctx)
 // (ticket 005 wired this; ticket 006 moved it to the scheduler task).
 // ---------------------------------------------------------------------------
 
-void DriveController::driveAdvance(HardwareState& inputs, MotorCommands& cmds,
+void MotionController::driveAdvance(HardwareState& inputs, MotorCommands& cmds,
                                     TargetState& target, uint32_t now_ms)
 {
     // Throttle to controlPeriodMs cadence.
@@ -605,7 +605,7 @@ void DriveController::driveAdvance(HardwareState& inputs, MotorCommands& cmds,
 // Private helpers
 // ---------------------------------------------------------------------------
 
-void DriveController::fullStop(ReplyFn fn, void* ctx)
+void MotionController::fullStop(ReplyFn fn, void* ctx)
 {
     _mc.stop();
     _mode  = DriveMode::IDLE;
@@ -622,7 +622,7 @@ void DriveController::fullStop(ReplyFn fn, void* ctx)
  * @param y      Output: y position in mm (float)
  * @param h_rad  Output: heading in radians
  */
-void DriveController::getPoseFloat(float& x, float& y, float& h_rad) const {
+void MotionController::getPoseFloat(float& x, float& y, float& h_rad) const {
     if (_hwState == nullptr) {
         x = 0.0f; y = 0.0f; h_rad = 0.0f;
         return;
@@ -632,4 +632,12 @@ void DriveController::getPoseFloat(float& x, float& y, float& h_rad) const {
     x     = static_cast<float>(xi);
     y     = static_cast<float>(yi);
     h_rad = static_cast<float>(hi) * (3.14159265f / 18000.0f);  // cdeg → rad
+}
+
+// ---------------------------------------------------------------------------
+// getCommands — Commandable stub (T008 will fill in descriptors).
+// ---------------------------------------------------------------------------
+
+int MotionController::getCommands(CommandDescriptor* buf, int max) const {
+    (void)buf; (void)max; return 0;
 }

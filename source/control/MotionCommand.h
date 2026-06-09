@@ -18,10 +18,10 @@ class BodyVelocityController;
 //   6. tick(inputs, now_ms, dt_s) — advance BVC; evaluate conditions; handle teardown.
 //   7. cancel(s)                  — abort with EVT cancelled.
 //
-// A single MotionCommand instance is owned by DriveController. Calling
+// A single MotionCommand instance is owned by MotionController. Calling
 // configure() + start() a second time recycles the object with no residue.
 //
-// EVT emission mirrors DriveController::emitEvt: builds "<base> #<corrId>"
+// EVT emission mirrors MotionController::emitEvt: builds "<base> #<corrId>"
 // when corrId is non-empty, then calls the captured reply function.
 //
 // No heap. Stop conditions are held in a fixed-size inline array.
@@ -49,7 +49,7 @@ public:
      *
      * @param v_mms      Commanded body forward speed, mm/s.
      * @param omega_rads Commanded yaw rate, rad/s.
-     * @param bvc        Pointer to the owning DriveController's BVC (non-null).
+     * @param bvc        Pointer to the owning MotionController's BVC (non-null).
      */
     void configure(float v_mms, float omega_rads, BodyVelocityController* bvc);
 
@@ -149,7 +149,7 @@ public:
      * cancel — abort the command immediately.
      *
      * HARD (default): calls bvc->reset(); emits "EVT cancelled"; goes IDLE.
-     *   The caller (DriveController::cancel) is responsible for calling
+     *   The caller (MotionController::cancel) is responsible for calling
      *   mc.stop() after this returns.
      * SOFT: same as HARD cancel for now (cancel is always an emergency abort).
      *
@@ -192,7 +192,7 @@ private:
      * emitEvt — build and emit an EVT message via the captured reply sink.
      *
      * Builds "<base> #<corrId>" if corrId is non-empty, else just "<base>".
-     * Mirrors DriveController::emitEvt.
+     * Mirrors MotionController::emitEvt.
      */
     void emitEvt(const char* base);
 };

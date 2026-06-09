@@ -8,7 +8,7 @@
 #include "PortIO.h"
 #include "MotorController.h"
 #include "Odometry.h"
-#include "DriveController.h"
+#include "MotionController.h"
 #include "RobotState.h"
 #include "Protocol.h"
 
@@ -22,7 +22,7 @@
  *
  * Devices (Motor, OtosSensor, LineSensor, ColorSensor, Servo, PortIO) are
  * constructed in main() as statics and held here as REFERENCES (not owned).
- * The control layer (MotorController, Odometry, DriveController) and state
+ * The control layer (MotorController, Odometry, MotionController) and state
  * (RobotConfig, RobotStateContainer) are VALUE MEMBERS owned by Robot.
  *
  * Member declaration order is load-bearing (C++ initialises members in
@@ -32,7 +32,7 @@
  *   3. otos, line, color, gripper, portio refs
  *   4. motorController         — needs motorL, motorR, config refs
  *   5. odometry                — default ctor
- *   6. driveController         — needs motorController, odometry, config
+ *   6. motionController        — needs motorController, odometry, config
  */
 struct Robot {
     // ---- Owned value members (initialized first) ----
@@ -51,9 +51,9 @@ struct Robot {
     PortIO&             portio;
 
     // ---- Owned control-layer members (depend on refs above) ----
-    MotorController     motorController;  // (motorL, motorR, config)
-    Odometry            odometry;         // default ctor
-    DriveController     driveController;  // (motorController, odometry, config)
+    MotorController     motorController;   // (motorL, motorR, config)
+    Odometry            odometry;          // default ctor
+    MotionController    motionController;  // (motorController, odometry, config)
 
     // ---- Constructor ----
     Robot(Motor& mL, Motor& mR, OtosSensor& o, LineSensor& l,
@@ -77,7 +77,7 @@ struct Robot {
     void colorRead();
     void portsRead();
 
-    // distanceDrive — calls driveController.beginDistance + zeroes encoder baseline
+    // distanceDrive — calls motionController.beginDistance + zeroes encoder baseline
     // in state.inputs so the outlier filter tracks from 0 (encoder-reset workaround).
     void distanceDrive(int32_t l, int32_t r, int32_t targetMm,
                        ReplyFn fn, void* ctx, const char* corr_id = nullptr);

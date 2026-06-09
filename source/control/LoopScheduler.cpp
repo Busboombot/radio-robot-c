@@ -79,7 +79,7 @@ static void runCommsIn(LoopScheduler& sched, uint32_t /*now*/)
 static void runDriveAdvance(LoopScheduler& sched, uint32_t now)
 {
     Robot& r = sched.robot();
-    r.driveController.driveAdvance(r.state.inputs, r.state.commands, r.state.target, now);
+    r.motionController.driveAdvance(r.state.inputs, r.state.commands, r.state.target, now);
 }
 
 // odometry-predict: apply midpoint dead-reckoning from enc{L,R}Mm into
@@ -615,7 +615,7 @@ void LoopScheduler::run_blocks()
         // ===== DRIVE: advance the drive state machine + S-watchdog ===========
         if (enDrive) {
             now = _uBit.systemTime();
-            _robot.driveController.driveAdvance(_robot.state.inputs, _robot.state.commands, _robot.state.target, now);
+            _robot.motionController.driveAdvance(_robot.state.inputs, _robot.state.commands, _robot.state.target, now);
         }
 
         // ===== ODOMETRY: dead-reckon pose from the latest encoder deltas =====

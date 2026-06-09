@@ -7,12 +7,15 @@
 #include "RobotState.h"
 #include "BodyVelocityController.h"
 #include "MotionCommand.h"
+#include "CommandTypes.h"
 
 class MotorController;
 class Odometry;
+class MotionController;
+struct Robot;
 
 /**
- * DriveController — owns and advances the S/T/D/G drive state machines,
+ * MotionController — owns and advances the S/T/D/G drive state machines,
  * S-mode watchdog, and odometry delta tracking.
  *
  * Calls MotorController for wheel control and reads Odometry for pose.
@@ -32,12 +35,19 @@ class Odometry;
  * even if a later command arrives on a different channel.
  *
  * OTOS complementary correction is handled entirely by Robot::otosCorrect()
- * (ticket 004 / 005).  DriveController no longer holds the OtosSensor
+ * (ticket 004 / 005).  MotionController no longer holds the OtosSensor
  * pointer or the slow-cadence timer.
  */
-class DriveController {
+
+// Context bundle used by Commandable-registered handlers.
+struct MotionCtx { MotionController* mc; struct Robot* robot; };
+
+class MotionController : public Commandable {
 public:
-    DriveController(MotorController& mc, Odometry& odo, const RobotConfig& cfg);
+    MotionController(MotorController& mc, Odometry& odo, const RobotConfig& cfg);
+
+    // Commandable interface — stub; full implementation in T008.
+    virtual int getCommands(CommandDescriptor* buf, int max) const override;
 
     // Bind the authoritative HardwareState (called by Robot after state init,
     // before the first tick).  Required so getPoseFloat() can read pose fields.
@@ -119,7 +129,7 @@ private:
     HardwareState*     _hwState;  // authoritative state; set by setHardwareState()
 
     // MotionCommand subsystem (Sprint 017).
-    // _bvc MUST be declared before _activeCmd: DriveController's constructor
+    // _bvc MUST be declared before _activeCmd: MotionController's constructor
     // passes &_bvc to _activeCmd.configure(), so _bvc must be fully constructed
     // first.  Do not reorder.
     BodyVelocityController _bvc;        // body-level (v,ω) profiler

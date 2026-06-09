@@ -65,7 +65,7 @@ const ConfigEntry kRegistry[] = {
     // Pose-control tunables (Sprint 011)
     CFG_F ("aMax",        aMax),
     CFG_F ("aDecel",      aDecel),
-    CFG_FI("turnGate",    turnInPlaceGate),   // wire: integer degrees; DriveController converts to radians at use-site
+    CFG_FI("turnGate",    turnInPlaceGate),   // wire: integer degrees; MotionController converts to radians at use-site
     CFG_FI("arriveTol",   arriveTolMm),       // wire: integer mm
     // Body motion limits (Sprint 017 -- BodyVelocityController)
     CFG_F("vBodyMax",    vBodyMax),           // body forward speed ceiling, mm/s
