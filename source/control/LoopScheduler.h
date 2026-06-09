@@ -42,9 +42,19 @@ public:
     ReplyFn  activeTlmFn;    // telemetry stream (ASYNC, drop-tolerant)
     void*    activeCtx;
 
+    // Reset the system keepalive watchdog timestamp.
+    // Called by runCommsIn() after each inbound command is dispatched.
+    void resetWatchdog(uint32_t now_ms) { _watchdogMs = now_ms; }
+
 private:
     Robot&            _robot;
     CommandProcessor& _cmd;
     Communicator&     _comm;
     MicroBit&         _uBit;
+
+    // System keepalive watchdog (Sprint 020, Ticket 005).
+    // Reset in runCommsIn() on every inbound command.
+    // Fires EVT safety_stop + X if sTimeoutMs passes without any inbound command.
+    // 0 = not yet armed (no command received yet this session).
+    uint32_t _watchdogMs = 0;
 };

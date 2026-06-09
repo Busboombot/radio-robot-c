@@ -13,6 +13,9 @@
 #include "hal/mock/MockOtosSensor.h"
 #include "types/Config.h"
 #include "control/RobotState.h"
+#include "control/MotionController.h"
+#include "control/MotionCommand.h"
+#include "types/CommandTypes.h"
 
 #include <cstring>
 #include <cstdio>
@@ -70,6 +73,11 @@ struct SimHandle {
     CommandProcessor cmd;
     ReplyStore       replyStore;
 
+    // System keepalive watchdog (mirrors LoopScheduler._watchdogMs).
+    // Reset to now_ms in sim_command(); checked each sim_tick().
+    // 0 = not yet armed (no command received).
+    uint32_t         watchdogMs = 0;
+
     SimHandle()
         : hal()
         , cfg(defaultRobotConfig())
@@ -114,6 +122,29 @@ void sim_tick(void* h, uint32_t now_ms)
     s->robot.motionController.driveAdvance(
         s->robot.state.inputs, s->robot.state.commands,
         s->robot.state.target, now_ms);
+
+    // System keepalive watchdog — mirrors LoopScheduler behaviour.
+    // Fires EVT safety_stop + X when sTimeoutMs passes without any command.
+    // Only fires for open-ended modes (STREAMING / VW / R); self-terminating
+    // commands (T, D, G, TURN — with stop conditions) manage their own lifetime.
+    // Signed delta avoids uint32 underflow (same pattern as firmware).
+    if (s->watchdogMs != 0) {
+        MotionController& mc = s->robot.motionController;
+        bool needsWatchdog =
+            (mc.mode() == DriveMode::STREAMING) ||
+            (mc.hasActiveCommand() && mc.activeCmd().isOpenEnded());
+        if (needsWatchdog) {
+            int32_t wdDelta = (int32_t)(now_ms - s->watchdogMs);
+            if (wdDelta > (int32_t)s->robot.config.sTimeoutMs) {
+                s->watchdogMs = now_ms;  // re-arm to avoid firing every tick
+                char wdBuf[64];
+                CommandProcessor::replyEvt(wdBuf, sizeof(wdBuf),
+                                           "safety_stop", "",
+                                           storeReply, &s->replyStore);
+                s->cmd.process("X", storeReply, &s->replyStore);
+            }
+        }
+    }
 }
 
 // ---- Command dispatch ----
@@ -139,6 +170,13 @@ int sim_command(void* h, const char* line, char* out_buf, int out_len)
     // storeReply + &s->replyStore are passed as the reply sink to cmd.process()
     // and will also be captured by any MotionCommand that calls setReplySink().
     s->cmd.process(line, storeReply, &s->replyStore);
+
+    // Reset system watchdog on every inbound command (mirrors LoopScheduler).
+    // Set to 1 (sentinel) so the watchdog is armed but the delta from the first
+    // sim_tick(now_ms=0) is -1 (signed), which won't fire prematurely.
+    // The watchdog fires when (now_ms - 1) exceeds sTimeoutMs, i.e. at ~501 ms
+    // after the last command — matching firmware behaviour.
+    s->watchdogMs = 1;
 
     // Copy the synchronous reply into the caller's buffer.
     int n = s->replyStore.written;

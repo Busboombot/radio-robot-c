@@ -51,6 +51,8 @@ def test_d_command_emits_done_evt(sim):
 
 def test_vw_command_drives_encoder(sim):
     """VW 200 0 command (forward 200 mm/s) makes encoder grow over 100 ticks."""
+    # Disable the system watchdog so the encoder-accumulation test isn't cut off.
+    sim.send_command("SET sTimeout=30000")
     r = sim.send_command("VW 200 0")
     assert "OK" in r.upper(), f"Expected OK from VW command, got {repr(r)}"
 

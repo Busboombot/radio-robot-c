@@ -10,6 +10,9 @@ import ctypes
 
 def test_pwm_nonzero_at_target_speed(sim):
     """After commanding S 200 200 and settling, PWM is nonzero (motor running)."""
+    # Disable the system watchdog for this motor-behavior test — the watchdog
+    # is tested separately in test_motion_controller.py.
+    sim.send_command("SET sTimeout=30000")
     sim.send_command("S 200 200 9000")
     # Let the PID settle for 2 s.
     sim.tick_for(2000)
@@ -21,6 +24,8 @@ def test_pwm_nonzero_at_target_speed(sim):
 
 def test_encoder_grows_at_target_speed(sim):
     """With 200 mm/s target, encoder accumulates over 2 s."""
+    # Disable the system watchdog for this motor-behavior test.
+    sim.send_command("SET sTimeout=30000")
     sim.send_command("S 200 200 9000")
     sim.tick_for(2000)
     enc_l = float(sim._lib.sim_get_enc_l(sim._h))
@@ -38,6 +43,8 @@ def test_integral_windup_clamped(sim):
     but the hardware clamp bounds the result to [-100, +100].  The test confirms
     the pwm stays finite (no NaN/Inf) and within the hardware range.
     """
+    # Disable the system watchdog for this PID-behavior test.
+    sim.send_command("SET sTimeout=30000")
     sim.send_command("S 400 400 9000")
 
     # Tick for 2 s, forcibly zeroing the encoder after each step so the
@@ -58,6 +65,8 @@ def test_integral_windup_clamped(sim):
 
 def test_stop_zeroes_pwm(sim):
     """After X (cancel) command, PWM reaches 0 within one tick."""
+    # Disable the system watchdog so tick_for(500) doesn't trigger it.
+    sim.send_command("SET sTimeout=30000")
     sim.send_command("S 400 400 9000")
     sim.tick_for(500)  # Build up motion
 

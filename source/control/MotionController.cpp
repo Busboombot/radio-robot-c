@@ -42,7 +42,6 @@ MotionController::MotionController(MotorController& mc, Odometry& odo, const Rob
     , _bvc(mc, cfg)     // _bvc must be initialised before _activeCmd (declaration order)
     , _activeCmd()
     , _mode(DriveMode::IDLE)
-    , _lastSMs(0)
     , _tgtL(0.0f)
     , _tgtR(0.0f)
     , _dDistTarget(0.0f)
@@ -55,18 +54,6 @@ MotionController::MotionController(MotorController& mc, Odometry& odo, const Rob
     , _lastTickMs(0)
     , _currentTimeMs(0)
 {
-}
-
-// ---------------------------------------------------------------------------
-// Internal: apply curvature-preserving saturation to a wheel-speed pair.
-// Routes through BodyKinematics::saturate() using config ceiling.
-// ---------------------------------------------------------------------------
-
-static void applySaturation(float vL, float vR,
-                             const RobotConfig& cfg,
-                             float& vL_out, float& vR_out)
-{
-    BodyKinematics::saturate(vL, vR, cfg.vWheelMax, cfg.steerHeadroom, vL_out, vR_out);
 }
 
 // ---------------------------------------------------------------------------
@@ -108,19 +95,22 @@ static void applySaturation(float vL, float vR,
 void MotionController::beginStream(float leftMms, float rightMms, uint32_t now_ms,
                                    TargetState& target, ReplyFn fn, void* ctx)
 {
-    float sL, sR;
-    applySaturation(leftMms, rightMms, _cfg, sL, sR);
-    _mc.startDrive(sL, sR);
-    _mc.setTarget(sL, sR);
-    _tgtL    = sL;
-    _tgtR    = sR;
-    _mode    = DriveMode::STREAMING;
-    _lastSMs = now_ms;
+    // Convert wheel speeds to body twist via forward kinematics, then route
+    // through BVC so all wheel commands go through the profiler path.
+    float v, omega;
+    BodyKinematics::forward(leftMms, rightMms, _cfg.trackwidthMm, v, omega);
+    _bvc.seedCurrent(v, omega);
+    _bvc.setTarget(v, omega);
+
+    _tgtL = leftMms;
+    _tgtR = rightMms;
+    _mode = DriveMode::STREAMING;
+    (void)now_ms;  // watchdog now lives in LoopScheduler
 
     target.mode     = DriveMode::STREAMING;
     target.replyFn  = fn;
     target.replyCtx = ctx;
-    // corrId cleared — S mode uses watchdog, no completion id
+    // corrId cleared — S mode uses system watchdog, no completion id
     target.corrId[0] = '\0';
 }
 
@@ -129,16 +119,15 @@ void MotionController::beginVelocity(float v_mms, float omega_rads, uint32_t now
                                      const char* corr_id)
 {
     // Configure a fresh MotionCommand for body-twist (v, ω) with:
-    //   - TIME stop condition at sTimeoutMs (keepalive watchdog).
+    //   - No TIME stop (keepalive watchdog is now the system watchdog in
+    //     LoopScheduler — fires EVT safety_stop + X after sTimeoutMs silence).
     //   - SOFT stop style (ramp to zero before completing).
-    //   - EVT "EVT safety_stop" on completion (preserves wire contract).
-    //   - Reply sink for async EVT delivery.
+    //   - No reply sink needed — VW has no correlated EVT done; system watchdog
+    //     emits EVT safety_stop directly.
     _activeCmd.configure(v_mms, omega_rads, &_bvc);
-    _activeCmd.addStop(makeTimeStop((float)_cfg.sTimeoutMs));
+    // No addStop: system watchdog in LoopScheduler owns keepalive enforcement.
     _activeCmd.setReplySink(fn, ctx, corr_id);
     _activeCmd.setStopStyle(MotionCommand::StopStyle::SOFT);
-    // Override done EVT to preserve the VW keepalive-loss wire contract.
-    _activeCmd.setDoneEvt("EVT safety_stop");
 
     // Snapshot hardware state for MotionBaseline; use _hwState if available.
     HardwareState emptyState{};
@@ -343,12 +332,20 @@ void MotionController::beginGoTo(float tx, float ty, float speedMms, uint32_t no
         float dirGain  = (turnSign > 0.0f) ? _cfg.rotationGainPos : _cfg.rotationGainNeg;
         // Guard against divide-by-zero or degenerate gain values.
         if (dirGain < 0.05f) dirGain = 0.05f;
-        float rawL = -turnSign * (_gSpeed / dirGain);
-        float rawR =  turnSign * (_gSpeed / dirGain);
-        float sL, sR;
-        BodyKinematics::saturate(rawL, rawR, _cfg.vWheelMax, _cfg.steerHeadroom, sL, sR);
-        _mc.startDriveClean(sL, sR);
-        _mc.setTarget(sL, sR);
+        // Compute ω from per-direction gain: spin-in-place at (_gSpeed / dirGain)
+        // wheel speed.  ω = vWheel_tangential / (trackwidth/2) = (speed/dirGain) / (b/2).
+        // More precisely: vR-vL = 2*omega*(b/2) = omega*b, so omega = (vR-vL)/b.
+        // With vR=+speed/dirGain and vL=-speed/dirGain: omega = 2*(speed/dirGain)/b.
+        float wheelSpd = _gSpeed / dirGain;
+        float omega    = turnSign * 2.0f * wheelSpd / _cfg.trackwidthMm;
+        // Clamp omega magnitude to avoid overflow (mirrors vWheelMax saturation).
+        // Maximum omega corresponds to vWheelMax at each wheel:
+        // omega_max = 2*vWheelMax / trackwidthMm.
+        float omegaMax = 2.0f * _cfg.vWheelMax / _cfg.trackwidthMm;
+        if (omega >  omegaMax) omega =  omegaMax;
+        if (omega < -omegaMax) omega = -omegaMax;
+        _bvc.seedCurrent(0.0f, omega);
+        _bvc.setTarget(0.0f, omega);
         _gPhase = GPhase::PRE_ROTATE;
     } else {
         // Target is roughly ahead — enter pursuit directly.
@@ -551,25 +548,19 @@ void MotionController::driveAdvance(HardwareState& inputs, MotorCommands& cmds,
         return;
     }
 
-    // S-mode watchdog — emit EVT safety_stop when keepalive times out.
-    // (Re-enabled after the encoder-wedge fix: Motor::setSpeed is now
-    // write-on-change, so fullStop()'s 0x5F stop is sent once instead of being
-    // spammed every tick — which was what wedged the encoder.)
-    // Guarded by _mode == STREAMING so VW (VELOCITY) does NOT trigger this.
+    // S-mode keepalive watchdog has been removed from driveAdvance.
+    // The system watchdog in LoopScheduler now handles keepalive enforcement for
+    // all modes (STREAMING, VELOCITY, etc.) — it fires EVT safety_stop + X after
+    // sTimeoutMs of inbound command silence (Sprint 020, Ticket 005).
     (void)inputs;
-    if (_mode == DriveMode::STREAMING) {
-        // Wraparound/ordering-SAFE elapsed time. _lastSMs can be a hair AHEAD of
-        // now_ms: the scheduler samples now_ms at the top of the loop, but the
-        // keepalive S is processed slightly later in the same iteration and sets
-        // _lastSMs from a fresh systemTime(). A plain uint32 (now_ms - _lastSMs)
-        // then underflows to ~4.29e9 and trips a spurious safety_stop EVERY tick
-        // an S lands in that window (the velocity "notches" / momentary stops).
-        // A signed delta treats a small negative as "0 ms elapsed".
-        int32_t dt = (int32_t)(now_ms - _lastSMs);
-        if (dt > (int32_t)_cfg.sTimeoutMs) {
-            fullStop(nullptr, nullptr);
-            emitEvt("EVT safety_stop", target);
-        }
+
+    // ── BVC tick for STREAMING and PRE_ROTATE modes ─────────────────────────
+    // These modes set BVC targets but do not have an active MotionCommand to
+    // call _bvc.advance(). Tick the BVC directly here so the profiler advances
+    // and wheel setpoints are written every control period.
+    if (_mode == DriveMode::STREAMING ||
+        (_mode == DriveMode::GO_TO && _gPhase == GPhase::PRE_ROTATE)) {
+        _bvc.advance(dt_s);
     }
 
     // G-mode: advance go-to state machine.

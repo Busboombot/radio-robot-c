@@ -89,16 +89,6 @@ public:
      */
     void setDoneEvt(const char* label);
 
-    /**
-     * armTime — re-arm the t0Ms baseline of the first TIME stop condition.
-     *
-     * Used by setTarget when a VW keepalive packet arrives to reset the
-     * streaming timeout without restarting the whole command.
-     *
-     * @param now_ms Current system time, ms.
-     */
-    void armTime(uint32_t now_ms);
-
     // ------------------------------------------------------------------
     // Execution phase
     // ------------------------------------------------------------------
@@ -117,8 +107,7 @@ public:
     /**
      * setTarget — live-update the target twist while the command is running.
      *
-     * Updates _vTgt/_omegaTgt; calls bvc->setTarget; re-arms the first TIME
-     * stop condition via armTime(now_ms) (used by VW keepalive).
+     * Updates _vTgt/_omegaTgt; calls bvc->setTarget.
      *
      * Safe to call while active or while idle (configure phase).
      *
@@ -166,6 +155,17 @@ public:
      */
     bool active() const { return _active; }
 
+    /**
+     * isOpenEnded — true when the command has no stop conditions.
+     *
+     * Open-ended commands (VW, R) run indefinitely until cancelled or timed
+     * out by the system watchdog.  Self-terminating commands (T, D, G, TURN)
+     * have at least one stop condition and manage their own lifetime.
+     *
+     * Used by the system watchdog to determine whether to fire safety_stop.
+     */
+    bool isOpenEnded() const { return _nStops == 0; }
+
 private:
     BodyVelocityController* _bvc            = nullptr;
     float       _vTgt                        = 0.0f;
@@ -180,8 +180,6 @@ private:
     bool        _active                     = false;
     bool        _stopping                   = false;   // true during SOFT ramp-down
     uint32_t    _softDeadlineMs             = 0;
-    uint32_t    _now_ms                     = 0;       // stored for setTarget re-arm
-
     /** Absolute SOFT-stop deadline: 3000 ms after a stop fires. */
     static constexpr uint32_t kSoftDeadlineMs = 3000;
 

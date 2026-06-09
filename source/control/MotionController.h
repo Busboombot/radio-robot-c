@@ -145,9 +145,6 @@ private:
     // Drive mode
     DriveMode _mode;
 
-    // S-mode watchdog
-    uint32_t _lastSMs;
-
     // Current speed targets (kept for internal use only)
     float _tgtL;
     float _tgtR;

@@ -32,7 +32,6 @@ void MotionCommand::configure(float v_mms, float omega_rads, BodyVelocityControl
     _active          = false;
     _stopping        = false;
     _softDeadlineMs  = 0;
-    _now_ms          = 0;
     _baseline        = MotionBaseline{};
     // Reset done EVT label to default; caller must call setDoneEvt() after
     // configure() to override it for the new command.
@@ -74,17 +73,6 @@ void MotionCommand::setStopStyle(StopStyle s)
     _stopStyle = s;
 }
 
-void MotionCommand::armTime(uint32_t now_ms)
-{
-    // Re-arm the t0Ms baseline in the first TIME stop condition.
-    for (uint8_t i = 0; i < _nStops; ++i) {
-        if (_stops[i].kind == StopCondition::Kind::TIME) {
-            _baseline.t0Ms = now_ms;
-            return;
-        }
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Execution phase
 // ---------------------------------------------------------------------------
@@ -98,7 +86,6 @@ void MotionCommand::start(const HardwareState& inputs, uint32_t now_ms)
     _baseline.pose0X     = inputs.poseX;
     _baseline.pose0Y     = inputs.poseY;
 
-    _now_ms   = now_ms;
     _active   = true;
     _stopping = false;
 
@@ -116,16 +103,11 @@ void MotionCommand::setTarget(float v_mms, float omega_rads)
     if (_bvc) {
         _bvc->setTarget(_vTgt, _omegaTgt);
     }
-
-    // Re-arm TIME condition baseline (VW keepalive reset).
-    armTime(_now_ms);
 }
 
 bool MotionCommand::tick(const HardwareState& inputs, uint32_t now_ms, float dt_s)
 {
     if (!_active) return false;
-
-    _now_ms = now_ms;
 
     // ------------------------------------------------------------------
     // SOFT ramp-down sub-phase.

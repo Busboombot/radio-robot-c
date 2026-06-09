@@ -38,7 +38,7 @@ static void radioReply(const char* msg, void* ctx)
 // telemetry and EVT completions go back on the channel that sent the command.
 // ---------------------------------------------------------------------------
 
-static void runCommsIn(LoopScheduler& sched, uint32_t /*now*/)
+static void runCommsIn(LoopScheduler& sched, uint32_t now)
 {
     CommandProcessor& cmd    = sched.cmd();
     SerialPort&       serial = sched.comm().serial();
@@ -51,6 +51,7 @@ static void runCommsIn(LoopScheduler& sched, uint32_t /*now*/)
         sched.activeTlmFn = serialReplyTlm;
         sched.activeCtx   = &serial;
         cmd.process(buf, serialReply, &serial);
+        sched.resetWatchdog(now);
     }
 
     while (radio.poll(buf, sizeof(buf))) {
@@ -58,6 +59,7 @@ static void runCommsIn(LoopScheduler& sched, uint32_t /*now*/)
         sched.activeTlmFn = radioReply;
         sched.activeCtx   = &radio;
         cmd.process(buf, radioReply, &radio);
+        sched.resetWatchdog(now);
     }
 }
 
@@ -97,7 +99,7 @@ void LoopScheduler::run_blocks()
     // ---- ENABLE FLAGS -------------------------------------------------------
     bool enControl = true;   // read encoders + run PID + write motors (metronome)
     bool enComms   = true;   // drain serial + radio command queues
-    bool enDrive   = true;   // advance S/T/D/G drive state machine + S-watchdog
+    bool enDrive   = true;   // advance S/T/D/G drive state machine
     bool enOdom    = true;   // dead-reckon pose from the encoders
     bool enOtos    = true;   // OTOS pose read + complementary fusion (timed)
     bool enLine    = true;   // line sensor read (timed)
@@ -135,7 +137,36 @@ void LoopScheduler::run_blocks()
             runCommsIn(*this, now);
         }
 
-        // ===== DRIVE: advance drive state machine + S-watchdog ==============
+        // ===== SYSTEM WATCHDOG: fire safety_stop + X after sTimeoutMs of silence =====
+        // _watchdogMs == 0 means no command has been received yet this session;
+        // the watchdog stays disarmed until the first command arrives.
+        // Signed delta avoids uint32 underflow (see memory note: watchdog-uint32-underflow).
+        //
+        // Only fires when the robot is in an open-ended motion mode:
+        //   - STREAMING (S command, no active MotionCommand)
+        //   - VELOCITY/ARC (VW/R, active MotionCommand with no stop conditions)
+        // Self-terminating commands (T/D/G/TURN, with stop conditions) manage
+        // their own lifetime and are NOT interrupted by the system watchdog.
+        {
+            now = _uBit.systemTime();
+            MotionController& mc = _robot.motionController;
+            bool needsWatchdog =
+                (mc.mode() == DriveMode::STREAMING) ||
+                (mc.hasActiveCommand() && mc.activeCmd().isOpenEnded());
+            if (_watchdogMs != 0 && activeFn != nullptr && needsWatchdog) {
+                int32_t wdDelta = (int32_t)(now - _watchdogMs);
+                if (wdDelta > (int32_t)_robot.config.sTimeoutMs) {
+                    _watchdogMs = now;  // reset to avoid repeated firing every tick
+                    char wdBuf[64];
+                    CommandProcessor::replyEvt(wdBuf, sizeof(wdBuf),
+                                               "safety_stop", "",
+                                               activeFn, activeCtx);
+                    _cmd.process("X", activeFn, activeCtx);
+                }
+            }
+        }
+
+        // ===== DRIVE: advance drive state machine ==========================
         if (enDrive) {
             now = _uBit.systemTime();
             _robot.motionController.driveAdvance(

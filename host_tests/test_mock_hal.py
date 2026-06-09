@@ -22,6 +22,10 @@ def test_motor_forward_accumulates(sim):
     encoder won't reach the theoretical 400mm after 1 s.  We assert >= 70% of
     the nominal max to confirm the motor is actually running (not stuck at 0).
     """
+    # Disable the system watchdog for this motor-behavior test — the watchdog
+    # is tested separately in test_motion_controller.py.
+    sim.send_command("SET sTimeout=30000")
+
     # S command: left_mms right_mms — use very large dist_mm so it
     # doesn't stop early.  S takes mm/s values for L and R directly.
     # Drive both wheels at ~400 mm/s forward for 1 second.
@@ -52,6 +56,8 @@ def test_motor_reverse_decreases(sim):
 
     Same PID ramp-up applies; use 70% threshold (same reasoning as forward test).
     """
+    # Disable the system watchdog for this motor-behavior test.
+    sim.send_command("SET sTimeout=30000")
     # Drive both wheels in reverse.
     sim.send_command("S -400 -400 9000")
     sim.tick_for(1000)
