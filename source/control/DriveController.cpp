@@ -10,7 +10,7 @@
 //
 // Sprint 014, Ticket 005: EVT ring buffer removed.  Completions emitted
 // inline via target.replyFn / target.replyCtx / target.corrId.
-// OTOS correction removed — handled by AppContext::otosCorrect() exclusively.
+// OTOS correction removed — handled by Robot::otosCorrect() exclusively.
 //
 // Sprint 017, Ticket 004: VW migrated from STREAMING path onto MotionCommand.
 // _bvc and _activeCmd added as value members.  beginVelocity now configures
@@ -227,7 +227,7 @@ void DriveController::beginDistance(float leftMms, float rightMms,
     BodyKinematics::forward(leftMms, rightMms, _cfg.trackwidthMm, v_mms, omega_rads);
 
     // Encoder-reset workaround: reset the accumulator so DISTANCE delta starts
-    // from 0.  The state.inputs.encLMm/R baseline reset is done by AppContext::
+    // from 0.  The state.inputs.encLMm/R baseline reset is done by Robot::
     // distanceDrive() after this call — do not move that reset here.
     _mc.resetEncoderAccumulators();
 
@@ -265,7 +265,7 @@ void DriveController::beginDistance(float leftMms, float rightMms,
     _activeCmd.setDoneEvt("EVT done D");
 
     // Snapshot hardware state for MotionBaseline.
-    // After resetEncoderAccumulators() the accumulators are 0; AppContext will
+    // After resetEncoderAccumulators() the accumulators are 0; Robot will
     // also zero state.inputs.encLMm/R immediately after this call returns, so
     // the baseline enc0 captured by MotionCommand::start() will be 0 — matching
     // the DISTANCE stop evaluation which reads (encLMm + encRMm)/2 from HardwareState.
@@ -408,6 +408,16 @@ void DriveController::beginTurn(float headingCdeg, float epsCdeg, uint32_t now_m
     //   - Reply sink for async EVT delivery.
     _activeCmd.configure(0.0f, omega, &_bvc);
     _activeCmd.addStop(makeHeadingStop(delta_rad, eps_rad));
+    // Safety time-out net (mirrors beginDistance): a TURN must NEVER run away if
+    // the HEADING stop never fires — e.g. odometry heading not advancing because
+    // encoders are frozen, or the robot physically cannot reach the target. Bound
+    // the turn to ~2x its nominal duration plus 2 s of ramp/settle headroom so a
+    // stuck heading produces a clean EVT done instead of an unbounded spin.
+    float nominalMs = (fabsf(omega) > 1e-3f)
+                      ? (fabsf(delta_rad) / fabsf(omega)) * 1000.0f
+                      : 0.0f;
+    float timeoutMs = 2.0f * nominalMs + 2000.0f;
+    _activeCmd.addStop(makeTimeStop(timeoutMs));
     _activeCmd.setReplySink(fn, ctx, corr_id);
     _activeCmd.setStopStyle(MotionCommand::StopStyle::SOFT);
     _activeCmd.setDoneEvt("EVT done TURN");
@@ -459,7 +469,7 @@ void DriveController::cancel(uint32_t now_ms, ReplyFn fn, void* ctx)
 // there is no fiber boundary in the single cooperative main loop (014-005).
 //
 // NOTE: OTOS correction is NOT done here.  It is the sole responsibility of
-// AppContext::otosCorrect() called at the slow cadence in LoopScheduler
+// Robot::otosCorrect() called at the slow cadence in LoopScheduler
 // (ticket 005 wired this; ticket 006 moved it to the scheduler task).
 // ---------------------------------------------------------------------------
 
@@ -473,7 +483,7 @@ void DriveController::driveAdvance(HardwareState& inputs, MotorCommands& cmds,
     _lastTickMs     = now_ms;
     _currentTimeMs  = now_ms;
 
-    // Motor controller tick and odometry predict are called by AppContext::controlCollectSplitPhase()
+    // Motor controller tick and odometry predict are called by Robot::controlCollectSplitPhase()
     // and odometry.predict() before driveAdvance() is reached (014-003/004).
     (void)cmds;
 

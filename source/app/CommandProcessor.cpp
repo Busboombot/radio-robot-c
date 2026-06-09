@@ -12,7 +12,7 @@
 // Static kRegistry[] maps friendly key names to RobotConfig fields.
 
 #include "CommandProcessor.h"
-#include "AppContext.h"
+#include "Robot.h"
 #include "MicroBitDevice.h"
 #include "OtosSensor.h"
 #include "LineSensor.h"
@@ -147,7 +147,7 @@ static constexpr int kRegistryCount = (int)(sizeof(kRegistry) / sizeof(kRegistry
 // Constructor
 // ---------------------------------------------------------------------------
 
-CommandProcessor::CommandProcessor(AppContext& robot)
+CommandProcessor::CommandProcessor(Robot& robot)
     : _robot(robot)
 {
 }
@@ -606,7 +606,7 @@ static bool parseSensorToken(const char* value,
 
 void CommandProcessor::process(const char* line, ReplyFn replyFn, void* ctx)
 {
-    // Telemetry streaming is gated purely on motors-running (see AppContext::
+    // Telemetry streaming is gated purely on motors-running (see Robot::
     // telemetryEmit): stream while driving, silent when stopped. To read while
     // stopped, the host REQUESTS a frame (SNAP) — a synchronous command-response,
     // so commands don't need to keep the stream alive.

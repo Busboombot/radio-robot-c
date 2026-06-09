@@ -68,7 +68,7 @@ public:
     static void getPose(const HardwareState& s,
                         int32_t& x_mm, int32_t& y_mm, int32_t& h_cdeg);
 
-    // Overwrite pose in s (used by AppContext::distanceDrive / SI command).
+    // Overwrite pose in s (used by Robot::distanceDrive / SI command).
     // h_cdeg is centidegrees; stored internally as radians.
     // Also resets _prevEncL/_prevEncR to 0 so the next predict() uses a
     // fresh encoder snapshot.

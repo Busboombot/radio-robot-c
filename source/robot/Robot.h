@@ -13,7 +13,7 @@
 #include "Protocol.h"
 
 /**
- * AppContext — open struct that owns and wires all robot firmware subsystems.
+ * Robot — open struct that owns and wires all robot firmware subsystems.
  *
  * Replaces the Robot facade class (sprint 016).  All subsystem members are
  * public: there are no invariants to protect at this level — each subsystem
@@ -23,7 +23,7 @@
  * Devices (Motor, OtosSensor, LineSensor, ColorSensor, Servo, PortIO) are
  * constructed in main() as statics and held here as REFERENCES (not owned).
  * The control layer (MotorController, Odometry, DriveController) and state
- * (RobotConfig, RobotStateContainer) are VALUE MEMBERS owned by AppContext.
+ * (RobotConfig, RobotStateContainer) are VALUE MEMBERS owned by Robot.
  *
  * Member declaration order is load-bearing (C++ initialises members in
  * declaration order):
@@ -34,7 +34,7 @@
  *   5. odometry                — default ctor
  *   6. driveController         — needs motorController, odometry, config
  */
-struct AppContext {
+struct Robot {
     // ---- Owned value members (initialized first) ----
     RobotConfig         config;   // owned copy; SET commands mutate this
     RobotStateContainer state;    // = defaultInputs(config)
@@ -56,12 +56,12 @@ struct AppContext {
     DriveController     driveController;  // (motorController, odometry, config)
 
     // ---- Constructor ----
-    AppContext(Motor& mL, Motor& mR, OtosSensor& o, LineSensor& l,
+    Robot(Motor& mL, Motor& mR, OtosSensor& o, LineSensor& l,
                ColorSensor& c, Servo& g, PortIO& p,
                const RobotConfig& cfg);
 
     // ---- Kept orchestration methods ----
-    // These methods span multiple subsystems and are kept as AppContext members
+    // These methods span multiple subsystems and are kept as Robot members
     // rather than inlined at every call site.
 
     // controlCollectSplitPhase — read both encoders, apply outlier filter,

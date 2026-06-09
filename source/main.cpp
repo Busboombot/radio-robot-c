@@ -1,5 +1,5 @@
 #include "MicroBit.h"
-#include "AppContext.h"
+#include "Robot.h"
 #include "CommandProcessor.h"
 #include "LoopScheduler.h"
 #include "Communicator.h"
@@ -117,11 +117,11 @@ static void serialReply(const char* msg, void* ctx)
 //   5. Sensor begin() calls — straight-line, before the loop.
 //      Comment a line out to disable that sensor; its task skips via
 //      is_initialized() on every subsequent read.
-//   6. AppContext — built from its devices; owns config, state, and controllers.
+//   6. Robot — built from its devices; owns config, state, and controllers.
 //   7. CommandProcessor / LoopScheduler — wired and started.
 //
 // Sensor detection rationale:
-//   * NOT in the AppContext constructor — detecting that early reads the line/color
+//   * NOT in the Robot constructor — detecting that early reads the line/color
 //     chips before they have powered up and wedges the I2C bus.
 //   * NOT inside the loop — the per-sensor retries would freeze the loop.
 //   A short settle delay gives the sensors time to power up; each begin()
@@ -186,12 +186,12 @@ int main() {
     color.begin();
 
     // -----------------------------------------------------------------------
-    // 6. AppContext — built from devices; owns config, state, and controllers.
+    // 6. Robot — built from devices; owns config, state, and controllers.
     //    No direct i2c/serial/radio/MicroBit refs — fully encapsulated by
     //    the device objects.
     // -----------------------------------------------------------------------
-    static AppContext appCtx(motorL, motorR, otos, line, color, gripper, portio, cfg);
-    static CommandProcessor cmd(appCtx);
+    static Robot robot(motorL, motorR, otos, line, color, gripper, portio, cfg);
+    static CommandProcessor cmd(robot);
 
     // DEVICE: identification banner once at boot over serial.
     cmd.process("HELLO", serialReply, &comm.serial());
@@ -199,14 +199,14 @@ int main() {
     // -----------------------------------------------------------------------
     // 7. Run the cooperative main loop — never returns.
     // -----------------------------------------------------------------------
-    static LoopScheduler sched(appCtx, cmd, comm, uBit);
+    static LoopScheduler sched(robot, cmd, comm, uBit);
     cmd.setScheduler(&sched);             // enable DBG LOOP <x> <state> task toggling
     cmd.setI2CBus(&bus);                  // enable DBG I2C stats dump (015-003)
 
     // Wire the I2CBus and EVT sink into MotorController so enc_wedged events
     // are emitted with bus stats and go to the active serial/radio channel.
-    appCtx.motorController.setI2CBus(&bus);
-    appCtx.motorController.setEvtSink(&sched.activeFn, &sched.activeCtx);
+    robot.motorController.setI2CBus(&bus);
+    robot.motorController.setEvtSink(&sched.activeFn, &sched.activeCtx);
 
     sched.run_blocks();
 

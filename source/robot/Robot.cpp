@@ -1,4 +1,4 @@
-#include "AppContext.h"
+#include "Robot.h"
 #include "LineSensor.h"
 #include "ColorSensor.h"
 #include "DriveController.h"
@@ -9,7 +9,7 @@
 // ---------------------------------------------------------------------------
 // Constructor — initializer list must match member declaration order.
 //
-// Declaration order (from AppContext.h):
+// Declaration order (from Robot.h):
 //   config, state, motorL, motorR, otos, line, colorSensor, gripper, portio,
 //   motorController, odometry, driveController
 //
@@ -18,7 +18,7 @@
 //   motorController.setCommandsRef(&state.commands)  — MotorController writes tgt*/pwm*
 // ---------------------------------------------------------------------------
 
-AppContext::AppContext(Motor& mL, Motor& mR, OtosSensor& o, LineSensor& l,
+Robot::Robot(Motor& mL, Motor& mR, OtosSensor& o, LineSensor& l,
                        ColorSensor& c, Servo& g, PortIO& p,
                        const RobotConfig& cfg)
     : config(cfg),
@@ -37,7 +37,7 @@ AppContext::AppContext(Motor& mL, Motor& mR, OtosSensor& o, LineSensor& l,
 // systemTime — robot system time in milliseconds since boot.
 // ---------------------------------------------------------------------------
 
-uint32_t AppContext::systemTime() const
+uint32_t Robot::systemTime() const
 {
     return (uint32_t)system_timer_current_time();
 }
@@ -53,7 +53,7 @@ uint32_t AppContext::systemTime() const
 // _motorL → motorL, _motorR → motorR, _config → config).
 // ---------------------------------------------------------------------------
 
-void AppContext::controlCollectSplitPhase(uint32_t now_ms, int /*pendingWheel*/)
+void Robot::controlCollectSplitPhase(uint32_t now_ms, int /*pendingWheel*/)
 {
     // WedgeTest-proven pattern (sprint 015): read BOTH encoders every tick,
     // right motor (M1) first, then left (M2). Write-on-change is already
@@ -128,7 +128,7 @@ void AppContext::controlCollectSplitPhase(uint32_t now_ms, int /*pendingWheel*/)
 // via the task table's periodMs (lagOtosMs).
 // ---------------------------------------------------------------------------
 
-void AppContext::otosCorrect(uint32_t now_ms)
+void Robot::otosCorrect(uint32_t now_ms)
 {
     if (!otos.is_initialized()) return;
     OtosPose p = otos.readTransformed(config);
@@ -145,7 +145,7 @@ void AppContext::otosCorrect(uint32_t now_ms)
 // lineRead — read 4-channel line sensor into HardwareState.
 // ---------------------------------------------------------------------------
 
-void AppContext::lineRead()
+void Robot::lineRead()
 {
     if (!line.is_initialized()) return;
     if (line.readValues(state.inputs.line)) {
@@ -158,7 +158,7 @@ void AppContext::lineRead()
 // colorRead — non-blocking RGBC poll into HardwareState.
 // ---------------------------------------------------------------------------
 
-void AppContext::colorRead()
+void Robot::colorRead()
 {
     if (!colorSensor.is_initialized()) return;
     if (colorSensor.pollRGBC(state.inputs.colorR,
@@ -174,7 +174,7 @@ void AppContext::colorRead()
 // portsRead — read digital and analogue GPIO ports into HardwareState.
 // ---------------------------------------------------------------------------
 
-void AppContext::portsRead()
+void Robot::portsRead()
 {
     for (uint8_t i = 0; i < 4; ++i) {
         state.inputs.digitalIn[i] = (portio.readDigital(i) != 0);
@@ -195,7 +195,7 @@ void AppContext::portsRead()
 // them here aligns the filter baseline with the fresh accumulator.
 // ---------------------------------------------------------------------------
 
-void AppContext::distanceDrive(int32_t l, int32_t r, int32_t targetMm,
+void Robot::distanceDrive(int32_t l, int32_t r, int32_t targetMm,
                                 ReplyFn fn, void* ctx, const char* corr_id)
 {
     driveController.beginDistance((float)l, (float)r, targetMm,
@@ -211,7 +211,7 @@ void AppContext::distanceDrive(int32_t l, int32_t r, int32_t targetMm,
 // STREAM (telemetryEmit) and the synchronous SNAP command.
 // ---------------------------------------------------------------------------
 
-int AppContext::buildTlmFrame(char* buf, int len)
+int Robot::buildTlmFrame(char* buf, int len)
 {
     uint32_t t_sample = systemTime();
     int32_t encL = static_cast<int32_t>(state.inputs.encLMm);
@@ -280,7 +280,7 @@ int AppContext::buildTlmFrame(char* buf, int len)
 // synchronous request path.
 // ---------------------------------------------------------------------------
 
-void AppContext::telemetryEmit(uint32_t now_ms, ReplyFn fn, void* ctx)
+void Robot::telemetryEmit(uint32_t now_ms, ReplyFn fn, void* ctx)
 {
     static constexpr uint32_t kGraceMs = 400;
     if (driveController.mode() != DriveMode::IDLE) _lastActiveMs = now_ms;

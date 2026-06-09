@@ -93,7 +93,7 @@ public:
     /**
      * setCommandsRef — bind the authoritative MotorCommands struct so that
      * setTarget / startDrive / stop can write tgtLMms/R directly (014-007).
-     * Must be called before the first setTarget (AppContext constructor does this).
+     * Must be called before the first setTarget (Robot constructor does this).
      */
     void setCommandsRef(MotorCommands* cmds) { _cmds = cmds; }
 
@@ -129,7 +129,7 @@ public:
      * The chip readSpeed (0x47) path was disabled in sprint 013 to fix
      * motor throb. The encoder-delta fallback is the sole velocity source.
      * Method retained for CommandProcessor wire-format compatibility until
-     * ticket 007 migrates callers to AppContext::state.
+     * ticket 007 migrates callers to Robot::state.
      */
     void getVelocitySourceFlags(bool& leftChip, bool& rightChip) const;
 
@@ -157,7 +157,7 @@ private:
     float _cmdRatio;         // |fasterSpeed| / |slowerSpeed|, always >= 1.0
     bool  _fasterIsRight;    // true if right wheel is the commanded-faster wheel
 
-    // Pointer to the authoritative MotorCommands (set by AppContext via setCommandsRef).
+    // Pointer to the authoritative MotorCommands (set by Robot via setCommandsRef).
     // setTarget / startDrive / stop write tgtLMms/R here directly (014-007).
     MotorCommands* _cmds;
 

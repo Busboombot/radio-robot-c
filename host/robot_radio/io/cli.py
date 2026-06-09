@@ -1029,9 +1029,10 @@ def cmd_stop(args):
 def cmd_turn(args):
     """Turn in place by N degrees (positive = CCW/left, negative = CW/right).
 
-    Default (closed-loop): sends the firmware TN command and waits for
-    TN+DONE or TN+TIMEOUT — no daemon or camera required.  The firmware
-    runs a closed-loop OTOS turn on the robot itself (sprint-010 firmware).
+    Default (closed-loop): reads the current OTOS heading, converts the
+    relative angle to an absolute target, sends the firmware TURN verb, and
+    waits for EVT done TURN — no daemon or camera required.  The firmware runs
+    a MotionCommand HEADING-stop turn on the robot itself (sprint-018 firmware).
 
     The legacy open-loop T-command path (using rotational_slip from
     nezha-1.json) is still available with --open-loop for callers that need
@@ -1048,12 +1049,11 @@ def cmd_turn(args):
         conn.disconnect()
         return
 
-    # Closed-loop via firmware TN command (OTOS turn on-robot, no camera).
+    # Closed-loop via firmware TURN verb (absolute-heading turn, MotionCommand
+    # HEADING stop, on-robot OTOS — no camera).  `rogo turn` takes a RELATIVE
+    # angle, so we read the current OTOS heading from a SNAP→TLM frame, convert
+    # to an absolute target heading, send TURN, and wait for EVT done TURN.
     from robot_radio.robot.protocol import NezhaProtocol
-
-    deg_tenths = round(args.degrees * 10)
-    sign = "+" if deg_tenths >= 0 else ""
-    tn_cmd = f"TN{sign}{deg_tenths}"
 
     robot, conn, _ = _make_robot(args)
     proto = getattr(robot, "_proto", None)
@@ -1061,73 +1061,48 @@ def cmd_turn(args):
         conn.disconnect()
         sys.exit("Error: rogo turn requires a Nezha robot with NezhaProtocol.")
 
-    _log(f"turn {args.degrees:+.1f} deg -> {tn_cmd} (firmware closed-loop OTOS)")
+    # Current heading (centi-degrees) from a SNAP→TLM pose frame.
+    frame = _snap_tlm(conn)
+    if frame is None or frame.pose is None:
+        conn.disconnect()
+        sys.exit("Error: rogo turn needs OTOS pose to convert a relative turn "
+                 "to an absolute heading (SNAP returned no pose=). Is OTOS up?")
+    cur_cdeg = frame.pose[2]
 
-    # Send the TN command; ACK arrives quickly via the normal send() window.
-    conn.send(tn_cmd, read_ms=500)
+    # Relative request → absolute target heading, wrapped to [-18000, 18000].
+    # The firmware turns the shortest path to this absolute heading, so relative
+    # turns with |angle| > 180° collapse to their shortest equivalent.
+    target_cdeg = round(cur_cdeg + args.degrees * 100)
+    target_cdeg = ((target_cdeg + 18000) % 36000) - 18000
 
-    # Poll for TN+DONE or TN+TIMEOUT.  We cannot use stop_token="TN+" because
-    # the relay echoes the outgoing command as "# TX:TN+900" which contains
-    # "TN+" — that would cause an early exit before the real reply arrives.
-    # Instead we read in short bursts and scan each line ourselves, filtering
-    # out relay echo lines (starting with "# TX:") and stripping a leading "<"
-    # that the relay prepends to robot replies (e.g. "<TN+DONE 89").
-    TN_TIMEOUT_S = 20.0
-    deadline = time.time() + TN_TIMEOUT_S
-    achieved: float | None = None
-    timed_out = False
-    no_reply = True
+    eps_cdeg = getattr(args, "eps_cdeg", None)
+    corr = "1"
+    _log(f"turn {args.degrees:+.1f}° : heading {cur_cdeg / 100:+.1f}° -> "
+         f"TURN {target_cdeg} (abs)"
+         f"{' eps=' + str(eps_cdeg) if eps_cdeg else ''} #{corr} (closed-loop OTOS)")
 
-    while time.time() < deadline:
-        burst = conn.read_lines(duration_ms=300)
-        for line in burst:
-            s = line.strip()
-            # Filter relay echo lines (e.g. "# TX:TN+900").
-            if "TX:" in s:
-                _log(f"relay echo (ignored): {s}")
-                continue
-            # Strip leading "<" added by relay to robot-originated lines.
-            clean = s.lstrip("<")
-            if clean.startswith("TN+DONE"):
-                no_reply = False
-                parts = clean.split()
-                if len(parts) > 1:
-                    try:
-                        achieved = float(parts[1])
-                    except ValueError:
-                        pass
-                break
-            if clean.startswith("TN+TIMEOUT"):
-                no_reply = False
-                timed_out = True
-                parts = clean.split()
-                if len(parts) > 1:
-                    try:
-                        achieved = float(parts[1])
-                    except ValueError:
-                        pass
-                break
-        else:
-            # Inner loop completed without a break — keep polling.
-            continue
-        # Inner loop broke — we found the terminal reply.
-        break
+    proto.turn(target_cdeg, eps_cdeg=eps_cdeg, corr_id=corr)
+    outcome = proto.wait_for_evt_done("TURN", timeout_ms=20000, corr_id=corr)
 
+    # Read the achieved heading for an error report.
+    achieved_cdeg: float | None = None
+    final = _snap_tlm(conn)
+    if final is not None and final.pose is not None:
+        achieved_cdeg = final.pose[2]
     conn.disconnect()
 
-    if no_reply:
-        print("WARNING: no TN+DONE/TIMEOUT received within 20 s")
-    elif timed_out:
-        if achieved is not None:
-            print(f"WARNING: TN+TIMEOUT (achieved={achieved:.1f} deg)")
-        else:
-            print("WARNING: TN+TIMEOUT")
+    if outcome == "timeout":
+        print("WARNING: no EVT done TURN received within 20 s "
+              "(turn may not have completed)")
+    elif outcome == "safety_stop":
+        print("WARNING: TURN ended in safety_stop")
     else:
-        if achieved is not None:
-            err = args.degrees - achieved
-            print(f"done: achieved={achieved:.1f} deg  error={err:+.1f} deg")
+        if achieved_cdeg is not None:
+            err_cdeg = ((target_cdeg - achieved_cdeg + 18000) % 36000) - 18000
+            print(f"done: heading={achieved_cdeg / 100:+.1f}°  "
+                  f"error={err_cdeg / 100:+.1f}°")
         else:
-            print("done: TN+DONE received (no achieved value in reply)")
+            print("done: EVT done TURN received")
 
 
 def _spin_to_world_yaw(proto, field, tag_id, target_deg, speed, tol_deg):

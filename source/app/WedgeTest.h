@@ -26,7 +26,7 @@
 //            uBit.i2c path. THIS is the suspected toggle: the raw path never
 //            wedged; the real PID (high spin-up PWM, write-every-tick via the
 //            I2CBus wrapper) is what production does. Phase l/r are mm/s in this
-//            mode, raw PWM otherwise. Requires a non-null AppContext*.
+//            mode, raw PWM otherwise. Requires a non-null Robot*.
 //
 // A mode-independent wedge check reads 0x46 position once a second and trips
 // WEDGE-POS-FROZEN if the robot was driven but position did not advance — so it
@@ -34,8 +34,8 @@
 
 #include "MicroBit.h"
 
-struct AppContext;   // forward decl — real-control mode drives through it
+struct Robot;   // forward decl — real-control mode drives through it
 
 void runWedgeTest(MicroBit& uBit, int rateHz = 50, int writeMs = 40,
                   int busKHz = 400, int dither = 3, int reg = 0x46, int sensors = 0,
-                  int realCtrl = 0, AppContext* robot = nullptr);
+                  int realCtrl = 0, Robot* robot = nullptr);

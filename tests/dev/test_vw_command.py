@@ -349,7 +349,7 @@ class TestVWWatchdog:
         """TLM mode=V is produced for VW (DriveMode::VELOCITY added in Sprint 017-004).
 
         VW no longer uses DriveMode::STREAMING.  A new DriveMode::VELOCITY = 5
-        was added; AppContext::buildTlmFrame maps it to mode char 'V'.
+        was added; Robot::buildTlmFrame maps it to mode char 'V'.
         This replaces the old test_vw_mode_is_S_not_new_mode assertion.
         """
         # Simulate the TLM line a robot running VW would produce.

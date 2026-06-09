@@ -17,7 +17,7 @@ class Odometry;
  *
  * Calls MotorController for wheel control and reads Odometry for pose.
  * Does not parse commands. Does not emit telemetry — telemetry is
- * assembled by AppContext::buildTlmFrame() into a unified TLM frame.
+ * assembled by Robot::buildTlmFrame() into a unified TLM frame.
  *
  * Single cooperative main loop (014-005):
  *   - driveAdvance() is the single task entry point.  It advances all
@@ -31,7 +31,7 @@ class Odometry;
  * safety_stop) are returned over the channel that initiated the drive,
  * even if a later command arrives on a different channel.
  *
- * OTOS complementary correction is handled entirely by AppContext::otosCorrect()
+ * OTOS complementary correction is handled entirely by Robot::otosCorrect()
  * (ticket 004 / 005).  DriveController no longer holds the OtosSensor
  * pointer or the slow-cadence timer.
  */
@@ -39,11 +39,11 @@ class DriveController {
 public:
     DriveController(MotorController& mc, Odometry& odo, const RobotConfig& cfg);
 
-    // Bind the authoritative HardwareState (called by AppContext after state init,
+    // Bind the authoritative HardwareState (called by Robot after state init,
     // before the first tick).  Required so getPoseFloat() can read pose fields.
     void setHardwareState(HardwareState* s) { _hwState = s; }
 
-    // Entry points — called from AppContext drive methods.
+    // Entry points — called from Robot drive methods.
     // Each writes mode, deadline/goal, speed, and the reply sink into target,
     // and also captures into the private members for legacy compatibility.
     // corr_id: originating command correlation id (digits only, no '#');

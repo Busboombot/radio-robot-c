@@ -55,7 +55,7 @@ public:
     // Read the raw position registers, convert LSBs to mm/rad, apply the
     // upside-down flip and mounting-offset rotation from cfg, and return the
     // result as an OtosPose.  Does NOT write to HardwareState or call
-    // odometry.correct — those steps remain with the caller (AppContext::otosCorrect).
+    // odometry.correct — those steps remain with the caller (Robot::otosCorrect).
     // Returns {0,0,0} if not initialized.
     OtosPose readTransformed(const RobotConfig& cfg) const;
 

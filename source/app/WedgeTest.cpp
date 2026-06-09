@@ -21,7 +21,7 @@
 
 #include "WedgeTest.h"
 #include "MicroBit.h"
-#include "AppContext.h"        // real-control mode drives through the production stack
+#include "Robot.h"        // real-control mode drives through the production stack
 #include "MotorController.h"
 #include <cstdio>
 #include <cstdint>
@@ -148,7 +148,7 @@ constexpr int NPH = (int)(sizeof(PHASES) / sizeof(PHASES[0]));
 }  // namespace
 
 void runWedgeTest(MicroBit& uBit, int rateHz, int writeMs, int busKHz, int dither,
-                  int reg, int sensors, int realCtrl, AppContext* robot)
+                  int reg, int sensors, int realCtrl, Robot* robot)
 {
     MicroBitI2C& i2c = uBit.i2c;
     char line[240];
