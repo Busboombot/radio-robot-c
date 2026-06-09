@@ -29,6 +29,7 @@
 #include "LoopScheduler.h"
 #include "I2CBus.h"
 #include "Config.h"
+#include "StopCondition.h"
 #include <cstring>
 #include <cstdio>
 #include <cstdlib>
@@ -522,6 +523,84 @@ static void handleSet(KVPair* kvs, int nkv, RobotConfig& cfg,
 }
 
 // ---------------------------------------------------------------------------
+// parseSensorToken — parse "sensor=<ch>:<op>:<thr>" into channel, cmp, threshold.
+//
+// Called by T, D, and TURN handlers after finding the "sensor" key in kvs[].
+// The value string is of the form "<ch_name>:<op>:<thr_int>".
+//
+// Channel name → index mapping (must match StopCondition.cpp::getSensorValue):
+//   line0–line3 → 0–3
+//   colorR → 4, colorG → 5, colorB → 6, colorC → 7
+//
+// Op: "ge" → StopCondition::Cmp::GE; "le" → StopCondition::Cmp::LE.
+// thr: parsed as integer (sensor values are uint16_t raw ADC counts).
+//
+// Returns true on success (out-params set); false on any parse/lookup failure.
+// ---------------------------------------------------------------------------
+
+static bool parseSensorToken(const char* value,
+                              uint8_t& ch_out, float& thr_out,
+                              StopCondition::Cmp& cmp_out)
+{
+    // Expected format: "<ch_name>:<op>:<thr>"
+    // Split on ':' in a local copy of value.
+    char buf[32];
+    int vlen = 0;
+    for (const char* p = value; *p && vlen < (int)sizeof(buf) - 1; ++p, ++vlen) {
+        buf[vlen] = *p;
+    }
+    buf[vlen] = '\0';
+
+    // Find first ':' to separate channel name.
+    char* colon1 = strchr(buf, ':');
+    if (!colon1) return false;
+    *colon1 = '\0';
+    const char* ch_name = buf;
+    const char* rest    = colon1 + 1;
+
+    // Find second ':' to separate op from threshold.
+    char* colon2 = strchr(rest, ':');
+    if (!colon2) return false;
+    *colon2 = '\0';
+    const char* op_str  = rest;
+    const char* thr_str = colon2 + 1;
+
+    // Resolve channel name to index.
+    uint8_t ch = 0;
+    bool found = false;
+    struct { const char* name; uint8_t idx; } chMap[] = {
+        { "line0",  0 }, { "line1",  1 }, { "line2",  2 }, { "line3",  3 },
+        { "colorR", 4 }, { "colorG", 5 }, { "colorB", 6 }, { "colorC", 7 },
+    };
+    for (int i = 0; i < 8; ++i) {
+        if (strcmp(ch_name, chMap[i].name) == 0) {
+            ch    = chMap[i].idx;
+            found = true;
+            break;
+        }
+    }
+    if (!found) return false;
+
+    // Resolve operator.
+    StopCondition::Cmp cmp;
+    if (strcmp(op_str, "ge") == 0) {
+        cmp = StopCondition::Cmp::GE;
+    } else if (strcmp(op_str, "le") == 0) {
+        cmp = StopCondition::Cmp::LE;
+    } else {
+        return false;
+    }
+
+    // Parse threshold.
+    int thr = atoi(thr_str);
+
+    ch_out  = ch;
+    thr_out = (float)thr;
+    cmp_out = cmp;
+    return true;
+}
+
+// ---------------------------------------------------------------------------
 // process — v2 command dispatch
 // ---------------------------------------------------------------------------
 
@@ -697,7 +776,7 @@ void CommandProcessor::process(const char* line, ReplyFn replyFn, void* ctx)
     // Reply: OK help <verb list>
     if (strcmp(verb, "HELP") == 0) {
         replyOK(rbuf, sizeof(rbuf), "help",
-                "PING ECHO ID VER HELP SET GET GET VEL STREAM SNAP S T D G VW RF X STOP GRIP ZERO OI OZ OR OP OV OL OA P PA",
+                "PING ECHO ID VER HELP SET GET GET VEL STREAM SNAP S T D G R TURN VW RF X STOP GRIP ZERO OI OZ OR OP OV OL OA P PA [sensor=<ch>:<op>:<thr>]",
                 corr_id, replyFn, ctx);
         return;
     }
@@ -1144,6 +1223,25 @@ void CommandProcessor::process(const char* line, ReplyFn replyFn, void* ctx)
             return;
         }
         _robot.driveController.beginTimed((float)l, (float)r, (uint32_t)ms, _robot.systemTime(), _robot.state.target, replyFn, ctx, corr_id);
+
+        // Optional sensor= modifier: appended after begin*() returns.
+        // Safe: addStop() after start() is allowed — start() snapshots the
+        // baseline (enc/heading) but does NOT copy the stops array; tick()
+        // reads _stops[0.._nStops-1] directly, so a stop added here is
+        // evaluated on the very next tick().
+        for (int i = 0; i < nkv; ++i) {
+            if (kvs[i].key && strcmp(kvs[i].key, "sensor") == 0) {
+                uint8_t ch; float thr; StopCondition::Cmp cmp;
+                if (!parseSensorToken(kvs[i].value, ch, thr, cmp)) {
+                    replyErr(rbuf, sizeof(rbuf), "badarg", "sensor", corr_id, replyFn, ctx);
+                    _robot.driveController.cancel(_robot.systemTime(), replyFn, ctx);
+                    return;
+                }
+                _robot.driveController.activeCmd().addStop(makeSensorStop(ch, thr, cmp));
+                break;
+            }
+        }
+
         char body[48];
         snprintf(body, sizeof(body), "l=%d r=%d ms=%d", l, r, ms);
         replyOK(rbuf, sizeof(rbuf), "drive", body, corr_id, replyFn, ctx);
@@ -1173,6 +1271,22 @@ void CommandProcessor::process(const char* line, ReplyFn replyFn, void* ctx)
             return;
         }
         _robot.distanceDrive((int32_t)l, (int32_t)r, (int32_t)mm, replyFn, ctx, corr_id);
+
+        // Optional sensor= modifier: appended after begin*() returns.
+        // Safe: addStop() after start() — see T handler comment above.
+        for (int i = 0; i < nkv; ++i) {
+            if (kvs[i].key && strcmp(kvs[i].key, "sensor") == 0) {
+                uint8_t ch; float thr; StopCondition::Cmp cmp;
+                if (!parseSensorToken(kvs[i].value, ch, thr, cmp)) {
+                    replyErr(rbuf, sizeof(rbuf), "badarg", "sensor", corr_id, replyFn, ctx);
+                    _robot.driveController.cancel(_robot.systemTime(), replyFn, ctx);
+                    return;
+                }
+                _robot.driveController.activeCmd().addStop(makeSensorStop(ch, thr, cmp));
+                break;
+            }
+        }
+
         char body[48];
         snprintf(body, sizeof(body), "l=%d r=%d mm=%d", l, r, mm);
         replyOK(rbuf, sizeof(rbuf), "drive", body, corr_id, replyFn, ctx);
@@ -1205,6 +1319,93 @@ void CommandProcessor::process(const char* line, ReplyFn replyFn, void* ctx)
         char body[64];
         snprintf(body, sizeof(body), "x=%d y=%d speed=%d", x, y, speed);
         replyOK(rbuf, sizeof(rbuf), "goto", body, corr_id, replyFn, ctx);
+        return;
+    }
+
+    // ── R — arc drive (open-ended, MotionCommand-based) ──────────────────────
+    // R <speed_mms> <radius_mm> [#id]  → OK arc speed=<v> radius=<r> [#id]
+    // Computes κ = 1/radius; radius=0 ⇒ straight (κ=0).
+    // Sign convention: positive radius ⇒ CCW/left arc (matches BodyKinematics::inverse).
+    // speed=0 ⇒ SOFT ramp-down, emits EVT done R.
+    // Open-ended: host cancels with X or sends R 0 <r> to soft-stop.
+    if (strcmp(verb, "R") == 0) {
+        if (ntok < 3) {
+            replyErr(rbuf, sizeof(rbuf), "badarg", nullptr, corr_id, replyFn, ctx);
+            return;
+        }
+        int speed  = atoi(tokens[1]);
+        int radius = atoi(tokens[2]);
+        if (speed < -1000 || speed > 1000) {
+            replyErr(rbuf, sizeof(rbuf), "range", "speed", corr_id, replyFn, ctx);
+            return;
+        }
+        if (radius < -10000 || radius > 10000) {
+            replyErr(rbuf, sizeof(rbuf), "range", "radius", corr_id, replyFn, ctx);
+            return;
+        }
+        uint32_t now = _robot.systemTime();
+        _robot.driveController.beginArc((float)speed, (float)radius, now,
+                                        _robot.state.target, replyFn, ctx, corr_id);
+        char body[48];
+        snprintf(body, sizeof(body), "speed=%d radius=%d", speed, radius);
+        replyOK(rbuf, sizeof(rbuf), "arc", body, corr_id, replyFn, ctx);
+        return;
+    }
+
+    // ── TURN — rotate to absolute heading (MotionCommand-based, HEADING stop) ──
+    // TURN <heading_cdeg> [eps=<cdeg>] [#id]
+    //   heading_cdeg: integer, target heading in centidegrees (range ±18000 = ±180°).
+    //   eps=<cdeg>: optional tolerance in centidegrees (default 300 = 3°; range 10–1800).
+    //   Reply: OK turn heading=<cdeg> eps=<cdeg> [#id]
+    //   Async completion: EVT done TURN [#id]
+    // Positive heading ⇒ CCW rotation (positive ω, matches OTOS CCW convention).
+    // Shortest-path sign computed at begin; SOFT stop (BVC ramps ω to zero on arrival).
+    if (strcmp(verb, "TURN") == 0) {
+        if (ntok < 2) {
+            replyErr(rbuf, sizeof(rbuf), "badarg", nullptr, corr_id, replyFn, ctx);
+            return;
+        }
+        int heading_cdeg = atoi(tokens[1]);
+        if (heading_cdeg < -18000 || heading_cdeg > 18000) {
+            replyErr(rbuf, sizeof(rbuf), "range", "heading", corr_id, replyFn, ctx);
+            return;
+        }
+
+        // Parse optional eps=<cdeg> keyword argument; default 300 cdeg (3°).
+        int eps_cdeg = 300;
+        for (int i = 0; i < nkv; ++i) {
+            if (kvs[i].key && strcmp(kvs[i].key, "eps") == 0) {
+                eps_cdeg = atoi(kvs[i].value);
+                if (eps_cdeg < 10 || eps_cdeg > 1800) {
+                    replyErr(rbuf, sizeof(rbuf), "range", "eps", corr_id, replyFn, ctx);
+                    return;
+                }
+                break;
+            }
+        }
+
+        uint32_t now = _robot.systemTime();
+        _robot.driveController.beginTurn((float)heading_cdeg, (float)eps_cdeg, now,
+                                         _robot.state.target, replyFn, ctx, corr_id);
+
+        // Optional sensor= modifier: appended after begin*() returns.
+        // Safe: addStop() after start() — see T handler comment above.
+        for (int i = 0; i < nkv; ++i) {
+            if (kvs[i].key && strcmp(kvs[i].key, "sensor") == 0) {
+                uint8_t ch; float thr; StopCondition::Cmp cmp;
+                if (!parseSensorToken(kvs[i].value, ch, thr, cmp)) {
+                    replyErr(rbuf, sizeof(rbuf), "badarg", "sensor", corr_id, replyFn, ctx);
+                    _robot.driveController.cancel(_robot.systemTime(), replyFn, ctx);
+                    return;
+                }
+                _robot.driveController.activeCmd().addStop(makeSensorStop(ch, thr, cmp));
+                break;
+            }
+        }
+
+        char body[48];
+        snprintf(body, sizeof(body), "heading=%d eps=%d", heading_cdeg, eps_cdeg);
+        replyOK(rbuf, sizeof(rbuf), "turn", body, corr_id, replyFn, ctx);
         return;
     }
 

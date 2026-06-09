@@ -58,6 +58,16 @@ public:
     void beginVelocity(float v_mms, float omega_rads, uint32_t now_ms,
                        TargetState& target, ReplyFn fn, void* ctx,
                        const char* corr_id = nullptr);
+
+    // R arc command entry point: computes κ = 1/radius (0 when radius==0),
+    // configures a MotionCommand with target (speedMms, speedMms * κ),
+    // SOFT stop style, no stop conditions (open-ended; host cancels via X
+    // or soft-stops via R 0 r).  EVT "EVT done R" on SOFT ramp-down.
+    // Sign convention: positive radius ⇒ positive ω ⇒ CCW (left arc).
+    // speedMms == 0 ⇒ target (0, 0), SOFT ramp-down triggers immediately.
+    void beginArc(float speedMms, float radiusMm, uint32_t now_ms,
+                  TargetState& target, ReplyFn fn, void* ctx,
+                  const char* corr_id = nullptr);
     void beginTimed(float leftMms, float rightMms, uint32_t durationMs, uint32_t now_ms,
                     TargetState& target, ReplyFn fn, void* ctx,
                     const char* corr_id = nullptr);
@@ -65,6 +75,16 @@ public:
                        TargetState& target, ReplyFn fn, void* ctx,
                        const char* corr_id = nullptr);
     void beginGoTo(float tx, float ty, float speedMms, uint32_t now_ms,
+                   TargetState& target, ReplyFn fn, void* ctx,
+                   const char* corr_id = nullptr);
+
+    // TURN command entry point: rotate to an absolute heading using HEADING stop condition.
+    // headingCdeg: target heading in centidegrees (same unit as TLM pose field); range ±18000.
+    // epsCdeg: heading tolerance in centidegrees; default 300 cdeg (3°).
+    // Sign convention: positive headingCdeg ⇒ CCW (positive ω), matching OTOS CCW convention.
+    // Omega magnitude from yawRateMax (deg/s → rad/s). Shortest-path sign computed at start.
+    // EVT "EVT done TURN" on arrival within eps. SOFT stop style.
+    void beginTurn(float headingCdeg, float epsCdeg, uint32_t now_ms,
                    TargetState& target, ReplyFn fn, void* ctx,
                    const char* corr_id = nullptr);
     void stop(uint32_t now_ms, ReplyFn fn, void* ctx);
@@ -115,14 +135,10 @@ private:
     float _tgtL;
     float _tgtR;
 
-    // T-command termination
-    uint32_t _tEndMs;
-
-    // D-command termination
-    int32_t  _dEncStartL;
-    int32_t  _dEncStartR;
-    int32_t  _dTargetMm;
-    uint32_t _dTimeoutMs;
+    // D-command state for per-tick decel hook
+    float _dDistTarget;  // target distance in mm
+    float _dOmega;       // commanded yaw rate at begin (from forward kinematics)
+    float _dEnc0;        // encoder average at begin (baseline for decel cap)
 
     // G go-to state machine
     enum class GPhase { IDLE, PRE_ROTATE, PURSUE };
@@ -130,7 +146,6 @@ private:
     float  _gTargetXWorld;  // goal x in world frame (mm), set at beginGoTo()
     float  _gTargetYWorld;  // goal y in world frame (mm), set at beginGoTo()
     float  _gSpeed;
-    float  _vRamped;        // current ramped speed (mm/s); reset to 0 at beginGoTo() and PRE_ROTATE→PURSUE
 
     // Tick timing
     uint32_t _lastTickMs;

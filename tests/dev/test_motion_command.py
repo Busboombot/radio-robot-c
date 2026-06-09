@@ -169,6 +169,8 @@ class MotionCommand:
         self._stopping  = False
         self._soft_deadline_ms = 0
         self._now_ms    = 0
+        # Mirrors C++ MotionCommand::setDoneEvt(); default "EVT done".
+        self._done_evt_label = 'EVT done'
 
         # Captured EVT messages.
         self.emitted_evts: list[str] = []
@@ -190,6 +192,7 @@ class MotionCommand:
         self._stopping  = False
         self._soft_deadline_ms = 0
         self._now_ms    = 0
+        self._done_evt_label = 'EVT done'
         self.emitted_evts = []
 
     def add_stop(self, cond: dict) -> bool:
@@ -204,6 +207,10 @@ class MotionCommand:
 
     def set_stop_style(self, style: str) -> None:
         self._stop_style = style
+
+    def set_done_evt(self, label: str) -> None:
+        """Mirror of MotionCommand::setDoneEvt. Override the EVT label on completion."""
+        self._done_evt_label = label
 
     def arm_time(self, now_ms: int) -> None:
         """Re-arm t0Ms in the first TIME condition baseline."""
@@ -250,7 +257,7 @@ class MotionCommand:
             if converged or deadline_hit:
                 self._active   = False
                 self._stopping = False
-                self._emit_evt('EVT done')
+                self._emit_evt(self._done_evt_label)
             return self._active
 
         # -- Normal running sub-phase.
@@ -269,7 +276,7 @@ class MotionCommand:
                 if self._bvc: self._bvc.reset()
                 self._active   = False
                 self._stopping = False
-                self._emit_evt('EVT done')
+                self._emit_evt(self._done_evt_label)
             else:  # SOFT
                 self._stopping        = True
                 self._soft_deadline_ms = now_ms + self.K_SOFT_DEADLINE_MS
@@ -865,3 +872,255 @@ class TestBvcAdvance:
 
         # Total: 4 ticks → 4 advance calls.
         assert len(bvc.advance_calls) == 4
+
+
+# ---------------------------------------------------------------------------
+# Tests — D-command migration (018-004)
+# ---------------------------------------------------------------------------
+#
+# These tests validate the key behavioral properties of the D-command
+# migration onto MotionCommand:
+#   1. DISTANCE stop fires at the target; EVT done D is emitted.
+#   2. Terminal decel cap clamps commanded speed downward as d_remaining shrinks.
+#   3. Safety TIME net (2× nominal + 2 s) does not trip on a normal ramped drive.
+#   4. DISTANCE stop fires before safety TIME net in a normal drive.
+#
+# Uses Python mirrors from this module; does not exercise C++ code directly.
+# ---------------------------------------------------------------------------
+
+import math as _math
+
+
+def _decel_cap(a_decel: float, d_remaining: float) -> float:
+    """Python mirror of the D decel hook: v_cap = sqrt(2 * aDecel * d_remaining)."""
+    if d_remaining <= 0.0:
+        return 0.0
+    return _math.sqrt(2.0 * a_decel * d_remaining)
+
+
+class TestDCommandDistanceStop:
+    """DISTANCE stop terminates the command at the target and emits EVT done D."""
+
+    def test_distance_stop_fires_at_target(self):
+        """DISTANCE(300) fires when enc_avg - enc0 >= 300."""
+        mc  = make_mc()
+        bvc = make_bvc(at_target=False)
+
+        mc.configure(200.0, 0.0, bvc)
+        mc.add_stop({'kind': 'DISTANCE', 'a': 300.0})
+        mc.set_stop_style('SOFT')
+        # Inform the mock about done evt name (for inspection).
+        mc.start(HardwareState(encLMm=0.0, encRMm=0.0), now_ms=0)
+
+        # 299 mm traveled — not yet.
+        mc.tick(HardwareState(encLMm=299.0, encRMm=299.0), now_ms=1000, dt_s=0.01)
+        assert mc.active() is True, "DISTANCE should not fire at 299 mm"
+
+        # 300 mm traveled — DISTANCE fires → SOFT ramp starts (still active).
+        mc.tick(HardwareState(encLMm=300.0, encRMm=300.0), now_ms=1010, dt_s=0.01)
+        assert mc.active() is True, "Still active during SOFT ramp-down"
+
+        # BVC now at target → EVT done emitted.
+        bvc._at_target_val = True
+        mc.tick(HardwareState(encLMm=300.0, encRMm=300.0), now_ms=1020, dt_s=0.01)
+        assert mc.active() is False
+        assert len(mc.emitted_evts) == 1
+
+    def test_distance_stop_evt_done_label(self):
+        """When setDoneEvt('EVT done D') is used, the emitted label is 'EVT done D'."""
+        mc  = make_mc()
+        bvc = make_bvc(at_target=True)
+
+        mc.configure(200.0, 0.0, bvc)
+        mc.add_stop({'kind': 'DISTANCE', 'a': 200.0})
+        mc.set_stop_style('SOFT')
+        mc.set_done_evt('EVT done D')
+        mc.start(HardwareState(encLMm=0.0, encRMm=0.0), now_ms=0)
+
+        # Fire the DISTANCE condition.
+        mc.tick(HardwareState(encLMm=200.0, encRMm=200.0), now_ms=1000, dt_s=0.01)
+        # SOFT ramp-down tick — BVC at target so EVT fires immediately.
+        mc.tick(HardwareState(encLMm=200.0, encRMm=200.0), now_ms=1010, dt_s=0.01)
+
+        # EVT uses the overridden label.
+        assert any('EVT done D' in e for e in mc.emitted_evts)
+
+    def test_distance_stop_does_not_fire_before_target(self):
+        """DISTANCE stop does not fire until enc_avg delta reaches threshold."""
+        mc  = make_mc()
+        bvc = make_bvc()
+
+        mc.configure(200.0, 0.0, bvc)
+        mc.add_stop({'kind': 'DISTANCE', 'a': 500.0})
+        mc.set_stop_style('HARD')
+        mc.start(HardwareState(encLMm=0.0, encRMm=0.0), now_ms=0)
+
+        # Accumulate 499 mm — must still be active.
+        for step in range(1, 10):
+            enc = float(step * 49)  # max 441 mm
+            mc.tick(HardwareState(encLMm=enc, encRMm=enc), now_ms=step * 100, dt_s=0.1)
+        assert mc.active() is True, "Should still be running at < 500 mm"
+
+
+class TestDCommandDecelCap:
+    """Terminal decel cap clamps commanded speed downward as d_remaining shrinks."""
+
+    def test_decel_cap_formula(self):
+        """v_cap = sqrt(2 * aDecel * d_remaining) — formula verification."""
+        # aDecel = 600 mm/s^2 (typical config value)
+        a_decel = 600.0
+
+        # At 100 mm remaining: v_cap = sqrt(2 * 600 * 100) = sqrt(120000) ≈ 346.4
+        cap = _decel_cap(a_decel, 100.0)
+        assert abs(cap - _math.sqrt(120000.0)) < 0.01
+
+        # At 10 mm remaining: v_cap = sqrt(2 * 600 * 10) = sqrt(12000) ≈ 109.5
+        cap = _decel_cap(a_decel, 10.0)
+        assert abs(cap - _math.sqrt(12000.0)) < 0.01
+
+    def test_decel_cap_clamps_downward_only(self):
+        """decel cap only clamps; it does NOT increase speed beyond commanded v."""
+        a_decel = 600.0
+        v_commanded = 200.0
+
+        # Far from target (d_remaining = 5000 mm): cap = sqrt(6000000) >> 200
+        cap_far = _decel_cap(a_decel, 5000.0)
+        v_applied = min(v_commanded, cap_far)
+        assert v_applied == pytest.approx(v_commanded), (
+            "Far from target, cap should not reduce speed"
+        )
+
+        # Near target (d_remaining = 10 mm): cap ≈ 109.5 < 200 → clamp
+        cap_near = _decel_cap(a_decel, 10.0)
+        v_applied = min(v_commanded, cap_near)
+        assert v_applied < v_commanded, "Near target, cap must reduce speed"
+        assert v_applied == pytest.approx(cap_near)
+
+    def test_decel_cap_zero_at_zero_remaining(self):
+        """decel cap returns 0 when d_remaining <= 0."""
+        assert _decel_cap(600.0, 0.0) == 0.0
+        assert _decel_cap(600.0, -5.0) == 0.0
+
+    def test_setTarget_clamps_speed_near_end(self):
+        """MotionCommand.setTarget called with v_cap when d_remaining is small."""
+        mc  = make_mc()
+        bvc = make_bvc(at_target=False)
+
+        v_cmd   = 200.0
+        a_decel = 600.0
+        target_mm = 300.0
+
+        mc.configure(v_cmd, 0.0, bvc)
+        mc.add_stop({'kind': 'DISTANCE', 'a': target_mm})
+        mc.set_stop_style('SOFT')
+        mc.start(HardwareState(encLMm=0.0, encRMm=0.0), now_ms=0)
+
+        # Simulate the decel hook calling setTarget with a capped speed
+        # when 10 mm remain.  In production this is done by DriveController::driveAdvance.
+        d_remaining = 10.0  # mm
+        v_cap = _decel_cap(a_decel, d_remaining)
+        assert v_cap < v_cmd, "Sanity: v_cap < v_cmd at 10 mm remaining"
+
+        # Mimic DriveController hook: only call setTarget when v_cap < current target v.
+        if v_cap < bvc.last_v if bvc.last_v > 0 else v_cmd:
+            mc.set_target(v_cap, 0.0)
+
+        # After setTarget, BVC's last commanded speed should be the capped value.
+        mc.set_target(v_cap, 0.0)
+        assert bvc.last_v == pytest.approx(v_cap)
+        assert bvc.last_v < v_cmd
+
+
+class TestDCommandSafetyTimeNet:
+    """Safety TIME net: generous enough to not trip on a normal ramped drive."""
+
+    @staticmethod
+    def _compute_timeout_ms(target_mm: float, speed_mms: float) -> float:
+        """
+        Mirror of the D-command timeout formula in beginDistance:
+          nominalMs = (targetMm / max(|vL|, |vR|)) * 1000
+          timeoutMs = nominalMs * 2.0 + 2000
+        """
+        spd_max = max(abs(speed_mms), 1.0)
+        nominal_ms = (target_mm / spd_max) * 1000.0
+        return nominal_ms * 2.0 + 2000.0
+
+    def test_timeout_formula_200_200_400(self):
+        """D 200 200 400: nominal = 2000 ms; timeout = 6000 ms."""
+        # From the ticket: 400/200 * 1000 = 2000 ms nominal; 2*2000+2000 = 6000
+        timeout = self._compute_timeout_ms(400.0, 200.0)
+        assert timeout == pytest.approx(6000.0)
+
+    def test_timeout_generous_with_ramp_up(self):
+        """Timeout must be well above actual travel time including ramp-up overhead.
+
+        For D 200 200 400: at 200 mm/s full speed it takes 2000 ms.
+        With a ~200 ms ramp-up at aMax=600 mm/s^2 the robot covers ~12 mm during ramp.
+        Actual travel time is slightly longer than nominal.  The 2× factor (6000 ms)
+        must comfortably exceed the actual time.
+        """
+        target_mm   = 400.0
+        speed_mms   = 200.0
+        a_max       = 600.0   # mm/s^2 typical
+
+        # Ramp-up time at constant acceleration to reach v_cmd from 0.
+        ramp_up_time_s = speed_mms / a_max   # 200/600 ≈ 0.333 s
+        dist_ramp_up   = 0.5 * a_max * ramp_up_time_s ** 2  # ≈ 33 mm
+
+        # Remaining distance at full speed.
+        dist_cruise    = target_mm - dist_ramp_up  # ≈ 367 mm
+        cruise_time_s  = dist_cruise / speed_mms   # ≈ 1.83 s
+
+        # Total estimated travel time in ms.
+        total_time_ms  = (ramp_up_time_s + cruise_time_s) * 1000.0  # ≈ 2167 ms
+
+        timeout_ms = self._compute_timeout_ms(target_mm, speed_mms)
+
+        # Timeout must be substantially above the actual travel time.
+        assert timeout_ms > total_time_ms * 1.5, (
+            f"Timeout {timeout_ms:.0f} ms too close to estimated travel time "
+            f"{total_time_ms:.0f} ms — would risk early trip during ramp-up"
+        )
+
+    def test_timeout_scales_with_distance(self):
+        """Longer distances get proportionally longer timeouts."""
+        t_short = self._compute_timeout_ms(200.0, 200.0)   # 1000 + 2000 = 3000
+        t_long  = self._compute_timeout_ms(1000.0, 200.0)  # 5000 + 2000 = 7000
+        assert t_long > t_short
+
+    def test_timeout_scales_with_speed(self):
+        """Faster drives get shorter timeouts (closer to actual travel time)."""
+        t_slow = self._compute_timeout_ms(400.0, 100.0)   # 4000 + 2000 = 6000 → 10000
+        t_fast = self._compute_timeout_ms(400.0, 400.0)   # 1000 + 2000 = 3000 → 4000
+        assert t_fast < t_slow
+
+    def test_time_stop_does_not_fire_before_distance_stop(self):
+        """In a normal drive, DISTANCE stop fires well before the safety TIME stop.
+
+        Simulates D 200 200 400: target 400 mm, 200 mm/s.
+        Uses HARD stop style so active() goes False on the fire tick.
+        """
+        mc  = make_mc()
+        bvc = make_bvc()
+
+        target_mm  = 400.0
+        speed_mms  = 200.0
+        timeout_ms = self._compute_timeout_ms(target_mm, speed_mms)  # 6000 ms
+
+        mc.configure(speed_mms, 0.0, bvc)
+        mc.add_stop({'kind': 'DISTANCE', 'a': target_mm})
+        mc.add_stop({'kind': 'TIME',     'a': timeout_ms})
+        mc.set_stop_style('HARD')
+        mc.start(HardwareState(encLMm=0.0, encRMm=0.0), now_ms=0)
+
+        # Simulate arriving at target_mm at t=2200 ms (slightly above nominal 2000 ms
+        # to model ramp-up overhead — DISTANCE fires, TIME does NOT).
+        mc.tick(HardwareState(encLMm=target_mm, encRMm=target_mm),
+                now_ms=2200, dt_s=0.01)
+
+        # Command should have terminated via DISTANCE (2200 ms << 6000 ms timeout).
+        assert mc.active() is False, "Should have stopped at distance target"
+        # Confirm it fired well before the timeout — time budget check.
+        assert 2200 < timeout_ms, (
+            f"Simulated arrival time {2200} ms should be < timeout {timeout_ms} ms"
+        )

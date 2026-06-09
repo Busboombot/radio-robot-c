@@ -42,16 +42,13 @@ DriveController::DriveController(MotorController& mc, Odometry& odo, const Robot
     , _lastSMs(0)
     , _tgtL(0.0f)
     , _tgtR(0.0f)
-    , _tEndMs(0)
-    , _dEncStartL(0)
-    , _dEncStartR(0)
-    , _dTargetMm(0)
-    , _dTimeoutMs(0)
+    , _dDistTarget(0.0f)
+    , _dOmega(0.0f)
+    , _dEnc0(0.0f)
     , _gPhase(GPhase::IDLE)
     , _gTargetXWorld(0.0f)
     , _gTargetYWorld(0.0f)
     , _gSpeed(0.0f)
-    , _vRamped(0.0f)
     , _lastTickMs(0)
     , _currentTimeMs(0)
 {
@@ -154,31 +151,70 @@ void DriveController::beginVelocity(float v_mms, float omega_rads, uint32_t now_
     target.mode = DriveMode::VELOCITY;
 }
 
+void DriveController::beginArc(float speedMms, float radiusMm, uint32_t now_ms,
+                                TargetState& target, ReplyFn fn, void* ctx,
+                                const char* corr_id)
+{
+    // Compute arc curvature κ = 1/radius; radius==0 ⇒ κ=0 (straight).
+    // Sign convention: positive radius ⇒ positive ω ⇒ CCW/left arc.
+    // This matches BodyKinematics::inverse where CCW-positive ω gives vL < vR.
+    float kappa = (radiusMm != 0.0f) ? (1.0f / radiusMm) : 0.0f;
+    float omega  = speedMms * kappa;
+
+    // Configure a fresh MotionCommand for body-twist (v, ω) with:
+    //   - No stop conditions (open-ended; host cancels via X or R 0 r).
+    //   - SOFT stop style (ramp to zero before completing).
+    //   - EVT "EVT done R" on normal (SOFT ramp-down) completion.
+    //   - Reply sink for async EVT delivery.
+    _activeCmd.configure(speedMms, omega, &_bvc);
+    // No addStop: open-ended arc; keepalive via X or R 0 r.
+    _activeCmd.setReplySink(fn, ctx, corr_id);
+    _activeCmd.setStopStyle(MotionCommand::StopStyle::SOFT);
+    _activeCmd.setDoneEvt("EVT done R");
+
+    // Snapshot hardware state for MotionBaseline.
+    HardwareState emptyState{};
+    const HardwareState& inputs = _hwState ? *_hwState : emptyState;
+    _activeCmd.start(inputs, now_ms);
+
+    // VELOCITY mode — distinct from STREAMING so the S-mode watchdog does not fire.
+    _mode = DriveMode::VELOCITY;
+
+    // Update target mode; reply sink captured by _activeCmd (not target.replyFn).
+    target.mode = DriveMode::VELOCITY;
+}
+
 void DriveController::beginTimed(float leftMms, float rightMms,
                                   uint32_t durationMs, uint32_t now_ms,
                                   TargetState& target, ReplyFn fn, void* ctx,
                                   const char* corr_id)
 {
-    float sL, sR;
-    applySaturation(leftMms, rightMms, _cfg, sL, sR);
-    _mc.startDriveClean(sL, sR);
-    _mc.setTarget(sL, sR);
-    _tgtL   = sL;
-    _tgtR   = sR;
-    _tEndMs = _lastTickMs + durationMs;
-    _mode   = DriveMode::TIMED;
+    // Convert (L, R) wheel speeds to body twist (v, ω) via the forward kinematics map.
+    // For equal L=R (straight drive), forward() gives v=(L+R)/2 and omega=0 — no steer bias.
+    float v_mms, omega_rads;
+    BodyKinematics::forward(leftMms, rightMms, _cfg.trackwidthMm, v_mms, omega_rads);
 
-    target.mode        = DriveMode::TIMED;
-    target.deadlineMs  = _tEndMs;
-    target.replyFn     = fn;
-    target.replyCtx    = ctx;
-    if (corr_id && corr_id[0] != '\0') {
-        strncpy(target.corrId, corr_id, sizeof(target.corrId) - 1);
-        target.corrId[sizeof(target.corrId) - 1] = '\0';
-    } else {
-        target.corrId[0] = '\0';
-    }
-    (void)now_ms;
+    // Configure a fresh MotionCommand with:
+    //   - TIME stop condition at durationMs.
+    //   - SOFT stop style (ramp to zero before completing).
+    //   - EVT "EVT done T" on completion (preserves wire contract).
+    //   - Reply sink for async EVT delivery.
+    _activeCmd.configure(v_mms, omega_rads, &_bvc);
+    _activeCmd.addStop(makeTimeStop((float)durationMs));
+    _activeCmd.setReplySink(fn, ctx, corr_id);
+    _activeCmd.setStopStyle(MotionCommand::StopStyle::SOFT);
+    _activeCmd.setDoneEvt("EVT done T");
+
+    // Snapshot hardware state for MotionBaseline.
+    HardwareState emptyState{};
+    const HardwareState& inputs = _hwState ? *_hwState : emptyState;
+    _activeCmd.start(inputs, now_ms);
+
+    // VELOCITY mode — distinct from STREAMING so the S-mode watchdog does not fire.
+    _mode = DriveMode::VELOCITY;
+
+    // Update target mode; reply sink captured by _activeCmd (not target.replyFn).
+    target.mode = DriveMode::VELOCITY;
 }
 
 void DriveController::beginDistance(float leftMms, float rightMms,
@@ -186,37 +222,63 @@ void DriveController::beginDistance(float leftMms, float rightMms,
                                      TargetState& target, ReplyFn fn, void* ctx,
                                      const char* corr_id)
 {
-    float sL, sR;
-    applySaturation(leftMms, rightMms, _cfg, sL, sR);
-    _mc.startDriveClean(sL, sR);
-    _mc.setTarget(sL, sR);
-    _tgtL = sL;
-    _tgtR = sR;
-    _mc.resetEncoderAccumulators();
-    _mc.getEncoderPositions(_dEncStartL, _dEncStartR);
-    _dTargetMm  = targetMm;
-    // Timeout scales with the expected drive time (distance / speed), not a
-    // fixed 5 s — otherwise a slow or long drive (e.g. 900 mm @ 80 mm/s = 11 s)
-    // is cut off early and never reaches its target. 2x nominal + 2 s margin.
-    {
-        float spdMax = fmaxf(fabsf(sL), fabsf(sR));
-        if (spdMax < 1.0f) spdMax = 1.0f;
-        uint32_t nominalMs = (uint32_t)(((float)targetMm / spdMax) * 1000.0f);
-        _dTimeoutMs = _lastTickMs + nominalMs * 2u + 2000u;
-    }
-    _mode       = DriveMode::DISTANCE;
+    // Convert (L, R) wheel speeds to body twist (v, ω) via forward kinematics.
+    float v_mms, omega_rads;
+    BodyKinematics::forward(leftMms, rightMms, _cfg.trackwidthMm, v_mms, omega_rads);
 
-    target.mode              = DriveMode::DISTANCE;
-    target.distanceTargetMm  = static_cast<float>(targetMm);
-    target.replyFn           = fn;
-    target.replyCtx          = ctx;
-    if (corr_id && corr_id[0] != '\0') {
-        strncpy(target.corrId, corr_id, sizeof(target.corrId) - 1);
-        target.corrId[sizeof(target.corrId) - 1] = '\0';
-    } else {
-        target.corrId[0] = '\0';
-    }
-    (void)now_ms;
+    // Encoder-reset workaround: reset the accumulator so DISTANCE delta starts
+    // from 0.  The state.inputs.encLMm/R baseline reset is done by AppContext::
+    // distanceDrive() after this call — do not move that reset here.
+    _mc.resetEncoderAccumulators();
+
+    // Capture encoder baseline for per-tick decel hook.  After resetEncoderAccumulators()
+    // the hardware positions are 0; reading immediately gives a clean 0 baseline.
+    int32_t encL0_raw, encR0_raw;
+    _mc.getEncoderPositions(encL0_raw, encR0_raw);
+    _dEnc0       = ((float)encL0_raw + (float)encR0_raw) * 0.5f;
+
+    // Store decel-hook state.
+    _dDistTarget = (float)targetMm;
+    _dOmega      = omega_rads;
+
+    // Timeout: 2× nominal travel time + 2 s safety margin.
+    // The nominal time is |targetMm| / max(|vL|, |vR|) in seconds.
+    // With profiled ramp-up the robot covers slightly less ground in the first
+    // ~200 ms than at full speed, so actual travel time is slightly longer than
+    // nominal — the 2× factor absorbs this comfortably.
+    float spdMax = fmaxf(fabsf(leftMms), fabsf(rightMms));
+    if (spdMax < 1.0f) spdMax = 1.0f;
+    float nominalMs = ((float)targetMm / spdMax) * 1000.0f;
+    float timeoutMs = nominalMs * 2.0f + 2000.0f;
+
+    // Configure a fresh MotionCommand with:
+    //   - DISTANCE stop condition as the primary trigger.
+    //   - TIME stop as safety net (generous; tolerates profiled ramp-up).
+    //   - SOFT stop style (ramp to zero before completing).
+    //   - EVT "EVT done D" on completion (preserves wire contract).
+    //   - Reply sink for async EVT delivery.
+    _activeCmd.configure(v_mms, omega_rads, &_bvc);
+    _activeCmd.addStop(makeDistanceStop((float)targetMm));
+    _activeCmd.addStop(makeTimeStop(timeoutMs));
+    _activeCmd.setReplySink(fn, ctx, corr_id);
+    _activeCmd.setStopStyle(MotionCommand::StopStyle::SOFT);
+    _activeCmd.setDoneEvt("EVT done D");
+
+    // Snapshot hardware state for MotionBaseline.
+    // After resetEncoderAccumulators() the accumulators are 0; AppContext will
+    // also zero state.inputs.encLMm/R immediately after this call returns, so
+    // the baseline enc0 captured by MotionCommand::start() will be 0 — matching
+    // the DISTANCE stop evaluation which reads (encLMm + encRMm)/2 from HardwareState.
+    HardwareState emptyState{};
+    const HardwareState& inputs = _hwState ? *_hwState : emptyState;
+    _activeCmd.start(inputs, now_ms);
+
+    // DISTANCE mode — distinct from STREAMING so the S-mode watchdog does not fire.
+    _mode = DriveMode::DISTANCE;
+
+    // Update target mode; reply sink captured by _activeCmd (not target.replyFn).
+    target.mode             = DriveMode::DISTANCE;
+    target.distanceTargetMm = static_cast<float>(targetMm);
 }
 
 void DriveController::beginGoTo(float tx, float ty, float speedMms, uint32_t now_ms,
@@ -230,7 +292,6 @@ void DriveController::beginGoTo(float tx, float ty, float speedMms, uint32_t now
     _gTargetXWorld = x + tx * cosf(h_rad) - ty * sinf(h_rad);
     _gTargetYWorld = y + tx * sinf(h_rad) + ty * cosf(h_rad);
     _gSpeed   = speedMms;
-    _vRamped  = 0.0f;   // accel ramp starts fresh on each new go-to command
     _mode     = DriveMode::GO_TO;
 
     target.mode           = DriveMode::GO_TO;
@@ -288,11 +349,79 @@ void DriveController::beginGoTo(float tx, float ty, float speedMms, uint32_t now
         _gPhase = GPhase::PRE_ROTATE;
     } else {
         // Target is roughly ahead — enter pursuit directly.
-        _mc.startDriveClean(_gSpeed, _gSpeed);  // initial setpoint; PURSUE corrects next tick
+        // Configure MotionCommand with a POSITION stop at the world target.
+        // The per-tick pursuit hook in driveAdvance will update the (v, ω) target
+        // each tick before _activeCmd.tick() is called.
+        _activeCmd.configure(_gSpeed, 0.0f, &_bvc);
+        _activeCmd.addStop(makePositionStop(_gTargetXWorld, _gTargetYWorld, _cfg.arriveTolMm));
+        _activeCmd.setReplySink(fn, ctx, corr_id);
+        _activeCmd.setStopStyle(MotionCommand::StopStyle::SOFT);
+        _activeCmd.setDoneEvt("EVT done G");
+        HardwareState emptyState{};
+        const HardwareState& inputs = _hwState ? *_hwState : emptyState;
+        _activeCmd.start(inputs, now_ms);
         _gPhase = GPhase::PURSUE;
     }
+}
 
-    (void)now_ms;
+void DriveController::beginTurn(float headingCdeg, float epsCdeg, uint32_t now_ms,
+                                TargetState& target, ReplyFn fn, void* ctx,
+                                const char* corr_id)
+{
+    // Convert centidegrees → radians for the absolute target heading.
+    // 1 cdeg = π/18000 rad (same conversion as getPoseFloat uses for poseHrad).
+    const float kCdegToRad = 3.14159265f / 18000.0f;
+    float theta_rad = headingCdeg * kCdegToRad;
+    float eps_rad   = epsCdeg   * kCdegToRad;
+
+    // Read current heading from HardwareState (in radians, via poseHrad).
+    // poseHrad is stored as a float in radians in HardwareState (set by Odometry).
+    float currentHeadingRad = 0.0f;
+    if (_hwState != nullptr) {
+        currentHeadingRad = _hwState->poseHrad;
+    }
+
+    // Compute shortest-path delta: wrap_angle gives the signed angle in (-π, π].
+    // delta > 0 ⇒ CCW (positive ω); delta < 0 ⇒ CW (negative ω).
+    // Use inline atan2f(sinf, cosf) pattern matching StopCondition.cpp::wrap_angle.
+    float diff       = theta_rad - currentHeadingRad;
+    float delta_rad  = atan2f(sinf(diff), cosf(diff));   // wrap to (-π, π]
+    float omega_sign = (delta_rad >= 0.0f) ? 1.0f : -1.0f;
+
+    // ω magnitude from yawRateMax (deg/s → rad/s).
+    const float kDegToRad = 3.14159265f / 180.0f;
+    float omega = omega_sign * _cfg.yawRateMax * kDegToRad;
+
+    // HEADING stop uses a delta from the baseline heading captured at start().
+    // The baseline is heading0Rad = currentHeadingRad at start() time.
+    // makeHeadingStop(delta_rad, eps_rad) stores delta_rad as 'a' and eps_rad as 'b'.
+    // evaluate() checks: |wrap(current - heading0 - a)| < b
+    //   = |wrap((currentHeadingRad + delta_rad) - currentHeadingRad - delta_rad)| < eps
+    //   = |wrap(0)| < eps → fires when robot has rotated by delta_rad from baseline.
+    // This matches the absolute target theta_rad exactly (since delta_rad = theta_rad - baseline).
+
+    // Configure a fresh MotionCommand with:
+    //   - target twist (0, ω): spin-in-place.
+    //   - HEADING stop condition.
+    //   - SOFT stop style (BVC ramps ω down before completion).
+    //   - EVT "EVT done TURN" on arrival.
+    //   - Reply sink for async EVT delivery.
+    _activeCmd.configure(0.0f, omega, &_bvc);
+    _activeCmd.addStop(makeHeadingStop(delta_rad, eps_rad));
+    _activeCmd.setReplySink(fn, ctx, corr_id);
+    _activeCmd.setStopStyle(MotionCommand::StopStyle::SOFT);
+    _activeCmd.setDoneEvt("EVT done TURN");
+
+    // Snapshot hardware state for MotionBaseline (captures heading0Rad at start time).
+    HardwareState emptyState{};
+    const HardwareState& inputs = _hwState ? *_hwState : emptyState;
+    _activeCmd.start(inputs, now_ms);
+
+    // VELOCITY mode — distinct from STREAMING so S-mode watchdog does not fire.
+    _mode = DriveMode::VELOCITY;
+
+    // Update target mode; reply sink captured by _activeCmd (not target.replyFn).
+    target.mode = DriveMode::VELOCITY;
 }
 
 void DriveController::stop(uint32_t now_ms, ReplyFn fn, void* ctx)
@@ -301,6 +430,7 @@ void DriveController::stop(uint32_t now_ms, ReplyFn fn, void* ctx)
     if (_activeCmd.active()) {
         _activeCmd.cancel(MotionCommand::StopStyle::HARD);
     }
+    _gPhase = GPhase::IDLE;  // reset G phase on hard stop
     fullStop(fn, ctx);
     (void)now_ms;
 }
@@ -309,7 +439,8 @@ void DriveController::cancel(uint32_t now_ms, ReplyFn fn, void* ctx)
 {
     _activeCmd.cancel(MotionCommand::StopStyle::HARD);
     _mc.stop();
-    _mode = DriveMode::IDLE;
+    _mode   = DriveMode::IDLE;
+    _gPhase = GPhase::IDLE;  // reset G phase on any cancel
     (void)now_ms;
     (void)fn;
     (void)ctx;
@@ -321,9 +452,8 @@ void DriveController::cancel(uint32_t now_ms, ReplyFn fn, void* ctx)
 // Runs at a fixed period set by RobotConfig::controlPeriodMs (default 10 ms).
 // Executes the drive-mode state machines:
 //   1. STREAMING watchdog — emits EVT safety_stop inline on keepalive timeout.
-//   2. T-mode — emits EVT done T inline when deadline reached.
-//   3. D-mode — emits EVT done D inline when distance reached or timeout.
-//   4. G-mode — advances PRE_ROTATE and PURSUE; emits EVT done G inline.
+//   2. G-mode — advances PRE_ROTATE and PURSUE; emits EVT done G inline.
+//   T/D-mode are now handled by the MotionCommand path (TIME/DISTANCE stop conditions).
 //
 // All EVT completions are emitted inline via target.replyFn() — safe because
 // there is no fiber boundary in the single cooperative main loop (014-005).
@@ -347,16 +477,63 @@ void DriveController::driveAdvance(HardwareState& inputs, MotorCommands& cmds,
     // and odometry.predict() before driveAdvance() is reached (014-003/004).
     (void)cmds;
 
-    // ── MotionCommand tick (VW / future MotionCommand-based verbs) ─────────────
+    // ── MotionCommand tick (VW / R / G PURSUE / future MotionCommand-based verbs) ─
     // When a MotionCommand is active, tick it exactly once and return early.
     // The old S/T/D/G if-chain runs ONLY when no MotionCommand is active.
     // This also prevents the STREAMING watchdog branch below from firing for VW.
     if (_activeCmd.active()) {
+        // G PURSUE hook: recompute (v, ω) from current pose each tick and call
+        // setTarget BEFORE _activeCmd.tick() so the BVC advances with the
+        // updated target this tick.
+        if (_mode == DriveMode::GO_TO && _gPhase == GPhase::PURSUE) {
+            float x, y, h_rad;
+            getPoseFloat(x, y, h_rad);
+
+            float dxW = _gTargetXWorld - x;
+            float dyW = _gTargetYWorld - y;
+            float dx  =  dxW * cosf(h_rad) + dyW * sinf(h_rad);
+            float dy  = -dxW * sinf(h_rad) + dyW * cosf(h_rad);
+
+            float d2          = dx * dx + dy * dy;
+            float d_remaining = sqrtf(d2);
+
+            // Terminal decel cap: v_cap = sqrt(2 * aDecel * d_remaining).
+            // Clamps the commanded speed to ensure the BVC has time to
+            // decelerate to zero before the POSITION stop fires.
+            float v     = _gSpeed;
+            float v_cap = sqrtf(2.0f * _cfg.aDecel * d_remaining);
+            if (v_cap < v) v = v_cap;
+
+            float kappa = (d2 > 0.1f) ? (2.0f * dy / d2) : 0.0f;
+            float omega = v * kappa;
+
+            _activeCmd.setTarget(v, omega);
+        }
+
+        // D decel hook: clamp commanded speed downward as the robot nears
+        // the distance target.  Computes d_remaining from the raw encoder
+        // average (same field used by the DISTANCE stop condition in
+        // StopCondition::evaluate) so the decel profile and the stop fire
+        // at the same point.  Only clamps downward; does not increase speed.
+        if (_mode == DriveMode::DISTANCE) {
+            float enc_avg     = (inputs.encLMm + inputs.encRMm) * 0.5f;
+            float d_traveled  = fabsf(enc_avg - _dEnc0);
+            float d_remaining = _dDistTarget - d_traveled;
+            if (d_remaining > 0.0f) {
+                float v_cap = sqrtf(2.0f * _cfg.aDecel * d_remaining);
+                if (v_cap < _bvc.targetV()) {
+                    _activeCmd.setTarget(v_cap, _dOmega);
+                }
+            }
+        }
+
         bool still_running = _activeCmd.tick(inputs, now_ms, dt_s);
         if (!still_running) {
             // MotionCommand terminated; go IDLE.
             _mode = DriveMode::IDLE;
             target.mode = DriveMode::IDLE;
+            // Reset G phase so a subsequent go-to command starts clean.
+            if (_gPhase != GPhase::IDLE) _gPhase = GPhase::IDLE;
         }
         return;
     }
@@ -382,27 +559,6 @@ void DriveController::driveAdvance(HardwareState& inputs, MotorCommands& cmds,
         }
     }
 
-    // T-mode: stop when deadline reached.
-    if (_mode == DriveMode::TIMED && now_ms >= _tEndMs) {
-        fullStop(nullptr, nullptr);
-        emitEvt("EVT done T", target);
-    }
-
-    // D-mode: stop when average encoder travel >= target, or on timeout. Uses a
-    // fresh atomic read (NOT the filtered control-loop encLMm): the filtered
-    // value can STALL when the outlier filter holds a run of glitchy reads, which
-    // makes D fail to reach target and not stop (runaway). The fresh read always
-    // tracks the real wheel, so D completes reliably.
-    if (_mode == DriveMode::DISTANCE) {
-        int32_t l, r;
-        _mc.getEncoderPositions(l, r);
-        int32_t traveled = (abs(l - _dEncStartL) + abs(r - _dEncStartR)) / 2;
-        if (traveled >= _dTargetMm || now_ms >= _dTimeoutMs) {
-            fullStop(nullptr, nullptr);
-            emitEvt("EVT done D", target);
-        }
-    }
-
     // G-mode: advance go-to state machine.
     if (_mode == DriveMode::GO_TO) {
         if (_gPhase == GPhase::PRE_ROTATE) {
@@ -416,46 +572,22 @@ void DriveController::driveAdvance(HardwareState& inputs, MotorCommands& cmds,
             float gateRad = _cfg.turnInPlaceGate * (3.14159265f / 180.0f);
 
             if (bearing <= gateRad) {
-                _vRamped = 0.0f;
-                _gPhase  = GPhase::PURSUE;
+                // PRE_ROTATE → PURSUE transition: configure and start _activeCmd
+                // with a POSITION stop at the world target.  The per-tick hook
+                // above will update (v, ω) each tick before _activeCmd.tick().
+                _activeCmd.configure(_gSpeed, 0.0f, &_bvc);
+                _activeCmd.addStop(makePositionStop(_gTargetXWorld, _gTargetYWorld, _cfg.arriveTolMm));
+                _activeCmd.setReplySink(target.replyFn, target.replyCtx, target.corrId);
+                _activeCmd.setStopStyle(MotionCommand::StopStyle::SOFT);
+                _activeCmd.setDoneEvt("EVT done G");
+                const HardwareState& hw = _hwState ? *_hwState : inputs;
+                _activeCmd.start(hw, now_ms);
+                _gPhase = GPhase::PURSUE;
             }
         }
 
-        if (_gPhase == GPhase::PURSUE) {
-            float x, y, h_rad;
-            getPoseFloat(x, y, h_rad);
-
-            float dxW = _gTargetXWorld - x;
-            float dyW = _gTargetYWorld - y;
-            float dx  =  dxW * cosf(h_rad) + dyW * sinf(h_rad);
-            float dy  = -dxW * sinf(h_rad) + dyW * cosf(h_rad);
-
-            float d2          = dx * dx + dy * dy;
-            float d_remaining = sqrtf(d2);
-
-            if (d_remaining < _cfg.arriveTolMm) {
-                fullStop(nullptr, nullptr);
-                _gPhase = GPhase::IDLE;
-                emitEvt("EVT done G", target);
-                return;
-            }
-
-            _vRamped += _cfg.aMax * dt_s;
-            if (_vRamped > _gSpeed) _vRamped = _gSpeed;
-
-            float v_cap = sqrtf(2.0f * _cfg.aDecel * d_remaining);
-            if (v_cap < _vRamped) _vRamped = v_cap;
-
-            float v     = _vRamped;
-            float kappa = (d2 > 0.1f) ? (2.0f * dy / d2) : 0.0f;
-            float omega = v * kappa;
-
-            float vL, vR;
-            BodyKinematics::inverse(v, omega, _cfg.trackwidthMm, vL, vR);
-            float sL, sR;
-            BodyKinematics::saturate(vL, vR, _cfg.vWheelMax, _cfg.steerHeadroom, sL, sR);
-            _mc.setTarget(sL, sR);
-        }
+        // PURSUE is now handled by the MotionCommand path at the top of
+        // driveAdvance — control never reaches here while PURSUE is active.
     }
 }
 

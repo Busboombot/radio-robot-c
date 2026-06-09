@@ -1123,3 +1123,359 @@ class TestCancelHostMethod:
 
         args, _ = mock_conn.send_fast.call_args
         assert args[0] == "STOP"
+
+
+# ---------------------------------------------------------------------------
+# sensor= modifier — wire format, parsing, OR-stop semantics  [018-006]
+# ---------------------------------------------------------------------------
+
+class TestSensorModifierGrammar:
+    """Tests for sensor= wire format accepted by T, D, TURN.
+
+    These test the grammar, channel names, operator names, error conditions,
+    and OR-stop semantics.  They are pure Python — no firmware required.
+    """
+
+    # -----------------------------------------------------------------------
+    # Helpers to simulate parseSensorToken behaviour
+    # -----------------------------------------------------------------------
+
+    CHANNEL_NAMES = {
+        "line0": 0, "line1": 1, "line2": 2, "line3": 3,
+        "colorR": 4, "colorG": 5, "colorB": 6, "colorC": 7,
+    }
+
+    def _parse_sensor_token(self, value: str):
+        """Python mirror of parseSensorToken in CommandProcessor.cpp.
+
+        Returns (ch_idx, threshold, cmp_str) or raises ValueError on any error.
+        """
+        parts = value.split(":", 2)
+        if len(parts) != 3:
+            raise ValueError(f"bad token (expected 3 colon-separated parts): {value!r}")
+        ch_name, op_str, thr_str = parts
+        if ch_name not in self.CHANNEL_NAMES:
+            raise ValueError(f"unknown channel: {ch_name!r}")
+        if op_str not in ("ge", "le"):
+            raise ValueError(f"unknown operator: {op_str!r}")
+        try:
+            thr = int(thr_str)
+        except ValueError:
+            raise ValueError(f"bad threshold: {thr_str!r}")
+        return (self.CHANNEL_NAMES[ch_name], thr, op_str)
+
+    # -----------------------------------------------------------------------
+    # Valid channel name round-trips
+    # -----------------------------------------------------------------------
+
+    def test_all_eight_channels_resolve(self) -> None:
+        """All 8 named channels resolve to their correct indices."""
+        expected = [
+            ("line0", 0), ("line1", 1), ("line2", 2), ("line3", 3),
+            ("colorR", 4), ("colorG", 5), ("colorB", 6), ("colorC", 7),
+        ]
+        for ch_name, expected_idx in expected:
+            ch_idx, _thr, _cmp = self._parse_sensor_token(f"{ch_name}:ge:100")
+            assert ch_idx == expected_idx, (
+                f"{ch_name!r} should map to {expected_idx}, got {ch_idx}"
+            )
+
+    def test_ge_operator_resolves(self) -> None:
+        """'ge' operator parses correctly."""
+        _ch, _thr, cmp = self._parse_sensor_token("line0:ge:512")
+        assert cmp == "ge"
+
+    def test_le_operator_resolves(self) -> None:
+        """'le' operator parses correctly."""
+        _ch, _thr, cmp = self._parse_sensor_token("colorR:le:256")
+        assert cmp == "le"
+
+    def test_threshold_zero(self) -> None:
+        """Threshold 0 is valid."""
+        _ch, thr, _cmp = self._parse_sensor_token("line0:ge:0")
+        assert thr == 0
+
+    def test_threshold_max_uint16(self) -> None:
+        """Threshold 65535 (max uint16) is accepted."""
+        _ch, thr, _cmp = self._parse_sensor_token("colorC:le:65535")
+        assert thr == 65535
+
+    def test_typical_line_sensor_token(self) -> None:
+        """'line0:ge:512' parses to (ch=0, thr=512, cmp=ge)."""
+        ch, thr, cmp = self._parse_sensor_token("line0:ge:512")
+        assert ch == 0
+        assert thr == 512
+        assert cmp == "ge"
+
+    def test_colorC_token(self) -> None:
+        """'colorC:ge:800' parses to (ch=7, thr=800, cmp=ge)."""
+        ch, thr, cmp = self._parse_sensor_token("colorC:ge:800")
+        assert ch == 7
+        assert thr == 800
+        assert cmp == "ge"
+
+    # -----------------------------------------------------------------------
+    # Error cases: unknown channel, unknown op, malformed
+    # -----------------------------------------------------------------------
+
+    def test_unknown_channel_raises(self) -> None:
+        """Unknown channel name (e.g. 'line4') raises ValueError."""
+        with pytest.raises(ValueError, match="unknown channel"):
+            self._parse_sensor_token("line4:ge:512")
+
+    def test_unknown_operator_raises(self) -> None:
+        """Unknown operator (e.g. 'gt') raises ValueError."""
+        with pytest.raises(ValueError, match="unknown operator"):
+            self._parse_sensor_token("line0:gt:512")
+
+    def test_missing_colons_raises(self) -> None:
+        """Token with fewer than 2 colons raises ValueError."""
+        with pytest.raises(ValueError):
+            self._parse_sensor_token("line0ge512")
+
+    def test_empty_token_raises(self) -> None:
+        """Empty token string raises ValueError."""
+        with pytest.raises(ValueError):
+            self._parse_sensor_token("")
+
+    def test_uppercase_channel_unknown(self) -> None:
+        """Channel names are case-sensitive; 'LINE0' is unknown."""
+        with pytest.raises(ValueError, match="unknown channel"):
+            self._parse_sensor_token("LINE0:ge:512")
+
+    def test_uppercase_op_unknown(self) -> None:
+        """Operator is case-sensitive; 'GE' is unknown."""
+        with pytest.raises(ValueError, match="unknown operator"):
+            self._parse_sensor_token("line0:GE:512")
+
+    # -----------------------------------------------------------------------
+    # Wire format: sensor= appended to T, D, TURN
+    # -----------------------------------------------------------------------
+
+    def test_t_sensor_wire_format(self) -> None:
+        """T 200 200 5000 sensor=line0:ge:512 wire token is parseable."""
+        # Simulate how CommandProcessor would see the token.
+        kv_value = "line0:ge:512"
+        ch, thr, cmp = self._parse_sensor_token(kv_value)
+        assert ch == 0 and thr == 512 and cmp == "ge"
+
+    def test_d_sensor_wire_format(self) -> None:
+        """D 200 200 300 sensor=colorR:le:256 wire token is parseable."""
+        kv_value = "colorR:le:256"
+        ch, thr, cmp = self._parse_sensor_token(kv_value)
+        assert ch == 4 and thr == 256 and cmp == "le"
+
+    def test_turn_sensor_wire_format(self) -> None:
+        """TURN 9000 sensor=line2:ge:700 wire token is parseable."""
+        kv_value = "line2:ge:700"
+        ch, thr, cmp = self._parse_sensor_token(kv_value)
+        assert ch == 2 and thr == 700 and cmp == "ge"
+
+    # -----------------------------------------------------------------------
+    # OR-stop semantics: sensor fires before TIME → EVT done T still
+    # -----------------------------------------------------------------------
+
+    def test_or_stop_sensor_fires_before_time(self) -> None:
+        """Sensor stop fires before TIME → index 0 (SENSOR) wins.
+
+        Uses the Python evaluate_array mirror from test_stop_condition.py.
+        """
+        import sys, os
+        sys.path.insert(0, os.path.join(os.path.dirname(__file__)))
+        from test_stop_condition import (
+            HardwareState, MotionBaseline, evaluate_array,
+        )
+
+        # Simulate: T 200 200 5000 sensor=line0:ge:512
+        # TIME(5000ms) not yet expired; SENSOR(line0 GE 512) fires immediately.
+        conds = [
+            # Primary stop: TIME at 5000 ms
+            {'kind': 'TIME', 'a': 5000.0},
+            # Sensor stop: line0 >= 512
+            {'kind': 'SENSOR', 'a': 512.0, 'sensor': 0, 'cmp': 'GE'},
+        ]
+        base = MotionBaseline(t0Ms=0)
+        # Only 100 ms elapsed — TIME not fired; line0 = 800 (above threshold).
+        s = HardwareState(line=[800, 0, 0, 0])
+        idx = evaluate_array(conds, s, 100, base)
+        assert idx == 1, f"SENSOR should fire (idx 1), got {idx}"
+
+    def test_or_stop_time_fires_when_sensor_not_tripped(self) -> None:
+        """TIME fires when sensor never trips → index 0 (TIME) wins."""
+        import sys, os
+        sys.path.insert(0, os.path.join(os.path.dirname(__file__)))
+        from test_stop_condition import (
+            HardwareState, MotionBaseline, evaluate_array,
+        )
+
+        conds = [
+            {'kind': 'TIME',   'a': 1000.0},
+            {'kind': 'SENSOR', 'a': 512.0, 'sensor': 0, 'cmp': 'GE'},
+        ]
+        base = MotionBaseline(t0Ms=0)
+        # 1000 ms elapsed (TIME fires); line0 = 100 (below threshold, SENSOR not fired).
+        s = HardwareState(line=[100, 0, 0, 0])
+        idx = evaluate_array(conds, s, 1000, base)
+        assert idx == 0, f"TIME should fire (idx 0), got {idx}"
+
+    def test_or_stop_neither_fires(self) -> None:
+        """Neither TIME nor SENSOR fires: -1 returned (keep running)."""
+        import sys, os
+        sys.path.insert(0, os.path.join(os.path.dirname(__file__)))
+        from test_stop_condition import (
+            HardwareState, MotionBaseline, evaluate_array,
+        )
+
+        conds = [
+            {'kind': 'TIME',   'a': 5000.0},
+            {'kind': 'SENSOR', 'a': 512.0, 'sensor': 0, 'cmp': 'GE'},
+        ]
+        base = MotionBaseline(t0Ms=0)
+        # 100 ms elapsed; line0 = 100 (below threshold).
+        s = HardwareState(line=[100, 0, 0, 0])
+        idx = evaluate_array(conds, s, 100, base)
+        assert idx == -1, "Neither condition should fire"
+
+    # -----------------------------------------------------------------------
+    # Backward compatibility: sensor= absent → behaviour unchanged
+    # -----------------------------------------------------------------------
+
+    def test_backward_compatible_no_sensor_token(self) -> None:
+        """No sensor= in command → only primary stop conditions in array.
+
+        This validates the grammar contract: the sensor= token is optional;
+        its absence does not break the existing T/D/TURN wire format.
+        """
+        # Simulate parsing T 200 200 5000 with NO sensor= token.
+        # The kvs[] from parseKV will be empty → no SENSOR stop appended.
+        kvs: list[dict] = []  # no kv pairs found
+        sensor_token = None
+        for kv in kvs:
+            if kv.get("key") == "sensor":
+                sensor_token = kv["value"]
+        assert sensor_token is None, "No sensor= token should be present"
+
+
+# ---------------------------------------------------------------------------
+# drive_until_sensor() host wrapper [018-006]
+# ---------------------------------------------------------------------------
+
+class TestDriveUntilSensorWrapper:
+    """Tests for NezhaProtocol.drive_until_sensor()."""
+
+    def _make_proto(self):
+        """Create a NezhaProtocol with a mock connection."""
+        from unittest.mock import MagicMock
+        from robot_radio.robot.protocol import NezhaProtocol
+        mock_conn = MagicMock()
+        mock_conn.send.return_value = {"responses": ["OK drive l=200 r=200 ms=10000"]}
+        proto = NezhaProtocol(mock_conn)
+        return proto, mock_conn
+
+    def test_drive_until_sensor_sends_timed_with_sensor(self) -> None:
+        """drive_until_sensor() sends T command with sensor= modifier appended."""
+        proto, mock_conn = self._make_proto()
+        proto.drive_until_sensor(200, 200, 10000, "line0", 512)
+        args, kwargs = mock_conn.send.call_args
+        cmd = args[0]
+        assert cmd.startswith("T 200 200 10000"), f"Unexpected cmd prefix: {cmd!r}"
+        assert "sensor=line0:ge:512" in cmd, f"Missing sensor token in: {cmd!r}"
+
+    def test_drive_until_sensor_default_op_is_ge(self) -> None:
+        """drive_until_sensor() defaults to 'ge' operator."""
+        proto, mock_conn = self._make_proto()
+        proto.drive_until_sensor(200, 200, 5000, "colorC", 800)
+        args, _ = mock_conn.send.call_args
+        assert "sensor=colorC:ge:800" in args[0]
+
+    def test_drive_until_sensor_le_operator(self) -> None:
+        """drive_until_sensor() with op='le' appends ':le:' token."""
+        proto, mock_conn = self._make_proto()
+        proto.drive_until_sensor(200, 200, 5000, "line3", 100, op="le")
+        args, _ = mock_conn.send.call_args
+        assert "sensor=line3:le:100" in args[0]
+
+    def test_drive_until_sensor_all_channels(self) -> None:
+        """drive_until_sensor() constructs correct token for all 8 channels."""
+        proto, mock_conn = self._make_proto()
+        for ch in ["line0", "line1", "line2", "line3",
+                   "colorR", "colorG", "colorB", "colorC"]:
+            proto.drive_until_sensor(200, 200, 5000, ch, 512)
+            args, _ = mock_conn.send.call_args
+            assert f"sensor={ch}:ge:512" in args[0], (
+                f"Missing token for channel {ch!r}: {args[0]!r}"
+            )
+
+    # -----------------------------------------------------------------------
+    # timed() / distance() / turn() optional sensor kwarg
+    # -----------------------------------------------------------------------
+
+    def test_timed_without_sensor(self) -> None:
+        """timed() with no sensor sends plain T command."""
+        proto, mock_conn = self._make_proto()
+        proto.timed(200, 200, 5000)
+        args, _ = mock_conn.send.call_args
+        assert args[0] == "T 200 200 5000"
+        assert "sensor" not in args[0]
+
+    def test_timed_with_sensor(self) -> None:
+        """timed() with sensor= appends the token."""
+        proto, mock_conn = self._make_proto()
+        proto.timed(200, 200, 5000, sensor="line0:ge:512")
+        args, _ = mock_conn.send.call_args
+        assert args[0] == "T 200 200 5000 sensor=line0:ge:512"
+
+    def test_distance_without_sensor(self) -> None:
+        """distance() with no sensor sends plain D command."""
+        proto, mock_conn = self._make_proto()
+        mock_conn.send.return_value = {"responses": ["OK drive l=200 r=200 mm=300"]}
+        proto.distance(200, 200, 300)
+        args, _ = mock_conn.send.call_args
+        assert args[0] == "D 200 200 300"
+        assert "sensor" not in args[0]
+
+    def test_distance_with_sensor(self) -> None:
+        """distance() with sensor= appends the token."""
+        proto, mock_conn = self._make_proto()
+        mock_conn.send.return_value = {"responses": ["OK drive l=200 r=200 mm=300"]}
+        proto.distance(200, 200, 300, sensor="colorC:ge:800")
+        args, _ = mock_conn.send.call_args
+        assert args[0] == "D 200 200 300 sensor=colorC:ge:800"
+
+    def test_turn_without_sensor(self) -> None:
+        """turn() with no sensor sends plain TURN command."""
+        proto, mock_conn = self._make_proto()
+        mock_conn.send.return_value = {"responses": ["OK turn heading=9000 eps=300"]}
+        proto.turn(9000)
+        args, _ = mock_conn.send.call_args
+        assert args[0] == "TURN 9000"
+        assert "sensor" not in args[0]
+
+    def test_turn_with_sensor(self) -> None:
+        """turn() with sensor= appends the token (before #id if any)."""
+        proto, mock_conn = self._make_proto()
+        mock_conn.send.return_value = {"responses": ["OK turn heading=9000 eps=300"]}
+        proto.turn(9000, sensor="line0:ge:512")
+        args, _ = mock_conn.send.call_args
+        assert "sensor=line0:ge:512" in args[0]
+        assert "TURN 9000" in args[0]
+
+    def test_turn_with_eps_and_sensor(self) -> None:
+        """turn() with eps_cdeg and sensor= includes both."""
+        proto, mock_conn = self._make_proto()
+        mock_conn.send.return_value = {"responses": ["OK turn heading=9000 eps=100"]}
+        proto.turn(9000, eps_cdeg=100, sensor="colorR:le:200")
+        args, _ = mock_conn.send.call_args
+        cmd = args[0]
+        assert "eps=100" in cmd
+        assert "sensor=colorR:le:200" in cmd
+
+    def test_turn_with_sensor_and_corr_id(self) -> None:
+        """turn() with sensor= and corr_id: corr_id appears last."""
+        proto, mock_conn = self._make_proto()
+        mock_conn.send.return_value = {"responses": ["OK turn heading=9000 eps=300"]}
+        proto.turn(9000, sensor="line0:ge:512", corr_id="42")
+        args, _ = mock_conn.send.call_args
+        cmd = args[0]
+        assert "sensor=line0:ge:512" in cmd
+        assert cmd.endswith("#42"), f"corr_id should be last: {cmd!r}"

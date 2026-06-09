@@ -90,11 +90,13 @@ class BodyVelocityController:
     DEG_TO_RAD = math.pi / 180.0
 
     def __init__(self, cfg: RobotConfig):
-        self.cfg      = cfg
-        self._v       = 0.0
-        self._omega   = 0.0
-        self._vTgt    = 0.0
-        self._omegaTgt = 0.0
+        self.cfg        = cfg
+        self._v         = 0.0
+        self._omega     = 0.0
+        self._vTgt      = 0.0
+        self._omegaTgt  = 0.0
+        self._aLive     = 0.0     # live linear acceleration (S-curve channel), mm/s²
+        self._omegaALive = 0.0   # live yaw acceleration (S-curve channel), rad/s²
         # Simulated MotorController output (last setTarget call).
         self.last_sL  = 0.0
         self.last_sR  = 0.0
@@ -108,23 +110,51 @@ class BodyVelocityController:
         if dt_s <= 0.0:
             return not self.at_target()
 
-        # TODO(017): S-curve when jMax > 0 or yawJerkMax > 0. Pure trapezoid for now.
-
-        # Linear channel — asymmetric accel/decel trapezoid.
+        # Linear channel — asymmetric accel/decel with optional jerk limit.
+        #
+        # At jMax == 0 (default): pure trapezoid — approach v directly under
+        # the per-tick dv_max step (identical to pre-018 behaviour).
+        #
+        # At jMax > 0: S-curve — slew _aLive toward the demanded acceleration
+        # under the jerk bound (jMax * dt_s), then integrate v += _aLive*dt_s.
         vTgt_clamped = clamp(self._vTgt, -self.cfg.vBodyMax, +self.cfg.vBodyMax)
-        # Use aDecel when target is closer to zero than current v (decelerating).
-        if abs(vTgt_clamped) >= abs(self._v):
-            dv_max = self.cfg.aMax * dt_s
-        else:
-            dv_max = self.cfg.aDecel * dt_s
-        self._v = approach(self._v, vTgt_clamped, dv_max)
 
-        # Yaw channel — symmetric trapezoid; convert deg-based limits to rad at use site.
+        if self.cfg.jMax > 0.0:
+            # S-curve path: jerk-limit the acceleration, then integrate toward
+            # the target using approach() so the integration cannot overshoot.
+            #
+            # aTarget: +aMax when v must increase to reach vTgt_clamped, else -aDecel.
+            a_target = self.cfg.aMax if vTgt_clamped >= self._v else -self.cfg.aDecel
+            jerk_step = self.cfg.jMax * dt_s
+            self._aLive = approach(self._aLive, a_target, jerk_step)
+            # Integrate, but cap the step so we never overshoot vTgt_clamped.
+            self._v = approach(self._v, vTgt_clamped, abs(self._aLive * dt_s))
+        else:
+            # Trapezoid path (jMax == 0): identical to pre-018 behaviour.
+            # Use aDecel when target is closer to zero than current v (decelerating).
+            if abs(vTgt_clamped) >= abs(self._v):
+                dv_max = self.cfg.aMax * dt_s
+            else:
+                dv_max = self.cfg.aDecel * dt_s
+            self._v = approach(self._v, vTgt_clamped, dv_max)
+
+        # Yaw channel — symmetric trapezoid with optional jerk limit.
+        # Convert deg-based limits to rad at use site.
         yaw_rate_max_rad = self.cfg.yawRateMax * self.DEG_TO_RAD
         yaw_acc_max_rad  = self.cfg.yawAccMax  * self.DEG_TO_RAD
         omega_tgt_clamped = clamp(self._omegaTgt, -yaw_rate_max_rad, +yaw_rate_max_rad)
-        domega_max = yaw_acc_max_rad * dt_s
-        self._omega = approach(self._omega, omega_tgt_clamped, domega_max)
+
+        if self.cfg.yawJerkMax > 0.0:
+            # S-curve path for yaw.  Same approach-based integration as linear
+            # channel: prevents overshoot while preserving jerk-limited ramp.
+            yaw_jerk_max_rad = self.cfg.yawJerkMax * self.DEG_TO_RAD
+            omega_a_target = +yaw_acc_max_rad if omega_tgt_clamped >= self._omega else -yaw_acc_max_rad
+            self._omegaALive = approach(self._omegaALive, omega_a_target, yaw_jerk_max_rad * dt_s)
+            self._omega = approach(self._omega, omega_tgt_clamped, abs(self._omegaALive * dt_s))
+        else:
+            # Trapezoid path (yawJerkMax == 0): identical to pre-018 behaviour.
+            domega_max = yaw_acc_max_rad * dt_s
+            self._omega = approach(self._omega, omega_tgt_clamped, domega_max)
 
         # Per-tick ordering invariant: profile → inverse → saturate → setTarget.
         vL, vR = bk_inverse(self._v, self._omega, self.cfg.trackwidthMm)
@@ -136,10 +166,12 @@ class BodyVelocityController:
 
     def reset(self) -> None:
         """Zero all profiler state."""
-        self._v       = 0.0
-        self._omega   = 0.0
-        self._vTgt    = 0.0
-        self._omegaTgt = 0.0
+        self._v         = 0.0
+        self._omega     = 0.0
+        self._vTgt      = 0.0
+        self._omegaTgt  = 0.0
+        self._aLive     = 0.0
+        self._omegaALive = 0.0
 
     def seed_current(self, v_mms: float, omega_rads: float) -> None:
         """Seed the live profiler position without touching targets."""
@@ -724,3 +756,182 @@ class TestMonotonicConvergence:
             assert omega_now >= omega_prev - 1e-6
             omega_prev = omega_now
         assert bvc.current_omega() == pytest.approx(yaw_rate_max_rad, abs=0.001)
+
+
+# ---------------------------------------------------------------------------
+# Tests — S-curve (jerk-limited) activation (018-007)
+# ---------------------------------------------------------------------------
+
+class TestSCurveLinear:
+    """jMax > 0: acceleration ramps rather than steps; v reaches target later than
+    trapezoid with same aMax; degenerates to trapezoid at jMax=0."""
+
+    DT = 0.010  # s — 10 ms control tick
+    N_TICKS = 50
+
+    def _simulate_v(self, **kwargs) -> list:
+        """Run N_TICKS ticks and return list of v after each tick."""
+        bvc = make_bvc(**kwargs)
+        bvc.set_target(300.0, 0.0)
+        vs = []
+        for _ in range(self.N_TICKS):
+            bvc.advance(self.DT)
+            vs.append(bvc.current_v())
+        return vs
+
+    def test_jmax_zero_degenerates_to_trapezoid(self):
+        """At jMax=0 (default), advance() is byte-identical to pure trapezoid."""
+        aMax = 300.0
+        dt   = self.DT
+        # Build reference trapezoid by hand.
+        ref_v = 0.0
+        vBodyMax = 400.0
+        trap_vs = []
+        for _ in range(self.N_TICKS):
+            ref_v = approach(ref_v, min(300.0, vBodyMax), aMax * dt)
+            trap_vs.append(ref_v)
+
+        bvc_vs = self._simulate_v(aMax=aMax, jMax=0.0, vBodyMax=vBodyMax)
+        for i, (bv, tv) in enumerate(zip(bvc_vs, trap_vs)):
+            assert bv == pytest.approx(tv, rel=1e-6), (
+                f"tick {i}: jMax=0 BVC v={bv} != trapezoid v={tv}"
+            )
+
+    def test_scurve_slower_than_trapezoid_at_tick20(self):
+        """With jMax > 0, v at tick 20 is less than trapezoid v at tick 20 (accel ramps)."""
+        aMax  = 300.0
+        jMax  = 1000.0   # mm/s³ — jerk bound activates S-curve
+
+        scurve_vs  = self._simulate_v(aMax=aMax, jMax=jMax,  vBodyMax=400.0)
+        trap_vs    = self._simulate_v(aMax=aMax, jMax=0.0,   vBodyMax=400.0)
+
+        # S-curve must be strictly slower at tick 20 (index 19) because the
+        # acceleration has not yet reached aMax (it is still ramping up via jerk).
+        assert scurve_vs[19] < trap_vs[19], (
+            f"S-curve v at tick 20 ({scurve_vs[19]:.2f}) should be < trapezoid "
+            f"({trap_vs[19]:.2f}) when jMax={jMax}"
+        )
+
+    def test_scurve_converges_to_target(self):
+        """jMax > 0: v eventually converges to the target (given enough ticks)."""
+        bvc = make_bvc(aMax=300.0, jMax=1000.0, vBodyMax=400.0)
+        bvc.set_target(200.0, 0.0)
+        for _ in range(500):
+            bvc.advance(self.DT)
+            if bvc.at_target():
+                break
+        assert bvc.current_v() == pytest.approx(200.0, abs=0.5), (
+            f"S-curve did not converge: v={bvc.current_v()}"
+        )
+
+    def test_scurve_acceleration_ramps_not_steps(self):
+        """With jMax active, the acceleration (dv/tick) grows gradually, not instantly."""
+        aMax = 300.0
+        jMax = 500.0   # mm/s³ — moderate jerk bound
+        dt   = self.DT
+
+        bvc = make_bvc(aMax=aMax, jMax=jMax, vBodyMax=400.0)
+        bvc.set_target(300.0, 0.0)
+
+        # At jMax=0 (trapezoid), the first tick already steps by aMax*dt = 3 mm/s.
+        # With jMax active, the first tick steps by at most jMax*dt*dt = 0.05 mm/s
+        # (because _aLive starts at 0 and can only increase by jMax*dt per tick).
+        bvc.advance(dt)
+        first_tick_v = bvc.current_v()
+        # S-curve first step << trapezoid first step (3.0 mm/s).
+        assert first_tick_v < aMax * dt, (
+            f"First tick v={first_tick_v:.4f} should be < aMax*dt={aMax*dt:.2f} with jMax active"
+        )
+
+    def test_scurve_vbodymax_respected(self):
+        """With jMax active, live v never exceeds vBodyMax."""
+        vBodyMax = 200.0
+        bvc = make_bvc(aMax=300.0, jMax=800.0, vBodyMax=vBodyMax)
+        bvc.set_target(500.0, 0.0)  # target above vBodyMax
+
+        for _ in range(200):
+            bvc.advance(self.DT)
+            assert bvc.current_v() <= vBodyMax + 1e-4, (
+                f"v={bvc.current_v():.4f} exceeded vBodyMax={vBodyMax}"
+            )
+
+    def test_scurve_reset_zeroes_alive(self):
+        """reset() clears _aLive so the next S-curve run starts from zero."""
+        bvc = make_bvc(aMax=300.0, jMax=1000.0, vBodyMax=400.0)
+        bvc.set_target(200.0, 0.0)
+        for _ in range(20):
+            bvc.advance(self.DT)
+        # _aLive is now non-zero.
+        bvc.reset()
+        assert bvc._aLive == pytest.approx(0.0), "_aLive not zeroed by reset()"
+        assert bvc._omegaALive == pytest.approx(0.0), "_omegaALive not zeroed by reset()"
+
+
+class TestSCurveYaw:
+    """yawJerkMax > 0: omega acceleration ramps; degenerates to trapezoid at 0."""
+
+    DT = 0.010
+    N_TICKS = 50
+
+    def _simulate_omega(self, **kwargs) -> list:
+        yaw_rate_max_rad = 180.0 * math.pi / 180.0
+        bvc = make_bvc(**kwargs)
+        bvc.set_target(0.0, yaw_rate_max_rad)
+        omegas = []
+        for _ in range(self.N_TICKS):
+            bvc.advance(self.DT)
+            omegas.append(bvc.current_omega())
+        return omegas
+
+    def test_yawjerkmax_zero_degenerates_to_trapezoid(self):
+        """At yawJerkMax=0 (default), yaw channel is byte-identical to trapezoid."""
+        yaw_acc_max_deg = 720.0
+        dt = self.DT
+        yaw_rate_max_rad = 180.0 * math.pi / 180.0
+        yaw_acc_max_rad  = yaw_acc_max_deg * math.pi / 180.0
+
+        ref_omega = 0.0
+        trap_omegas = []
+        for _ in range(self.N_TICKS):
+            ref_omega = approach(ref_omega, yaw_rate_max_rad, yaw_acc_max_rad * dt)
+            trap_omegas.append(ref_omega)
+
+        bvc_omegas = self._simulate_omega(yawRateMax=180.0, yawAccMax=yaw_acc_max_deg,
+                                          yawJerkMax=0.0)
+        for i, (bv, tv) in enumerate(zip(bvc_omegas, trap_omegas)):
+            assert bv == pytest.approx(tv, rel=1e-6), (
+                f"tick {i}: yawJerkMax=0 BVC omega={bv} != trapezoid omega={tv}"
+            )
+
+    def test_yaw_scurve_slower_than_trapezoid(self):
+        """With yawJerkMax > 0, omega at tick 10 is less than trapezoid omega."""
+        scurve  = self._simulate_omega(yawRateMax=180.0, yawAccMax=720.0, yawJerkMax=5000.0)
+        trap    = self._simulate_omega(yawRateMax=180.0, yawAccMax=720.0, yawJerkMax=0.0)
+        assert scurve[9] < trap[9], (
+            f"S-curve omega at tick 10 ({scurve[9]:.4f} rad/s) should be < trapezoid "
+            f"({trap[9]:.4f} rad/s)"
+        )
+
+    def test_yaw_scurve_converges(self):
+        """yawJerkMax > 0: omega converges to yawRateMax given enough ticks."""
+        yaw_rate_max_rad = 180.0 * math.pi / 180.0
+        bvc = make_bvc(yawRateMax=180.0, yawAccMax=720.0, yawJerkMax=3000.0)
+        bvc.set_target(0.0, yaw_rate_max_rad)
+        for _ in range(500):
+            bvc.advance(self.DT)
+            if bvc.at_target():
+                break
+        assert bvc.current_omega() == pytest.approx(yaw_rate_max_rad, abs=0.001), (
+            f"Yaw S-curve did not converge: omega={bvc.current_omega()}"
+        )
+
+    def test_yaw_scurve_rate_max_respected(self):
+        """With yawJerkMax active, live omega never exceeds yawRateMax."""
+        yaw_rate_max_rad = 90.0 * math.pi / 180.0
+        bvc = make_bvc(yawRateMax=90.0, yawAccMax=720.0, yawJerkMax=5000.0)
+        bvc.set_target(0.0, 10.0)  # well above limit
+        for _ in range(200):
+            bvc.advance(self.DT)
+            assert bvc.current_omega() <= yaw_rate_max_rad + 1e-5, (
+                f"omega={bvc.current_omega():.5f} exceeded yawRateMax={yaw_rate_max_rad:.5f}"
+            )
