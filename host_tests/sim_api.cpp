@@ -19,6 +19,38 @@
 #include <utility>
 
 // ---------------------------------------------------------------------------
+// ReplyStore — a heap-allocated reply accumulator.
+//
+// When MotionCommands (D, VW, R, …) complete during sim_tick(), they call
+// the reply function stored in their reply sink.  In sim_api, the reply sink
+// MUST point to a heap-allocated buffer (not a stack variable) so that
+// driveAdvance() can safely fire EVTs at any tick after the command was issued.
+//
+// sim_command() writes both synchronous (OK/ERR) and async (EVT) replies into
+// the same ReplyStore, then copies the accumulated bytes to the caller's buffer.
+// ---------------------------------------------------------------------------
+static constexpr int kReplyBufSize = 2048;
+
+struct ReplyStore {
+    char buf[kReplyBufSize];
+    int  written = 0;
+
+    void reset() { buf[0] = '\0'; written = 0; }
+
+    void append(const char* msg) {
+        if (!msg || written >= kReplyBufSize - 1) return;
+        int remaining = kReplyBufSize - written - 1;
+        int n = snprintf(buf + written, (size_t)remaining, "%s\n", msg);
+        if (n > 0 && n < remaining) written += n;
+    }
+};
+
+static void storeReply(const char* msg, void* ctx)
+{
+    static_cast<ReplyStore*>(ctx)->append(msg);
+}
+
+// ---------------------------------------------------------------------------
 // SimHandle — one self-contained simulation instance allocated per test.
 //
 // Construction order is load-bearing:
@@ -26,12 +58,17 @@
 //   2. cfg        — RobotConfig value from defaultRobotConfig()
 //   3. robot      — Robot(hal, cfg), wires motorController/odometry/etc.
 //   4. cmd        — CommandProcessor with the full command table
+//
+// replyStore: heap-allocated persistent reply buffer.  All sim_command calls
+//   and async EVTs fired during sim_tick() accumulate here.  sim_command()
+//   copies from replyStore into the caller's out_buf, then resets the store.
 // ---------------------------------------------------------------------------
 struct SimHandle {
     MockHAL          hal;
     RobotConfig      cfg;
     Robot            robot;
     CommandProcessor cmd;
+    ReplyStore       replyStore;
 
     SimHandle()
         : hal()
@@ -40,24 +77,6 @@ struct SimHandle {
         , cmd(robot.buildCommandTable(nullptr, nullptr))
     {}
 };
-
-// ---------------------------------------------------------------------------
-// Internal: capture reply into a fixed buffer.
-// ---------------------------------------------------------------------------
-struct ReplyCapture {
-    char* buf;
-    int   cap;
-    int   written;
-};
-
-static void captureReply(const char* msg, void* ctx)
-{
-    ReplyCapture* c = static_cast<ReplyCapture*>(ctx);
-    if (!msg || c->written >= c->cap - 1) return;
-    int remaining = c->cap - c->written - 1;
-    int n = snprintf(c->buf + c->written, (size_t)remaining, "%s\n", msg);
-    if (n > 0 && n < remaining) c->written += n;
-}
 
 // ---------------------------------------------------------------------------
 // C ABI
@@ -81,26 +100,75 @@ void sim_destroy(void* h)
 // Advance simulation by one control tick.
 // hal.tick() drives MockMotor physics (integrates encoder mm from speed).
 // controlCollectSplitPhase() reads encoders and runs the velocity PID.
+// motionController.driveAdvance() ticks the MotionCommand state machine (D, VW,
+// R, G modes), which sets per-wheel speed targets that the PID then acts on.
+//
+// EVTs fired by driveAdvance() (e.g. EVT done D, EVT safety_stop) are written
+// into SimHandle::replyStore via storeReply, which remains valid for the life
+// of the SimHandle.
 void sim_tick(void* h, uint32_t now_ms)
 {
     SimHandle* s = static_cast<SimHandle*>(h);
     s->hal.tick(now_ms);
     s->robot.controlCollectSplitPhase(now_ms, 0);
+    s->robot.motionController.driveAdvance(
+        s->robot.state.inputs, s->robot.state.commands,
+        s->robot.state.target, now_ms);
 }
 
 // ---- Command dispatch ----
 
 // Process one NUL-terminated command line.
-// Replies are written into out_buf (NUL-terminated).
-// Returns the number of bytes written (not counting the final NUL).
+// All replies (synchronous OK/ERR and async EVTs from future ticks) are
+// written into SimHandle::replyStore via the persistent storeReply callback.
+// After cmd.process() returns, the synchronous portion is copied into out_buf
+// and the store is reset.  Any async EVTs fired AFTER this call (during
+// subsequent sim_tick() calls) will accumulate in replyStore and are
+// accessible via sim_get_async_evts().
+//
+// Returns the number of synchronous bytes written (not counting the final NUL).
 int sim_command(void* h, const char* line, char* out_buf, int out_len)
 {
-    SimHandle*   s = static_cast<SimHandle*>(h);
-    ReplyCapture cap = { out_buf, out_len, 0 };
-    if (out_len > 0) out_buf[0] = '\0';
-    s->cmd.process(line, captureReply, &cap);
-    if (out_len > 0) out_buf[cap.written] = '\0';
-    return cap.written;
+    SimHandle* s = static_cast<SimHandle*>(h);
+
+    // Reset the store before the command so we capture only this command's
+    // synchronous reply and not leftover async EVTs from prior ticks.
+    s->replyStore.reset();
+
+    // Process the command; all replies go into the persistent replyStore.
+    // storeReply + &s->replyStore are passed as the reply sink to cmd.process()
+    // and will also be captured by any MotionCommand that calls setReplySink().
+    s->cmd.process(line, storeReply, &s->replyStore);
+
+    // Copy the synchronous reply into the caller's buffer.
+    int n = s->replyStore.written;
+    if (out_buf && out_len > 0) {
+        int copy = (n < out_len - 1) ? n : out_len - 1;
+        memcpy(out_buf, s->replyStore.buf, (size_t)copy);
+        out_buf[copy] = '\0';
+        n = copy;
+    }
+
+    // Reset written count so subsequent EVTs from driveAdvance() accumulate
+    // from position 0 (overwriting the already-copied synchronous reply).
+    s->replyStore.reset();
+
+    return n;
+}
+
+// ---- Async EVT access ----
+
+// Read async EVT replies accumulated in replyStore since the last
+// sim_command() call.  Returns the number of bytes written into evts_buf.
+int sim_get_async_evts(void* h, char* evts_buf, int evts_len)
+{
+    SimHandle* s = static_cast<SimHandle*>(h);
+    if (!evts_buf || evts_len <= 0) return 0;
+    int n = s->replyStore.written;
+    if (n >= evts_len) n = evts_len - 1;
+    memcpy(evts_buf, s->replyStore.buf, (size_t)n);
+    evts_buf[n] = '\0';
+    return n;
 }
 
 // ---- Encoder reads (accumulated mm from Robot::state.inputs) ----
