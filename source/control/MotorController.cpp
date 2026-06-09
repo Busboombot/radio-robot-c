@@ -294,9 +294,14 @@ void MotorController::controlTick(HardwareState& inputs, MotorCommands& cmds,
             if (_stuckCountL >= kWedgeThreshold && !_wedgeEmittedL) {
                 _wedgeEmittedL = true;
                 if (_evtFn && *_evtFn && _evtCtx && *_evtCtx) {
+#ifndef HOST_BUILD
                     uint32_t busErr    = _i2cBus ? (_i2cBus->errCount(0x10)) : 0;
                     uint32_t reentryN  = _i2cBus ? (_i2cBus->reentryViolations()) : 0;
                     int      lastErrV  = _i2cBus ? (_i2cBus->lastErr(0x10)) : 0;
+#else
+                    uint32_t busErr = 0, reentryN = 0;
+                    int lastErrV = 0;
+#endif
                     char evtBuf[96];
                     snprintf(evtBuf, sizeof(evtBuf),
                              "EVT enc_wedged wheel=L enc=%d n=%u err=%lu reentry=%lu lastErr=%d",
@@ -330,9 +335,14 @@ void MotorController::controlTick(HardwareState& inputs, MotorCommands& cmds,
             if (_stuckCountR >= kWedgeThreshold && !_wedgeEmittedR) {
                 _wedgeEmittedR = true;
                 if (_evtFn && *_evtFn && _evtCtx && *_evtCtx) {
+#ifndef HOST_BUILD
                     uint32_t busErr    = _i2cBus ? (_i2cBus->errCount(0x10)) : 0;
                     uint32_t reentryN  = _i2cBus ? (_i2cBus->reentryViolations()) : 0;
                     int      lastErrV  = _i2cBus ? (_i2cBus->lastErr(0x10)) : 0;
+#else
+                    uint32_t busErr = 0, reentryN = 0;
+                    int lastErrV = 0;
+#endif
                     char evtBuf[96];
                     snprintf(evtBuf, sizeof(evtBuf),
                              "EVT enc_wedged wheel=R enc=%d n=%u err=%lu reentry=%lu lastErr=%d",

@@ -662,7 +662,7 @@ static bool mc_parseSensorToken(const char* value,
     const char* ch_name = buf;
     const char* rest    = colon1 + 1;
 
-    char* colon2 = strchr(rest, ':');
+    char* colon2 = strchr(const_cast<char*>(rest), ':');
     if (!colon2) return false;
     *colon2 = '\0';
     const char* op_str  = rest;

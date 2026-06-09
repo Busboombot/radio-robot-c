@@ -1,5 +1,7 @@
 #pragma once
+#ifndef HOST_BUILD
 #include "MicroBit.h"
+#endif
 #include "IMotor.h"
 #include "Config.h"
 #include "RatioPidController.h"

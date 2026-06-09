@@ -1,13 +1,15 @@
 #include "Robot.h"
 #include "MotionController.h"
+#ifndef HOST_BUILD
 #include "MicroBit.h"
 #include "MicroBitDevice.h"
-#include "Odometry.h"
-#include "DebugCommandable.h"
 #include "LoopScheduler.h"
 #include "Communicator.h"
 #include "Radio.h"
 #include "RadioChannel.h"
+#endif
+#include "Odometry.h"
+#include "DebugCommandable.h"
 #include "CommandProcessor.h"
 #include "ConfigRegistry.h"
 #include <cstdio>
@@ -15,6 +17,25 @@
 #include <cstring>
 #include <cstdlib>
 #include <cassert>
+
+// ---------------------------------------------------------------------------
+// HOST_BUILD stubs — replace CODAL runtime calls with safe no-op equivalents.
+// These are only compiled when building the shared library for host tests.
+// ---------------------------------------------------------------------------
+#ifdef HOST_BUILD
+#include <cstdint>
+#include <chrono>
+
+static uint32_t host_boot_ms() {
+    static auto t0 = std::chrono::steady_clock::now();
+    auto now = std::chrono::steady_clock::now();
+    return (uint32_t)std::chrono::duration_cast<std::chrono::milliseconds>(now - t0).count();
+}
+
+static const char* microbit_friendly_name() { return "sim"; }
+static uint32_t    microbit_serial_number()  { return 0; }
+static uint32_t    system_timer_current_time() { return host_boot_ms(); }
+#endif
 
 // ---------------------------------------------------------------------------
 // Constructor — initializer list must match member declaration order.
@@ -741,6 +762,7 @@ static void handleRf(const ArgList& args, const char* corrId,
                                    corrId, replyFn, replyCtx);
         return;
     }
+#ifndef HOST_BUILD
     Radio& radio = sched->comm().radio();
 
     if (args.count < 1) {
@@ -766,6 +788,9 @@ static void handleRf(const ArgList& args, const char* corrId,
     CommandProcessor::replyOK(rbuf, sizeof(rbuf), "rf", body,
                               corrId, replyFn, replyCtx);
     radio.setChannel(ch);
+#else
+    (void)args;
+#endif
 }
 
 // ---------------------------------------------------------------------------
