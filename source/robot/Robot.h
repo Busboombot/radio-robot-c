@@ -10,6 +10,7 @@
 #include "Odometry.h"
 #include "MotionController.h"
 #include "PortController.h"
+#include "ServoController.h"
 #include "RobotState.h"
 #include "Protocol.h"
 
@@ -57,6 +58,7 @@ struct Robot {
     Odometry            odometry;          // default ctor
     MotionController    motionController;  // (motorController, odometry, config)
     PortController      portController;    // (portio)
+    ServoController     servoController;   // (gripper)
 
     // ---- Constructor ----
     Robot(Motor& mL, Motor& mR, OtosSensor& o, LineSensor& l,

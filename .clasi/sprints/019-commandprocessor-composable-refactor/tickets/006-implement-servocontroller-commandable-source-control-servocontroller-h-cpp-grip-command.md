@@ -1,13 +1,14 @@
 ---
-id: "006"
-title: "Implement ServoController Commandable — source/control/ServoController.h/.cpp, GRIP command"
-status: open
+id: '006'
+title: "Implement ServoController Commandable \u2014 source/control/ServoController.h/.cpp,\
+  \ GRIP command"
+status: done
 use-cases:
 - SUC-001
 depends-on:
 - '005'
-github-issue: ""
-issue: ""
+github-issue: ''
+issue: ''
 completes_issue: false
 ---
 
@@ -22,16 +23,16 @@ during this ticket (command migration completes in T010).
 
 ## Acceptance Criteria
 
-- [ ] `source/control/ServoController.h` declares:
+- [x] `source/control/ServoController.h` declares:
   - `class ServoController : public Commandable` with constructor `ServoController(Servo& srv)`
   - `virtual int getCommands(CommandDescriptor* buf, int max) const override`
-- [ ] `source/control/ServoController.cpp` implements `getCommands()` returning one descriptor:
+- [x] `source/control/ServoController.cpp` implements `getCommands()` returning one descriptor:
   - `"GRIP"` — parse: one int (position 0–180); handler calls `_srv.setAngle(pos)`, replies `OK GRIP <pos>`
   - Parse function validates arg count and range; on failure `errFmt = "badarg"`
-- [ ] `source/robot/Robot.h` declares `ServoController servoController` as a value member after `gripper` ref
-- [ ] `source/robot/Robot.cpp` (or constructor list) wires `servoController(gripper)`
-- [ ] `python3 build.py` passes with no errors
-- [ ] GRIP command continues to work via old switch path (no behavior change yet)
+- [x] `source/robot/Robot.h` declares `ServoController servoController` as a value member after `gripper` ref
+- [x] `source/robot/Robot.cpp` (or constructor list) wires `servoController(gripper)`
+- [x] `python3 build.py` passes with no errors
+- [x] GRIP command continues to work via old switch path (no behavior change yet)
 
 ## Implementation Plan
 
