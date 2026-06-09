@@ -58,6 +58,16 @@ public:
     void beginVelocity(float v_mms, float omega_rads, uint32_t now_ms,
                        TargetState& target, ReplyFn fn, void* ctx,
                        const char* corr_id = nullptr);
+
+    // R arc command entry point: computes κ = 1/radius (0 when radius==0),
+    // configures a MotionCommand with target (speedMms, speedMms * κ),
+    // SOFT stop style, no stop conditions (open-ended; host cancels via X
+    // or soft-stops via R 0 r).  EVT "EVT done R" on SOFT ramp-down.
+    // Sign convention: positive radius ⇒ positive ω ⇒ CCW (left arc).
+    // speedMms == 0 ⇒ target (0, 0), SOFT ramp-down triggers immediately.
+    void beginArc(float speedMms, float radiusMm, uint32_t now_ms,
+                  TargetState& target, ReplyFn fn, void* ctx,
+                  const char* corr_id = nullptr);
     void beginTimed(float leftMms, float rightMms, uint32_t durationMs, uint32_t now_ms,
                     TargetState& target, ReplyFn fn, void* ctx,
                     const char* corr_id = nullptr);

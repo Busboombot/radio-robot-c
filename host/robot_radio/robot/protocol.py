@@ -385,6 +385,30 @@ class NezhaProtocol:
         """Cancel the active motion command (hard stop). Sends X."""
         self._conn.send_fast("X")
 
+    def arc(self, speed_mms: int, radius_mm: int,
+            corr_id: str | None = None) -> None:
+        """Send R arc command — sets body arc motion (open-ended, no built-in timeout).
+
+        Format: R <speed_mms> <radius_mm> [#id]
+        - ``speed_mms``: forward speed in mm/s (−1000 … +1000).
+        - ``radius_mm``: arc radius in mm (−10000 … +10000; 0 = straight).
+          **Sign convention: positive radius ⇒ CCW (left arc).**
+          Matches BodyKinematics::inverse where CCW-positive ω gives vL < vR.
+        - ``corr_id``: optional correlation id; echoed in EVT done R.
+
+        Uses fire-and-forget (send_fast). The arc runs until the host sends X
+        (hard cancel) or R 0 <r> (speed=0 triggers SOFT ramp-down + EVT done R).
+        To use as a keepalive-driven command, re-send within the firmware sTimeout
+        window; the firmware does NOT have a built-in keepalive watchdog for R.
+
+        Robot replies ``OK arc speed=… radius=…`` synchronously. On soft-stop
+        (speed=0), the firmware emits ``EVT done R`` asynchronously.
+        """
+        if corr_id is not None:
+            self._conn.send_fast(f"R {speed_mms} {radius_mm} #{corr_id}")
+        else:
+            self._conn.send_fast(f"R {speed_mms} {radius_mm}")
+
     def vw(self, v_mms: int, omega_mrads: int,
            corr_id: str | None = None) -> None:
         """Send VW keepalive — sets body-twist velocity, resets watchdog.

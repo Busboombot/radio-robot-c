@@ -697,7 +697,7 @@ void CommandProcessor::process(const char* line, ReplyFn replyFn, void* ctx)
     // Reply: OK help <verb list>
     if (strcmp(verb, "HELP") == 0) {
         replyOK(rbuf, sizeof(rbuf), "help",
-                "PING ECHO ID VER HELP SET GET GET VEL STREAM SNAP S T D G VW RF X STOP GRIP ZERO OI OZ OR OP OV OL OA P PA",
+                "PING ECHO ID VER HELP SET GET GET VEL STREAM SNAP S T D G R VW RF X STOP GRIP ZERO OI OZ OR OP OV OL OA P PA",
                 corr_id, replyFn, ctx);
         return;
     }
@@ -1205,6 +1205,36 @@ void CommandProcessor::process(const char* line, ReplyFn replyFn, void* ctx)
         char body[64];
         snprintf(body, sizeof(body), "x=%d y=%d speed=%d", x, y, speed);
         replyOK(rbuf, sizeof(rbuf), "goto", body, corr_id, replyFn, ctx);
+        return;
+    }
+
+    // ── R — arc drive (open-ended, MotionCommand-based) ──────────────────────
+    // R <speed_mms> <radius_mm> [#id]  → OK arc speed=<v> radius=<r> [#id]
+    // Computes κ = 1/radius; radius=0 ⇒ straight (κ=0).
+    // Sign convention: positive radius ⇒ CCW/left arc (matches BodyKinematics::inverse).
+    // speed=0 ⇒ SOFT ramp-down, emits EVT done R.
+    // Open-ended: host cancels with X or sends R 0 <r> to soft-stop.
+    if (strcmp(verb, "R") == 0) {
+        if (ntok < 3) {
+            replyErr(rbuf, sizeof(rbuf), "badarg", nullptr, corr_id, replyFn, ctx);
+            return;
+        }
+        int speed  = atoi(tokens[1]);
+        int radius = atoi(tokens[2]);
+        if (speed < -1000 || speed > 1000) {
+            replyErr(rbuf, sizeof(rbuf), "range", "speed", corr_id, replyFn, ctx);
+            return;
+        }
+        if (radius < -10000 || radius > 10000) {
+            replyErr(rbuf, sizeof(rbuf), "range", "radius", corr_id, replyFn, ctx);
+            return;
+        }
+        uint32_t now = _robot.systemTime();
+        _robot.driveController.beginArc((float)speed, (float)radius, now,
+                                        _robot.state.target, replyFn, ctx, corr_id);
+        char body[48];
+        snprintf(body, sizeof(body), "speed=%d radius=%d", speed, radius);
+        replyOK(rbuf, sizeof(rbuf), "arc", body, corr_id, replyFn, ctx);
         return;
     }
 

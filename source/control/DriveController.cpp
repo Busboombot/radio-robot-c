@@ -154,6 +154,39 @@ void DriveController::beginVelocity(float v_mms, float omega_rads, uint32_t now_
     target.mode = DriveMode::VELOCITY;
 }
 
+void DriveController::beginArc(float speedMms, float radiusMm, uint32_t now_ms,
+                                TargetState& target, ReplyFn fn, void* ctx,
+                                const char* corr_id)
+{
+    // Compute arc curvature κ = 1/radius; radius==0 ⇒ κ=0 (straight).
+    // Sign convention: positive radius ⇒ positive ω ⇒ CCW/left arc.
+    // This matches BodyKinematics::inverse where CCW-positive ω gives vL < vR.
+    float kappa = (radiusMm != 0.0f) ? (1.0f / radiusMm) : 0.0f;
+    float omega  = speedMms * kappa;
+
+    // Configure a fresh MotionCommand for body-twist (v, ω) with:
+    //   - No stop conditions (open-ended; host cancels via X or R 0 r).
+    //   - SOFT stop style (ramp to zero before completing).
+    //   - EVT "EVT done R" on normal (SOFT ramp-down) completion.
+    //   - Reply sink for async EVT delivery.
+    _activeCmd.configure(speedMms, omega, &_bvc);
+    // No addStop: open-ended arc; keepalive via X or R 0 r.
+    _activeCmd.setReplySink(fn, ctx, corr_id);
+    _activeCmd.setStopStyle(MotionCommand::StopStyle::SOFT);
+    _activeCmd.setDoneEvt("EVT done R");
+
+    // Snapshot hardware state for MotionBaseline.
+    HardwareState emptyState{};
+    const HardwareState& inputs = _hwState ? *_hwState : emptyState;
+    _activeCmd.start(inputs, now_ms);
+
+    // VELOCITY mode — distinct from STREAMING so the S-mode watchdog does not fire.
+    _mode = DriveMode::VELOCITY;
+
+    // Update target mode; reply sink captured by _activeCmd (not target.replyFn).
+    target.mode = DriveMode::VELOCITY;
+}
+
 void DriveController::beginTimed(float leftMms, float rightMms,
                                   uint32_t durationMs, uint32_t now_ms,
                                   TargetState& target, ReplyFn fn, void* ctx,

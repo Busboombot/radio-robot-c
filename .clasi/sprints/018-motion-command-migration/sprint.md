@@ -1,9 +1,16 @@
 ---
 id: 018
 title: Motion command migration
-status: roadmap
+status: planning-docs
 branch: sprint/018-motion-command-migration
-use-cases: []
+use-cases:
+- SUC-001
+- SUC-002
+- SUC-003
+- SUC-004
+- SUC-005
+- SUC-006
+- SUC-007
 issues:
 - motion-command-body-velocity-control.md
 ---
@@ -100,5 +107,12 @@ Before tickets can be created, all of the following must be true:
 
 | # | Title | Depends On |
 |---|-------|------------|
+| 001 | R arc command — firmware verb + host wrapper | — |
+| 002 | Migrate G go-to onto MotionCommand POSITION stop | 001 |
+| 003 | Migrate T timed-drive onto MotionCommand TIME stop | 002 |
+| 004 | Migrate D distance-drive onto MotionCommand DISTANCE stop with terminal decel | 003 |
+| 005 | TURN verb — turn-to-heading with HEADING stop condition | 004 |
+| 006 | sensor= modifier — attach SENSOR stop to T, D, TURN commands | 005 |
+| 007 | S-curve activation in BodyVelocityController | 006 |
 
 Tickets execute serially in the order listed.
