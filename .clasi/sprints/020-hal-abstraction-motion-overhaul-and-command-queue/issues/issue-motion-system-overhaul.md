@@ -1,5 +1,11 @@
 ---
-status: pending
+status: in-progress
+sprint: '020'
+tickets:
+- 020-005
+- 020-006
+- 020-007
+- 020-008
 ---
 
 # Issue: Motion system overhaul — BVC-only path, system watchdog, X soft, and first-class STOP conditions
