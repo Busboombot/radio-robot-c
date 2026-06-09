@@ -341,19 +341,16 @@ static void handleOA(const ArgList& args, const char* corrId,
 }
 
 // ---------------------------------------------------------------------------
-// getCommands — Commandable interface.  Returns 7 descriptors.
-// ---------------------------------------------------------------------------
-
-int Odometry::getCommands(CommandDescriptor* buf, int max) const
+std::vector<CommandDescriptor> Odometry::getCommands() const
 {
-    if (max < 7) return 0;
     void* ctx = const_cast<OdomCtx*>(&_odomCtx);
-    buf[0] = makeCmd("OI", parseOI, handleOI, ctx, "badarg");
-    buf[1] = makeCmd("OZ", parseOZ, handleOZ, ctx, "badarg");
-    buf[2] = makeCmd("OR", parseOR, handleOR, ctx, "badarg");
-    buf[3] = makeCmd("OP", parseOP, handleOP, ctx, "badarg");
-    buf[4] = makeCmd("OV", parseOV, handleOV, ctx, "badarg");
-    buf[5] = makeCmd("OL", parseOL, handleOL, ctx, "badarg");
-    buf[6] = makeCmd("OA", parseOA, handleOA, ctx, "badarg");
-    return 7;
+    return {
+        makeCmd("OI", parseOI, handleOI, ctx, "badarg"), // OTOS init: re-initialise sensor
+        makeCmd("OZ", parseOZ, handleOZ, ctx, "badarg"), // OTOS zero: reset position to 0,0,0
+        makeCmd("OR", parseOR, handleOR, ctx, "badarg"), // OTOS read: one-shot position snapshot
+        makeCmd("OP", parseOP, handleOP, ctx, "badarg"), // OTOS position: report current x,y,h
+        makeCmd("OV", parseOV, handleOV, ctx, "badarg"), // OTOS velocity: report vx,vy,omega
+        makeCmd("OL", parseOL, handleOL, ctx, "badarg"), // OTOS linear scalar calibration
+        makeCmd("OA", parseOA, handleOA, ctx, "badarg"), // OTOS angular scalar calibration
+    };
 }

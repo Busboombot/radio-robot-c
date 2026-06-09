@@ -197,22 +197,18 @@ int main() {
     // -----------------------------------------------------------------------
     // 7. Run the cooperative main loop — never returns.
     //
-    // Initialisation has a two-phase cycle:
-    //   cmd  (CommandProcessor) needs the full cmdTable, which requires dbgCmd.
-    //   sched (LoopScheduler)   needs cmd&.
-    //   dbgCmd (DebugCommandable) needs &sched.
+    // Initialisation order:
+    //   cmd   needs the full command table, including DBG descriptors.
+    //   sched needs cmd& (reference, so cmd must exist first).
+    //   dbgCmd needs &sched.
     //
-    // Resolution: build the table without DBG descriptors first (dbg=nullptr),
-    // construct cmd and sched, then construct dbgCmd with the live &sched,
-    // rebuild the full table, and re-assign cmd with the complete descriptor
-    // count.  Both buildCommandTable calls write into the same static buffer;
-    // cmd holds only a pointer + count, so re-assignment is safe.
+    // Resolution: build cmd without DBG first, construct sched + dbgCmd,
+    // then replace cmd with the full table.  std::vector makes the
+    // re-assignment safe — no shared static buffer.
     // -----------------------------------------------------------------------
 
-    // Phase 1 — system commands only (no DBG/I2CW/I2CR descriptors yet).
-    static CommandDescriptor cmdTable[60];
-    int cmdCount = robot.buildCommandTable(cmdTable, 60, nullptr, nullptr);
-    static CommandProcessor cmd(cmdTable, cmdCount);
+    // Phase 1 — all commands except DBG/I2CW/I2CR.
+    static CommandProcessor cmd(robot.buildCommandTable());
     cmd.setSerialReply(serialReply, &comm.serial());
 
     // Phase 2 — LoopScheduler and DebugCommandable are now constructable.
@@ -220,9 +216,8 @@ int main() {
     static DbgCtx dbgCtx = { &sched, &bus, &robot };
     static DebugCommandable dbgCmd(dbgCtx);
 
-    // Phase 3 — rebuild the full table with DBG descriptors; re-assign cmd.
-    cmdCount = robot.buildCommandTable(cmdTable, 60, &dbgCmd, &sched);
-    cmd = CommandProcessor(cmdTable, cmdCount);
+    // Phase 3 — replace cmd with the full table including DBG descriptors.
+    cmd = CommandProcessor(robot.buildCommandTable(&dbgCmd, &sched));
     cmd.setSerialReply(serialReply, &comm.serial());
 
     // DEVICE: identification banner once at boot over serial.

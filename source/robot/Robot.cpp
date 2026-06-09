@@ -852,9 +852,8 @@ static ParseResult parseSet(const char* const* /*tokens*/, int /*ntokens*/,
 // Robot::buildCommandTable — aggregate all Commandables + system commands.
 // ---------------------------------------------------------------------------
 
-int Robot::buildCommandTable(CommandDescriptor* buf, int max,
-                             DebugCommandable* dbg,
-                             LoopScheduler*    sched) const
+std::vector<CommandDescriptor> Robot::buildCommandTable(
+    DebugCommandable* dbg, LoopScheduler* sched) const
 {
     // Populate stable context structs (members, so pointers are valid for the
     // lifetime of this Robot).
@@ -865,33 +864,33 @@ int Robot::buildCommandTable(CommandDescriptor* buf, int max,
 
     void* sysCtxPtr = &_sysCtx;
 
-    int n = 0;
+    std::vector<CommandDescriptor> cmds;
 
     // ---- Commandable members ----
-    n += motionController.getCommands(buf + n, max - n);
-    n += odometry.getCommands(buf + n, max - n);
-    n += portController.getCommands(buf + n, max - n);
-    n += servoController.getCommands(buf + n, max - n);
-    if (dbg) n += dbg->getCommands(buf + n, max - n);
+    auto append = [&](std::vector<CommandDescriptor> v) {
+        cmds.insert(cmds.end(), v.begin(), v.end());
+    };
+    append(motionController.getCommands());
+    append(odometry.getCommands());
+    append(portController.getCommands());
+    append(servoController.getCommands());
+    if (dbg) append(dbg->getCommands());
 
     // ---- System commands ----
-    // Order: most-specific prefix first (GET VEL before GET).
-    if (n < max) buf[n++] = makeCmd("HELLO",   parseHello,  handleHello,  sysCtxPtr, "badarg");
-    if (n < max) buf[n++] = makeCmd("PING",    parsePing,   handlePing,   sysCtxPtr, "badarg");
-    if (n < max) buf[n++] = makeCmd("ECHO",    parseEcho,   handleEcho,   sysCtxPtr, "badarg");
-    if (n < max) buf[n++] = makeCmd("ID",      parseId,     handleId,     sysCtxPtr, "badarg");
-    if (n < max) buf[n++] = makeCmd("VER",     parseVer,    handleVer,    sysCtxPtr, "badarg");
-    if (n < max) buf[n++] = makeCmd("HELP",    parseHelp,   handleHelp,   sysCtxPtr, "badarg");
-    if (n < max) buf[n++] = makeCmd("SNAP",    parseSnap,   handleSnap,   sysCtxPtr, "badarg");
-    if (n < max) buf[n++] = makeCmd("ZERO",    parseZero,   handleZero,   sysCtxPtr, "badarg");
-    if (n < max) buf[n++] = makeCmd("STREAM",  parseStream, handleStream, sysCtxPtr, "badarg");
-    if (n < max) buf[n++] = makeCmd("RF",      parseRf,     handleRf,     sysCtxPtr, "badarg");
-    if (n < max) buf[n++] = makeCmd("GET VEL", parseGetVel, handleGetVel, sysCtxPtr, "badarg");
-    if (n < max) buf[n++] = makeCmd("GET",     parseGet,    handleGet,    &_cfgCtx,  "badkey");
-    if (n < max) buf[n++] = makeCmd("SET",     parseSet,    handleSet,    &_cfgCtx,  "badkey");
+    // GET VEL before GET so the longer prefix wins the linear scan.
+    cmds.push_back(makeCmd("HELLO",   parseHello,  handleHello,  sysCtxPtr, "badarg")); // identify firmware + version
+    cmds.push_back(makeCmd("PING",    parsePing,   handlePing,   sysCtxPtr, "badarg")); // liveness check
+    cmds.push_back(makeCmd("ECHO",    parseEcho,   handleEcho,   sysCtxPtr, "badarg")); // echo tokens back
+    cmds.push_back(makeCmd("ID",      parseId,     handleId,     sysCtxPtr, "badarg")); // report robot identity string
+    cmds.push_back(makeCmd("VER",     parseVer,    handleVer,    sysCtxPtr, "badarg")); // report firmware version
+    cmds.push_back(makeCmd("HELP",    parseHelp,   handleHelp,   sysCtxPtr, "badarg")); // list available commands
+    cmds.push_back(makeCmd("SNAP",    parseSnap,   handleSnap,   sysCtxPtr, "badarg")); // emit one TLM frame on demand
+    cmds.push_back(makeCmd("ZERO",    parseZero,   handleZero,   sysCtxPtr, "badarg")); // zero encoders
+    cmds.push_back(makeCmd("STREAM",  parseStream, handleStream, sysCtxPtr, "badarg")); // start/stop periodic TLM stream
+    cmds.push_back(makeCmd("RF",      parseRf,     handleRf,     sysCtxPtr, "badarg")); // set radio channel
+    cmds.push_back(makeCmd("GET VEL", parseGetVel, handleGetVel, sysCtxPtr, "badarg")); // get velocity PID params
+    cmds.push_back(makeCmd("GET",     parseGet,    handleGet,    &_cfgCtx,  "badkey")); // get config value by key
+    cmds.push_back(makeCmd("SET",     parseSet,    handleSet,    &_cfgCtx,  "badkey")); // set config value by key
 
-    // Safety assertion: buffer must not be exceeded.
-    assert(n <= max);
-
-    return n;
+    return cmds;
 }

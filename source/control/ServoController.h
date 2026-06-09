@@ -14,7 +14,7 @@
 class ServoController : public Commandable {
 public:
     explicit ServoController(Servo& srv);
-    virtual int getCommands(CommandDescriptor* buf, int max) const override;
+    virtual std::vector<CommandDescriptor> getCommands() const override;
 
     Servo& servo() { return _srv; }
 

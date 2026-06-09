@@ -23,17 +23,15 @@
  *   ID  …
  *
  * Usage (main.cpp):
- *   CommandProcessor cmd(cmdTable, cmdCount);
+ *   CommandProcessor cmd(robot.buildCommandTable(...));
  *   cmd.setSerialReply(serialFn, serialCtx);
  *   // in loop:
  *   cmd.process(lineBuf, replyFn, ctx);
  */
 class CommandProcessor {
 public:
-    // Table-dispatch constructor.
-    // cmds must point to a static array of count CommandDescriptors that
-    // outlives this object. No heap allocation.
-    CommandProcessor(const CommandDescriptor* cmds, int count);
+    CommandProcessor() = default;
+    explicit CommandProcessor(std::vector<CommandDescriptor> cmds);
 
     // Parse and dispatch one command line. line must be NUL-terminated.
     // Calls replyFn(msg, ctx) for each response line.
@@ -110,10 +108,9 @@ public:
                          ReplyFn fn, void* ctx);
 
 private:
-    const CommandDescriptor* _cmds     = nullptr;
-    int                      _cmdCount = 0;
-    ReplyFn                  _serialFn  = nullptr;
-    void*                    _serialCtx = nullptr;
+    std::vector<CommandDescriptor> _cmds;
+    ReplyFn                        _serialFn  = nullptr;
+    void*                          _serialCtx = nullptr;
 
     void dispatchTable(char** tokens, int ntok, KVPair* kvs, int nkv,
                        const char* corrId, ReplyFn replyFn, void* ctx);

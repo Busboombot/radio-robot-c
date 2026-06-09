@@ -48,8 +48,7 @@ class Odometry : public Commandable {
 public:
     Odometry();
 
-    // Commandable interface — returns descriptors for all 7 OTOS commands.
-    virtual int getCommands(CommandDescriptor* buf, int max) const override;
+    virtual std::vector<CommandDescriptor> getCommands() const override;
 
     // Bind the OtosSensor so command handlers can reach it.
     // Called by Robot after construction.

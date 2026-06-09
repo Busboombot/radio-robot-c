@@ -15,8 +15,8 @@
 // Constructor
 // ---------------------------------------------------------------------------
 
-CommandProcessor::CommandProcessor(const CommandDescriptor* cmds, int count)
-    : _cmds(cmds), _cmdCount(count)
+CommandProcessor::CommandProcessor(std::vector<CommandDescriptor> cmds)
+    : _cmds(std::move(cmds))
 {
 }
 
@@ -66,11 +66,11 @@ static int prefixMatchLen(const char* prefix, char** tokens, int ntok)
 }
 
 // ---------------------------------------------------------------------------
-// dispatchTable — table-driven dispatch (used when _cmds != nullptr)
+// dispatchTable — table-driven dispatch.
 //
-// Scans _cmds[0.._cmdCount-1] for the descriptor whose prefix has the
-// longest token match against tokens[0..ntok-1]. If no descriptor matches,
-// replies ERR unknown. Otherwise:
+// Scans _cmds for the descriptor whose prefix has the longest token match
+// against tokens[0..ntok-1]. If no descriptor matches, replies ERR unknown.
+// Otherwise:
 //   1. Determines the effective reply channel (ForceReply::SERIAL override).
 //   2. Calls parseFn (if non-null); on failure, replies ERR errFmt and returns.
 //   3. Calls handlerFn with the parsed ArgList (or an empty ArgList).
@@ -84,7 +84,7 @@ void CommandProcessor::dispatchTable(char** tokens, int ntok, KVPair* kvs, int n
     // Find the descriptor with the longest matching prefix.
     int bestMatch = 0;
     int bestIdx   = -1;
-    for (int i = 0; i < _cmdCount; ++i) {
+    for (int i = 0; i < (int)_cmds.size(); ++i) {
         int m = prefixMatchLen(_cmds[i].prefix, tokens, ntok);
         if (m > bestMatch) {
             bestMatch = m;

@@ -29,7 +29,7 @@ static DbgCtx dbgCtxFrom(void* p);
 // DBG LOOP RESET
 //   prefix "DBG LOOP RESET" — argTokens = [] (0 tokens after prefix strip)
 //   parseFn: always succeeds, 0 args.
-//   handler: _sched->resetStats(); replyOK "dbg" "loop reset"
+//   handler: no-op acknowledgement (loop timing stats removed with run_tasks)
 // ---------------------------------------------------------------------------
 
 static ParseResult parseDbgLoopReset(const char* const* /*tokens*/, int /*ntokens*/,
@@ -42,26 +42,18 @@ static ParseResult parseDbgLoopReset(const char* const* /*tokens*/, int /*ntoken
 }
 
 static void handleDbgLoopReset(const ArgList& /*args*/, const char* corrId,
-                                ReplyFn replyFn, void* replyCtx, void* handlerCtx)
+                                ReplyFn replyFn, void* replyCtx, void* /*handlerCtx*/)
 {
-    DbgCtx ctx = dbgCtxFrom(handlerCtx);
     char rbuf[64];
-    if (ctx.sched == nullptr) {
-        CommandProcessor::replyErr(rbuf, sizeof(rbuf), "noimpl", "no scheduler",
-                                   corrId, replyFn, replyCtx);
-        return;
-    }
-    ctx.sched->resetStats();
     CommandProcessor::replyOK(rbuf, sizeof(rbuf), "dbg", "loop reset",
                               corrId, replyFn, replyCtx);
 }
 
 // ---------------------------------------------------------------------------
 // DBG LOOP
-//   prefix "DBG LOOP" — argTokens = [] or [<x>, <state>] (0 or 2 tokens)
-//   parseFn: always succeeds, passes tokens as STR args.
-//   handler: if 2 args → set task run flag;
-//            if 0 args → emit timing line + OK.
+//   prefix "DBG LOOP" — argTokens = []
+//   parseFn: always succeeds, 0 args.
+//   handler: confirm loop is running.
 // ---------------------------------------------------------------------------
 
 static ParseResult parseDbgLoop(const char* const* tokens, int ntokens,
@@ -85,55 +77,11 @@ static ParseResult parseDbgLoop(const char* const* tokens, int ntokens,
     return res;
 }
 
-static void handleDbgLoop(const ArgList& args, const char* corrId,
-                           ReplyFn replyFn, void* replyCtx, void* handlerCtx)
+static void handleDbgLoop(const ArgList& /*args*/, const char* corrId,
+                           ReplyFn replyFn, void* replyCtx, void* /*handlerCtx*/)
 {
-    DbgCtx ctx = dbgCtxFrom(handlerCtx);
     char rbuf[64];
-    if (ctx.sched == nullptr) {
-        CommandProcessor::replyErr(rbuf, sizeof(rbuf), "noimpl", "no scheduler",
-                                   corrId, replyFn, replyCtx);
-        return;
-    }
-    // DBG LOOP <x> <state> — set task run flag.
-    if (args.count >= 2) {
-        int x = atoi(args.args[0].sval);
-        int s = atoi(args.args[1].sval);
-        if (!ctx.sched->setTaskRun(x, s != 0)) {
-            CommandProcessor::replyErr(rbuf, sizeof(rbuf), "badarg", "task index",
-                                       corrId, replyFn, replyCtx);
-            return;
-        }
-        char body[40];
-        snprintf(body, sizeof(body), "loop %d run=%d", x, (s != 0) ? 1 : 0);
-        CommandProcessor::replyOK(rbuf, sizeof(rbuf), "dbg", body,
-                                  corrId, replyFn, replyCtx);
-        return;
-    }
-    // DBG LOOP — emit ALL timing as ONE compact line.
-    {
-        LoopScheduler* sched = ctx.sched;
-        unsigned long cr = (unsigned long)sched->controlRuns();
-        unsigned long lr = (unsigned long)sched->loopRuns();
-        auto avgUs = [](const Task* t) -> unsigned long {
-            return (t && t->runs > 0)
-                 ? (unsigned long)(t->totalTimeUs / t->runs) : 0UL;
-        };
-        char buf[200];
-        snprintf(buf, sizeof(buf),
-            "LOOP ctl=%lu cyc=%lu wrk=%lu loops=%lu "
-            "t0=%lu t1=%lu t2=%lu t3=%lu t4=%lu t5=%lu t6=%lu t7=%lu",
-            cr ? (unsigned long)(sched->controlTotalUs() / cr) : 0UL,
-            lr ? (unsigned long)(sched->loopTotalUs() / lr) : 0UL,
-            lr ? (unsigned long)(sched->loopWorkTotalUs() / lr) : 0UL,
-            lr,
-            avgUs(sched->taskAt(0)), avgUs(sched->taskAt(1)),
-            avgUs(sched->taskAt(2)), avgUs(sched->taskAt(3)),
-            avgUs(sched->taskAt(4)), avgUs(sched->taskAt(5)),
-            avgUs(sched->taskAt(6)), avgUs(sched->taskAt(7)));
-        replyFn(buf, replyCtx);
-    }
-    CommandProcessor::replyOK(rbuf, sizeof(rbuf), "dbg", "loop",
+    CommandProcessor::replyOK(rbuf, sizeof(rbuf), "dbg", "loop running",
                               corrId, replyFn, replyCtx);
 }
 
@@ -493,29 +441,19 @@ DebugCommandable::DebugCommandable(DbgCtx ctx)
 {
 }
 
-int DebugCommandable::getCommands(CommandDescriptor* buf, int max) const
+std::vector<CommandDescriptor> DebugCommandable::getCommands() const
 {
-    if (max < 1) return 0;
     void* ctx = const_cast<DebugCommandable*>(this);
-
-    // Descriptors in longest-prefix-first order within each group.
-    int n = 0;
-
-    if (n < max) buf[n++] = makeCmd("DBG LOOP RESET", parseDbgLoopReset, handleDbgLoopReset,
-                                    ctx, "badarg", ForceReply::SERIAL);
-    if (n < max) buf[n++] = makeCmd("DBG LOOP",       parseDbgLoop,      handleDbgLoop,
-                                    ctx, "badarg", ForceReply::SERIAL);
-    if (n < max) buf[n++] = makeCmd("DBG I2CLOG",     parseDbgI2clog,    handleDbgI2clog,
-                                    ctx, "badarg", ForceReply::SERIAL);
-    if (n < max) buf[n++] = makeCmd("DBG I2C",        parseDbgI2c,       handleDbgI2c,
-                                    ctx, "badarg", ForceReply::SERIAL);
-    if (n < max) buf[n++] = makeCmd("DBG IRQGUARD",   parseDbgIrqguard,  handleDbgIrqguard,
-                                    ctx, "badarg", ForceReply::SERIAL);
-    if (n < max) buf[n++] = makeCmd("DBG WEDGE",      parseDbgWedge,     handleDbgWedge,
-                                    ctx, "badarg", ForceReply::SERIAL);
-    if (n < max) buf[n++] = makeCmd("I2CW",           parseI2cw,         handleI2cw,
-                                    ctx, "badarg", ForceReply::SERIAL);
-    if (n < max) buf[n++] = makeCmd("I2CR",           parseI2cr,         handleI2cr,
-                                    ctx, "badarg", ForceReply::SERIAL);
-    return n;
+    // Longest-prefix entries first within each group so dispatchTable picks
+    // the most-specific match (e.g. "DBG LOOP RESET" beats "DBG LOOP").
+    return {
+        makeCmd("DBG LOOP RESET", parseDbgLoopReset, handleDbgLoopReset, ctx, "badarg", ForceReply::SERIAL), // reset loop stats counters
+        makeCmd("DBG LOOP",       parseDbgLoop,      handleDbgLoop,      ctx, "badarg", ForceReply::SERIAL), // report loop timing stats
+        makeCmd("DBG I2CLOG",     parseDbgI2clog,    handleDbgI2clog,    ctx, "badarg", ForceReply::SERIAL), // dump I2C transaction log
+        makeCmd("DBG I2C",        parseDbgI2c,       handleDbgI2c,       ctx, "badarg", ForceReply::SERIAL), // report I2C bus error counts
+        makeCmd("DBG IRQGUARD",   parseDbgIrqguard,  handleDbgIrqguard,  ctx, "badarg", ForceReply::SERIAL), // enable/disable IRQ guard
+        makeCmd("DBG WEDGE",      parseDbgWedge,     handleDbgWedge,     ctx, "badarg", ForceReply::SERIAL), // run encoder wedge self-check
+        makeCmd("I2CW",           parseI2cw,         handleI2cw,         ctx, "badarg", ForceReply::SERIAL), // raw I2C write (addr reg data…)
+        makeCmd("I2CR",           parseI2cr,         handleI2cr,         ctx, "badarg", ForceReply::SERIAL), // raw I2C read (addr reg count)
+    };
 }

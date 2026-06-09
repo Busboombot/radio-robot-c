@@ -14,7 +14,7 @@
 class PortController : public Commandable {
 public:
     explicit PortController(PortIO& pio);
-    virtual int getCommands(CommandDescriptor* buf, int max) const override;
+    virtual std::vector<CommandDescriptor> getCommands() const override;
 
     PortIO& pio() { return _pio; }
 

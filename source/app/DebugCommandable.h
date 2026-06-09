@@ -30,9 +30,7 @@ class DebugCommandable : public Commandable {
 public:
     explicit DebugCommandable(DbgCtx ctx);
 
-    // Fill buf[0..max-1] with this subsystem's descriptors (8 total).
-    // Returns the number written (never exceeds max).
-    virtual int getCommands(CommandDescriptor* buf, int max) const override;
+    virtual std::vector<CommandDescriptor> getCommands() const override;
 
     // Accessor used by handler functions in DebugCommandable.cpp.
     DbgCtx ctx() const { return _ctx; }

@@ -73,10 +73,10 @@ ServoController::ServoController(Servo& srv)
 {
 }
 
-int ServoController::getCommands(CommandDescriptor* buf, int max) const
+std::vector<CommandDescriptor> ServoController::getCommands() const
 {
-    if (max < 1) return 0;
     void* ctx = const_cast<ServoController*>(this);
-    buf[0] = makeCmd("GRIP", parseGrip, handleGrip, ctx, "badarg");
-    return 1;
+    return {
+        makeCmd("GRIP", parseGrip, handleGrip, ctx, "badarg"), // set/query gripper angle (0–180 deg)
+    };
 }

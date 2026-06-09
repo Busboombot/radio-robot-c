@@ -1,10 +1,11 @@
 #pragma once
 #include <stdint.h>
+#include <vector>
 #include "Protocol.h"
 
 // ---------------------------------------------------------------------------
 // CommandTypes.h — foundational types for the registration-based command
-// dispatch system.  No STL, no exceptions, no heap allocation.
+// dispatch system.
 // Constraint: -std=c++11 -fno-exceptions -fno-rtti
 // ---------------------------------------------------------------------------
 
@@ -102,13 +103,10 @@ struct CommandDescriptor {
 
 // ---------------------------------------------------------------------------
 // Commandable — interface for subsystems that register their own commands.
-// Avoids std::vector: caller passes a fixed-size buffer and receives a count.
 // ---------------------------------------------------------------------------
 class Commandable {
 public:
-    // Fill buf[0..max-1] with this subsystem's descriptors.
-    // Returns the number of descriptors written (never exceeds max).
-    virtual int getCommands(CommandDescriptor* buf, int max) const = 0;
+    virtual std::vector<CommandDescriptor> getCommands() const = 0;
     virtual ~Commandable() {}
 };
 

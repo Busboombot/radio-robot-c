@@ -1140,22 +1140,17 @@ static void handleSTOP(const ArgList& /*args*/, const char* corrId,
 }
 
 // ---------------------------------------------------------------------------
-// getCommands — fill buf with all 9 motion command descriptors.
-// Returns 0 if buf is too small (requires at least 9 slots).
-// ---------------------------------------------------------------------------
-
-int MotionController::getCommands(CommandDescriptor* buf, int max) const {
-    if (max < 9) return 0;
+std::vector<CommandDescriptor> MotionController::getCommands() const {
     void* ctx = const_cast<MotionCtx*>(&_ctx);
-    int n = 0;
-    buf[n++] = makeCmd("S",    parseS,      handleS,    ctx, "badarg");
-    buf[n++] = makeCmd("T",    parseT,      handleT,    ctx, "badarg");
-    buf[n++] = makeCmd("D",    parseD,      handleD,    ctx, "badarg");
-    buf[n++] = makeCmd("G",    parseG,      handleG,    ctx, "badarg");
-    buf[n++] = makeCmd("R",    parseR,      handleR,    ctx, "badarg");
-    buf[n++] = makeCmd("TURN", parseTURN,   handleTURN, ctx, "badarg");
-    buf[n++] = makeCmd("VW",   parseVW,     handleVW,   ctx, "badarg");
-    buf[n++] = makeCmd("X",    parseNoArgs, handleX,    ctx, "badarg");
-    buf[n++] = makeCmd("STOP", parseNoArgs, handleSTOP, ctx, "badarg");
-    return n;
+    return {
+        makeCmd("S",    parseS,      handleS,    ctx, "badarg"), // set wheel speeds (mm/s)
+        makeCmd("T",    parseT,      handleT,    ctx, "badarg"), // timed drive (ms)
+        makeCmd("D",    parseD,      handleD,    ctx, "badarg"), // distance drive (mm)
+        makeCmd("G",    parseG,      handleG,    ctx, "badarg"), // goto encoder position
+        makeCmd("R",    parseR,      handleR,    ctx, "badarg"), // rotate in place (deg)
+        makeCmd("TURN", parseTURN,   handleTURN, ctx, "badarg"), // arc turn (radius, deg)
+        makeCmd("VW",   parseVW,     handleVW,   ctx, "badarg"), // velocity + angular vel (unicycle)
+        makeCmd("X",    parseNoArgs, handleX,    ctx, "badarg"), // stop immediately
+        makeCmd("STOP", parseNoArgs, handleSTOP, ctx, "badarg"), // stop with deceleration
+    };
 }

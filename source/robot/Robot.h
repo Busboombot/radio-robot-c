@@ -113,16 +113,15 @@ struct Robot {
     uint32_t systemTime() const;
 
     // ---- Command-table building ----
-    // Fill buf[0..max-1] with all command descriptors:
+    // Aggregate all command descriptors into a vector:
     //   Commandable members (motionController, odometry, portController,
     //   servoController), optional DebugCommandable, then system commands
     //   (HELLO, PING, ECHO, ID, VER, HELP, SNAP, ZERO, STREAM, RF,
-    //    GET, GET VEL, SET).
-    // Returns the total count written. Asserts count <= max.
+    //    GET VEL, GET, SET).
     // sched may be nullptr; RF will reply ERR noradio if it is.
-    int buildCommandTable(CommandDescriptor* buf, int max,
-                          DebugCommandable* dbg,
-                          LoopScheduler*    sched = nullptr) const;
+    std::vector<CommandDescriptor> buildCommandTable(
+        DebugCommandable* dbg   = nullptr,
+        LoopScheduler*    sched = nullptr) const;
 
     // ---- Gating state that pairs with the kept methods ----
     uint32_t _lastTlmMs     = 0;

@@ -46,8 +46,7 @@ class MotionController : public Commandable {
 public:
     MotionController(MotorController& mc, Odometry& odo, const RobotConfig& cfg);
 
-    // Commandable interface — stub; full implementation in T008.
-    virtual int getCommands(CommandDescriptor* buf, int max) const override;
+    virtual std::vector<CommandDescriptor> getCommands() const override;
 
     // Bind the authoritative HardwareState (called by Robot after state init,
     // before the first tick).  Required so getPoseFloat() can read pose fields.

@@ -140,11 +140,11 @@ PortController::PortController(PortIO& pio)
 {
 }
 
-int PortController::getCommands(CommandDescriptor* buf, int max) const
+std::vector<CommandDescriptor> PortController::getCommands() const
 {
-    if (max < 2) return 0;
     void* ctx = const_cast<PortController*>(this);
-    buf[0] = makeCmd("P",  parseP,  handleP,  ctx, "badarg");
-    buf[1] = makeCmd("PA", parsePA, handlePA, ctx, "badarg");
-    return 2;
+    return {
+        makeCmd("P",  parseP,  handleP,  ctx, "badarg"), // digital pin read/write
+        makeCmd("PA", parsePA, handlePA, ctx, "badarg"), // analog pin read/write
+    };
 }
