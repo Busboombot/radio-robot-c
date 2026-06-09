@@ -24,3 +24,12 @@ struct ReplyCtx {
     bool viaRadio;
     bool relay;
 };
+
+// ---------------------------------------------------------------------------
+// KVPair — a single key=value token pair. Used by parseKV() and ParseFn.
+// Keys and values point into the working copy buffer; callers must not free.
+// ---------------------------------------------------------------------------
+struct KVPair {
+    const char* key;
+    const char* value;
+};

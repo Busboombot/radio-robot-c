@@ -1,15 +1,16 @@
 ---
-id: "003"
-title: "Add CommandProcessor new constructor and dispatchTable() path (dual-mode with old switch behind _cmds==nullptr guard)"
-status: open
+id: '003'
+title: Add CommandProcessor new constructor and dispatchTable() path (dual-mode with
+  old switch behind _cmds==nullptr guard)
+status: done
 use-cases:
 - SUC-002
 - SUC-004
 depends-on:
 - '001'
 - '002'
-github-issue: ""
-issue: ""
+github-issue: ''
+issue: ''
 completes_issue: false
 ---
 
@@ -26,21 +27,21 @@ The new path is wired but dormant.
 
 ## Acceptance Criteria
 
-- [ ] `CommandProcessor.h` declares:
+- [x] `CommandProcessor.h` declares:
   - New constructor: `CommandProcessor(const CommandDescriptor* cmds, int count)`
   - `void setSerialReply(ReplyFn fn, void* ctx)`
   - Private members: `const CommandDescriptor* _cmds = nullptr`, `int _cmdCount = 0`,
     `ReplyFn _serialFn = nullptr`, `void* _serialCtx = nullptr`
   - Old `CommandProcessor(Robot& robot)` constructor retained
-- [ ] `CommandProcessor.cpp` implements `dispatchTable()` as a private method:
+- [x] `CommandProcessor.cpp` implements `dispatchTable()` as a private method:
   - Longest-prefix linear scan over `_cmds[0.._cmdCount-1]`
   - `prefixMatchLen(const char* prefix, char** tokens, int ntok)` helper
   - Calls `parseFn` if non-null; replies `ERR errFmt` on parse failure without calling handler
   - Substitutes `_serialFn`/`_serialCtx` for `ForceReply::SERIAL` descriptors
   - Falls through to `ERR unknown` if no prefix matches
-- [ ] `process()` routes to `dispatchTable()` when `_cmds != nullptr`, old switch when `_cmds == nullptr`
-- [ ] `python3 build.py` passes with no errors
-- [ ] All existing commands continue to work (old path still active; no behavior change)
+- [x] `process()` routes to `dispatchTable()` when `_cmds != nullptr`, old switch when `_cmds == nullptr`
+- [x] `python3 build.py` passes with no errors
+- [x] All existing commands continue to work (old path still active; no behavior change)
 
 ## Implementation Plan
 

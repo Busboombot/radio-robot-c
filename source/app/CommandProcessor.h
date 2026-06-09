@@ -1,6 +1,7 @@
 #pragma once
 #include <stdint.h>
 #include "Protocol.h"
+#include "CommandTypes.h"
 
 // Forward declarations — CommandProcessor.cpp includes Robot.h directly.
 // Keeping only forward decls here avoids including Robot.h's transitive
@@ -9,15 +10,6 @@
 struct Robot;
 class LoopScheduler;
 class I2CBus;
-
-// ---------------------------------------------------------------------------
-// KVPair — a single key=value token pair. Used by parseKV().
-// Keys and values point into the working copy buffer; callers must not free.
-// ---------------------------------------------------------------------------
-struct KVPair {
-    const char* key;
-    const char* value;
-};
 
 /**
  * CommandProcessor — protocol v2 wire-protocol parser and dispatcher.
@@ -45,7 +37,14 @@ struct KVPair {
  */
 class CommandProcessor {
 public:
+    // Legacy constructor — uses the old switch-based dispatch in process().
     explicit CommandProcessor(Robot& robot);
+
+    // Table-dispatch constructor — when _cmds != nullptr, process() routes
+    // through dispatchTable() instead of the legacy switch.
+    // cmds must point to a static array of count CommandDescriptors that
+    // outlives this object. No heap allocation.
+    CommandProcessor(const CommandDescriptor* cmds, int count);
 
     // Parse and dispatch one command line. line must be NUL-terminated.
     // Calls replyFn(msg, ctx) for each response line.
@@ -58,6 +57,10 @@ public:
     // Wire the I2CBus instance so DBG I2C can read per-device stats (015-003).
     // Optional — if unset, DBG I2C replies with an error.
     void setI2CBus(I2CBus* bus) { _i2cBus = bus; }
+
+    // Override the serial reply channel for ForceReply::SERIAL descriptors.
+    // Optional — if unset, ForceReply::SERIAL uses the incoming replyFn/ctx.
+    void setSerialReply(ReplyFn fn, void* ctx) { _serialFn = fn; _serialCtx = ctx; }
 
     // -------------------------------------------------------------------------
     // Static parse helpers — public so dependent tickets can call them
@@ -126,9 +129,19 @@ public:
                          ReplyFn fn, void* ctx);
 
 private:
-    Robot& _robot;
+    Robot* _robot   = nullptr;
     LoopScheduler* _sched   = nullptr;
     I2CBus*        _i2cBus  = nullptr;
+
+    // Table-dispatch state (set by the new constructor; nullptr in legacy mode).
+    const CommandDescriptor* _cmds     = nullptr;
+    int                      _cmdCount = 0;
+    ReplyFn                  _serialFn  = nullptr;
+    void*                    _serialCtx = nullptr;
+
+    // Table-dispatch implementation — called by process() when _cmds != nullptr.
+    void dispatchTable(char** tokens, int ntok, KVPair* kvs, int nkv,
+                       const char* corrId, ReplyFn replyFn, void* ctx);
 
     static int clampInt(int v, int lo, int hi);
 };

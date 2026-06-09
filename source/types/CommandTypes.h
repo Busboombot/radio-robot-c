@@ -1,7 +1,6 @@
 #pragma once
 #include <stdint.h>
 #include "Protocol.h"
-#include "../app/CommandProcessor.h"
 
 // ---------------------------------------------------------------------------
 // CommandTypes.h — foundational types for the registration-based command

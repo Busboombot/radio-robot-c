@@ -37,12 +37,128 @@
 #include <cctype>
 
 // ---------------------------------------------------------------------------
-// Constructor
+// Constructors
 // ---------------------------------------------------------------------------
 
 CommandProcessor::CommandProcessor(Robot& robot)
-    : _robot(robot)
+    : _robot(&robot)
 {
+}
+
+CommandProcessor::CommandProcessor(const CommandDescriptor* cmds, int count)
+    : _robot(nullptr), _cmds(cmds), _cmdCount(count)
+{
+}
+
+// ---------------------------------------------------------------------------
+// setSerialReply — override implemented inline in CommandProcessor.h
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// prefixMatchLen — static helper for dispatchTable()
+//
+// Tokenizes 'prefix' on spaces (into a local stack buffer), then compares
+// token-by-token against tokens[0..ntok-1] using strcmp (verb is already
+// uppercased by parseTokens; prefix strings should be written in uppercase).
+//
+// Returns the number of prefix tokens that matched (0 = no match).
+// ---------------------------------------------------------------------------
+
+static int prefixMatchLen(const char* prefix, char** tokens, int ntok)
+{
+    // Copy prefix into a stack buffer so we can tokenize it in place.
+    char buf[64];
+    int plen = 0;
+    for (const char* p = prefix; *p && plen < (int)(sizeof(buf) - 1); ++p, ++plen) {
+        buf[plen] = *p;
+    }
+    buf[plen] = '\0';
+
+    // Tokenize buf on spaces.
+    const char* ptoks[8];
+    int nptoks = 0;
+    char* cur = buf;
+    char* end = buf + plen;
+    while (cur < end && nptoks < (int)(sizeof(ptoks) / sizeof(ptoks[0]))) {
+        while (cur < end && *cur == ' ') ++cur;
+        if (cur >= end) break;
+        ptoks[nptoks++] = cur;
+        while (cur < end && *cur != ' ') ++cur;
+        if (cur < end) { *cur = '\0'; ++cur; }
+    }
+
+    if (nptoks == 0 || nptoks > ntok) return 0;
+
+    for (int i = 0; i < nptoks; ++i) {
+        if (strcmp(ptoks[i], tokens[i]) != 0) return 0;
+    }
+    return nptoks;
+}
+
+// ---------------------------------------------------------------------------
+// dispatchTable — table-driven dispatch (used when _cmds != nullptr)
+//
+// Scans _cmds[0.._cmdCount-1] for the descriptor whose prefix has the
+// longest token match against tokens[0..ntok-1]. If no descriptor matches,
+// replies ERR unknown. Otherwise:
+//   1. Determines the effective reply channel (ForceReply::SERIAL override).
+//   2. Calls parseFn (if non-null); on failure, replies ERR errFmt and returns.
+//   3. Calls handlerFn with the parsed ArgList (or an empty ArgList).
+// ---------------------------------------------------------------------------
+
+void CommandProcessor::dispatchTable(char** tokens, int ntok, KVPair* kvs, int nkv,
+                                     const char* corrId, ReplyFn replyFn, void* ctx)
+{
+    char rbuf[520];
+
+    // Find the descriptor with the longest matching prefix.
+    int bestMatch = 0;
+    int bestIdx   = -1;
+    for (int i = 0; i < _cmdCount; ++i) {
+        int m = prefixMatchLen(_cmds[i].prefix, tokens, ntok);
+        if (m > bestMatch) {
+            bestMatch = m;
+            bestIdx   = i;
+        }
+    }
+
+    if (bestIdx < 0) {
+        // No descriptor matched.
+        replyErr(rbuf, sizeof(rbuf), "unknown", nullptr, corrId, replyFn, ctx);
+        return;
+    }
+
+    const CommandDescriptor& desc = _cmds[bestIdx];
+
+    // Determine effective reply channel.
+    ReplyFn  effectiveFn  = replyFn;
+    void*    effectiveCtx = ctx;
+    if (desc.forceReply == ForceReply::SERIAL && _serialFn != nullptr) {
+        effectiveFn  = _serialFn;
+        effectiveCtx = _serialCtx;
+    }
+
+    // Strip the matched prefix tokens from the token list passed to parseFn.
+    char** argTokens = tokens + bestMatch;
+    int    argNtok   = ntok - bestMatch;
+
+    ArgList args;
+    args.count = 0;
+
+    if (desc.parseFn != nullptr) {
+        ParseResult result = desc.parseFn(
+            const_cast<const char* const*>(argTokens), argNtok,
+            kvs, nkv);
+        if (!result.ok) {
+            const char* detail = (result.err.detail != nullptr) ? result.err.detail : nullptr;
+            const char* code   = (desc.errFmt != nullptr) ? desc.errFmt : "badarg";
+            replyErr(rbuf, sizeof(rbuf), code, detail, corrId, effectiveFn, effectiveCtx);
+            return;
+        }
+        args = result.args;
+    }
+
+    desc.handlerFn(args, corrId, effectiveFn, effectiveCtx, desc.handlerCtx);
 }
 
 // ---------------------------------------------------------------------------
@@ -336,6 +452,14 @@ void CommandProcessor::process(const char* line, ReplyFn replyFn, void* ctx)
         }
     }
 
+    // ── Table-dispatch gate ──────────────────────────────────────────────────
+    // When the table-dispatch constructor was used (_cmds != nullptr), route
+    // all commands through dispatchTable() and skip the legacy switch entirely.
+    if (_cmds != nullptr) {
+        dispatchTable(tokens, ntok, kvs, nkv, corr_id, replyFn, ctx);
+        return;
+    }
+
     // ── Dispatch on verb ─────────────────────────────────────────────────────
 
     // ── HELLO ────────────────────────────────────────────────────────────────
@@ -357,7 +481,7 @@ void CommandProcessor::process(const char* line, ReplyFn replyFn, void* ctx)
     // ── PING ─────────────────────────────────────────────────────────────────
     // Reply: OK pong t=<robot_ms>  (clock-sync probe; t MUST be robot clock)
     if (strcmp(verb, "PING") == 0) {
-        uint32_t t = _robot.systemTime();
+        uint32_t t = _robot->systemTime();
         char body[32];
         snprintf(body, sizeof(body), "t=%lu", (unsigned long)t);
         replyOK(rbuf, sizeof(rbuf), "pong", body, corr_id, replyFn, ctx);
@@ -439,11 +563,11 @@ void CommandProcessor::process(const char* line, ReplyFn replyFn, void* ctx)
             if (rem > 0) strncat(caps, cap, (size_t)rem);
             first = false;
         };
-        if (_robot.otos.is_initialized())        addCap("otos");
-        if (_robot.line.is_initialized())        addCap("line");
-        if (_robot.colorSensor.is_initialized()) addCap("color");
+        if (_robot->otos.is_initialized())        addCap("otos");
+        if (_robot->line.is_initialized())        addCap("line");
+        if (_robot->colorSensor.is_initialized()) addCap("color");
         // gripper: omitted from caps — no gripper hardware (re-enable when added)
-        // if (_robot.gripper.is_initialized()) addCap("gripper");
+        // if (_robot->gripper.is_initialized()) addCap("gripper");
         // portio is always present.
         addCap("portio");
 
@@ -494,8 +618,8 @@ void CommandProcessor::process(const char* line, ReplyFn replyFn, void* ctx)
             // Read velocities from HardwareState (written by controlCollect each tick).
             // Chip readSpeed (0x47) is disabled (sprint 013 throb fix), so source
             // is always encoder-delta ('E') for both wheels.
-            float vL = _robot.state.inputs.velLMms;
-            float vR = _robot.state.inputs.velRMms;
+            float vL = _robot->state.inputs.velLMms;
+            float vR = _robot->state.inputs.velRMms;
             char body[48];
             snprintf(body, sizeof(body), "vel=%d:E,%d:E",
                      (int)vL, (int)vR);
@@ -518,7 +642,7 @@ void CommandProcessor::process(const char* line, ReplyFn replyFn, void* ctx)
                 getArgs.args[getArgs.count].fval  = 0.0f;
                 ++getArgs.count;
             }
-            CfgCtx cfgCtx{ &_robot.config, &_robot.motorController };
+            CfgCtx cfgCtx{ &_robot->config, &_robot->motorController };
             handleGet(getArgs, corr_id, replyFn, ctx, &cfgCtx);
         }
         return;
@@ -551,7 +675,7 @@ void CommandProcessor::process(const char* line, ReplyFn replyFn, void* ctx)
                 setArgs.args[setArgs.count].fval = 0.0f;
                 ++setArgs.count;
             }
-            CfgCtx cfgCtx{ &_robot.config, &_robot.motorController };
+            CfgCtx cfgCtx{ &_robot->config, &_robot->motorController };
             handleSet(setArgs, corr_id, replyFn, ctx, &cfgCtx);
         }
         return;
@@ -588,7 +712,7 @@ void CommandProcessor::process(const char* line, ReplyFn replyFn, void* ctx)
                         if (*c == '\0') break;
                     }
                 }
-                _robot.config.tlmFields = mask ? mask : TLM_FIELD_ALL;
+                _robot->config.tlmFields = mask ? mask : TLM_FIELD_ALL;
                 // Reconstruct the fields string for the response body.
                 char body[80];
                 int bpos = 0;
@@ -604,7 +728,7 @@ void CommandProcessor::process(const char* line, ReplyFn replyFn, void* ctx)
                 int bw = snprintf(body + bpos, (size_t)brem, "fields=");
                 if (bw > 0 && bw < brem) { bpos += bw; brem -= bw; }
                 for (int fi = 0; fi < 5 && brem > 1; ++fi) {
-                    if (_robot.config.tlmFields & kFieldNames[fi].bit) {
+                    if (_robot->config.tlmFields & kFieldNames[fi].bit) {
                         if (needComma) { body[bpos++] = ','; --brem; }
                         bw = snprintf(body + bpos, (size_t)brem, "%s", kFieldNames[fi].name);
                         if (bw > 0 && bw < brem) { bpos += bw; brem -= bw; }
@@ -627,7 +751,7 @@ void CommandProcessor::process(const char* line, ReplyFn replyFn, void* ctx)
         int32_t ms = (int32_t)atoi(tokens[1]);
         if (ms < 0) ms = 0;
         if (ms > 0 && ms < 20) ms = 20;  // clamp to 20 ms minimum
-        _robot.config.tlmPeriodMs = ms;
+        _robot->config.tlmPeriodMs = ms;
         char body[32];
         snprintf(body, sizeof(body), "period=%d", (int)ms);
         replyOK(rbuf, sizeof(rbuf), "stream", body, corr_id, replyFn, ctx);
@@ -641,7 +765,7 @@ void CommandProcessor::process(const char* line, ReplyFn replyFn, void* ctx)
     // delivers it (unlike an async stream frame, which the radio drops).
     if (strcmp(verb, "SNAP") == 0) {
         char tlmBuf[128];
-        _robot.buildTlmFrame(tlmBuf, sizeof(tlmBuf));
+        _robot->buildTlmFrame(tlmBuf, sizeof(tlmBuf));
         replyFn(tlmBuf, ctx);
         return;
     }
@@ -728,7 +852,7 @@ void CommandProcessor::process(const char* line, ReplyFn replyFn, void* ctx)
             }
             if (ntok >= 3 && strcmp(tokens[2], "RESET") == 0) {
                 _i2cBus->resetStats();
-                _robot.motorController.resetStuckCounters();
+                _robot->motorController.resetStuckCounters();
                 replyOK(rbuf, sizeof(rbuf), "dbg", "i2c reset", corr_id, replyFn, ctx);
                 return;
             }
@@ -740,8 +864,8 @@ void CommandProcessor::process(const char* line, ReplyFn replyFn, void* ctx)
             //       reentry=N stuck=L:N,R:N
             // (single line, all on one snprintf)
             uint32_t rV  = _i2cBus->reentryViolations();
-            uint8_t  sL  = _robot.motorController.stuckCountL();
-            uint8_t  sR  = _robot.motorController.stuckCountR();
+            uint8_t  sL  = _robot->motorController.stuckCountL();
+            uint8_t  sR  = _robot->motorController.stuckCountR();
             // Single snprintf into ≤200-byte buffer (well under 255-byte serial TX
             // buffer). snprintf truncates + NUL-terminates safely on overflow.
             // Format: I2C 0x10:txn=N err=N last=N 0x17:... reentry=N stuck=L:N,R:N
@@ -924,7 +1048,7 @@ void CommandProcessor::process(const char* line, ReplyFn replyFn, void* ctx)
             replyErr(rbuf, sizeof(rbuf), "range", "r", corr_id, replyFn, ctx);
             return;
         }
-        _robot.driveController.beginStream((float)l, (float)r, _robot.systemTime(), _robot.state.target, replyFn, ctx);
+        _robot->driveController.beginStream((float)l, (float)r, _robot->systemTime(), _robot->state.target, replyFn, ctx);
         char body[32];
         snprintf(body, sizeof(body), "l=%d r=%d", l, r);
         replyOK(rbuf, sizeof(rbuf), "drive", body, corr_id, replyFn, ctx);
@@ -953,7 +1077,7 @@ void CommandProcessor::process(const char* line, ReplyFn replyFn, void* ctx)
             replyErr(rbuf, sizeof(rbuf), "range", "ms", corr_id, replyFn, ctx);
             return;
         }
-        _robot.driveController.beginTimed((float)l, (float)r, (uint32_t)ms, _robot.systemTime(), _robot.state.target, replyFn, ctx, corr_id);
+        _robot->driveController.beginTimed((float)l, (float)r, (uint32_t)ms, _robot->systemTime(), _robot->state.target, replyFn, ctx, corr_id);
 
         // Optional sensor= modifier: appended after begin*() returns.
         // Safe: addStop() after start() is allowed — start() snapshots the
@@ -965,10 +1089,10 @@ void CommandProcessor::process(const char* line, ReplyFn replyFn, void* ctx)
                 uint8_t ch; float thr; StopCondition::Cmp cmp;
                 if (!parseSensorToken(kvs[i].value, ch, thr, cmp)) {
                     replyErr(rbuf, sizeof(rbuf), "badarg", "sensor", corr_id, replyFn, ctx);
-                    _robot.driveController.cancel(_robot.systemTime(), replyFn, ctx);
+                    _robot->driveController.cancel(_robot->systemTime(), replyFn, ctx);
                     return;
                 }
-                _robot.driveController.activeCmd().addStop(makeSensorStop(ch, thr, cmp));
+                _robot->driveController.activeCmd().addStop(makeSensorStop(ch, thr, cmp));
                 break;
             }
         }
@@ -1001,7 +1125,7 @@ void CommandProcessor::process(const char* line, ReplyFn replyFn, void* ctx)
             replyErr(rbuf, sizeof(rbuf), "range", "mm", corr_id, replyFn, ctx);
             return;
         }
-        _robot.distanceDrive((int32_t)l, (int32_t)r, (int32_t)mm, replyFn, ctx, corr_id);
+        _robot->distanceDrive((int32_t)l, (int32_t)r, (int32_t)mm, replyFn, ctx, corr_id);
 
         // Optional sensor= modifier: appended after begin*() returns.
         // Safe: addStop() after start() — see T handler comment above.
@@ -1010,10 +1134,10 @@ void CommandProcessor::process(const char* line, ReplyFn replyFn, void* ctx)
                 uint8_t ch; float thr; StopCondition::Cmp cmp;
                 if (!parseSensorToken(kvs[i].value, ch, thr, cmp)) {
                     replyErr(rbuf, sizeof(rbuf), "badarg", "sensor", corr_id, replyFn, ctx);
-                    _robot.driveController.cancel(_robot.systemTime(), replyFn, ctx);
+                    _robot->driveController.cancel(_robot->systemTime(), replyFn, ctx);
                     return;
                 }
-                _robot.driveController.activeCmd().addStop(makeSensorStop(ch, thr, cmp));
+                _robot->driveController.activeCmd().addStop(makeSensorStop(ch, thr, cmp));
                 break;
             }
         }
@@ -1046,7 +1170,7 @@ void CommandProcessor::process(const char* line, ReplyFn replyFn, void* ctx)
             replyErr(rbuf, sizeof(rbuf), "range", "speed", corr_id, replyFn, ctx);
             return;
         }
-        _robot.driveController.beginGoTo((float)x, (float)y, (float)speed, _robot.systemTime(), _robot.state.target, replyFn, ctx, corr_id);
+        _robot->driveController.beginGoTo((float)x, (float)y, (float)speed, _robot->systemTime(), _robot->state.target, replyFn, ctx, corr_id);
         char body[64];
         snprintf(body, sizeof(body), "x=%d y=%d speed=%d", x, y, speed);
         replyOK(rbuf, sizeof(rbuf), "goto", body, corr_id, replyFn, ctx);
@@ -1074,9 +1198,9 @@ void CommandProcessor::process(const char* line, ReplyFn replyFn, void* ctx)
             replyErr(rbuf, sizeof(rbuf), "range", "radius", corr_id, replyFn, ctx);
             return;
         }
-        uint32_t now = _robot.systemTime();
-        _robot.driveController.beginArc((float)speed, (float)radius, now,
-                                        _robot.state.target, replyFn, ctx, corr_id);
+        uint32_t now = _robot->systemTime();
+        _robot->driveController.beginArc((float)speed, (float)radius, now,
+                                        _robot->state.target, replyFn, ctx, corr_id);
         char body[48];
         snprintf(body, sizeof(body), "speed=%d radius=%d", speed, radius);
         replyOK(rbuf, sizeof(rbuf), "arc", body, corr_id, replyFn, ctx);
@@ -1115,9 +1239,9 @@ void CommandProcessor::process(const char* line, ReplyFn replyFn, void* ctx)
             }
         }
 
-        uint32_t now = _robot.systemTime();
-        _robot.driveController.beginTurn((float)heading_cdeg, (float)eps_cdeg, now,
-                                         _robot.state.target, replyFn, ctx, corr_id);
+        uint32_t now = _robot->systemTime();
+        _robot->driveController.beginTurn((float)heading_cdeg, (float)eps_cdeg, now,
+                                         _robot->state.target, replyFn, ctx, corr_id);
 
         // Optional sensor= modifier: appended after begin*() returns.
         // Safe: addStop() after start() — see T handler comment above.
@@ -1126,10 +1250,10 @@ void CommandProcessor::process(const char* line, ReplyFn replyFn, void* ctx)
                 uint8_t ch; float thr; StopCondition::Cmp cmp;
                 if (!parseSensorToken(kvs[i].value, ch, thr, cmp)) {
                     replyErr(rbuf, sizeof(rbuf), "badarg", "sensor", corr_id, replyFn, ctx);
-                    _robot.driveController.cancel(_robot.systemTime(), replyFn, ctx);
+                    _robot->driveController.cancel(_robot->systemTime(), replyFn, ctx);
                     return;
                 }
-                _robot.driveController.activeCmd().addStop(makeSensorStop(ch, thr, cmp));
+                _robot->driveController.activeCmd().addStop(makeSensorStop(ch, thr, cmp));
                 break;
             }
         }
@@ -1168,16 +1292,16 @@ void CommandProcessor::process(const char* line, ReplyFn replyFn, void* ctx)
             return;
         }
         float omega_rads = (float)omega / 1000.0f;  // mrad/s → rad/s
-        uint32_t now = _robot.systemTime();
+        uint32_t now = _robot->systemTime();
 
-        if (_robot.driveController.hasActiveCommand()) {
+        if (_robot->driveController.hasActiveCommand()) {
             // Keepalive re-send: update target and re-arm TIME baseline.
             // This avoids resetting the profiler ramp on every VW packet.
-            _robot.driveController.activeCmd().setTarget((float)v, omega_rads);
+            _robot->driveController.activeCmd().setTarget((float)v, omega_rads);
         } else {
             // New VW command: configure MotionCommand from scratch.
-            _robot.driveController.beginVelocity((float)v, omega_rads, now,
-                                                 _robot.state.target,
+            _robot->driveController.beginVelocity((float)v, omega_rads, now,
+                                                 _robot->state.target,
                                                  replyFn, ctx, corr_id);
         }
 
@@ -1234,7 +1358,7 @@ void CommandProcessor::process(const char* line, ReplyFn replyFn, void* ctx)
     // MotionCommand emits EVT cancelled, mode goes IDLE. If no command is
     // active, _mc.stop() is still called (motor safety) but no EVT is emitted.
     if (strcmp(verb, "X") == 0) {
-        { uint32_t now = _robot.systemTime(); _robot.driveController.cancel(now, replyFn, ctx); }
+        { uint32_t now = _robot->systemTime(); _robot->driveController.cancel(now, replyFn, ctx); }
         replyOK(rbuf, sizeof(rbuf), "x", nullptr, corr_id, replyFn, ctx);
         return;
     }
@@ -1244,7 +1368,7 @@ void CommandProcessor::process(const char* line, ReplyFn replyFn, void* ctx)
     // Routes through DriveController::cancel() just like X so any active
     // MotionCommand is torn down cleanly. Replies OK stop (not OK x).
     if (strcmp(verb, "STOP") == 0) {
-        { uint32_t now = _robot.systemTime(); _robot.driveController.cancel(now, replyFn, ctx); }
+        { uint32_t now = _robot->systemTime(); _robot->driveController.cancel(now, replyFn, ctx); }
         replyOK(rbuf, sizeof(rbuf), "stop", nullptr, corr_id, replyFn, ctx);
         return;
     }
@@ -1260,9 +1384,9 @@ void CommandProcessor::process(const char* line, ReplyFn replyFn, void* ctx)
                 replyErr(rbuf, sizeof(rbuf), "range", "deg", corr_id, replyFn, ctx);
                 return;
             }
-            { uint8_t clamped = (deg < 0) ? 0 : (deg > 180) ? 180 : (uint8_t)deg; _robot.gripper.setAngle(clamped); }
+            { uint8_t clamped = (deg < 0) ? 0 : (deg > 180) ? 180 : (uint8_t)deg; _robot->gripper.setAngle(clamped); }
         } else {
-            deg = _robot.gripper.currentAngle();
+            deg = _robot->gripper.currentAngle();
         }
         char body[24];
         snprintf(body, sizeof(body), "deg=%d", (int)deg);
@@ -1289,8 +1413,8 @@ void CommandProcessor::process(const char* line, ReplyFn replyFn, void* ctx)
             replyErr(rbuf, sizeof(rbuf), "badarg", nullptr, corr_id, replyFn, ctx);
             return;
         }
-        if (doEnc)  _robot.motorController.resetEncoderAccumulators();
-        if (doPose) _robot.odometry.zero(_robot.state.inputs);
+        if (doEnc)  _robot->motorController.resetEncoderAccumulators();
+        if (doPose) _robot->odometry.zero(_robot->state.inputs);
         // Build body: "enc", "pose", or "enc pose"
         char body[16];
         if (doEnc && doPose)       snprintf(body, sizeof(body), "enc pose");
@@ -1303,11 +1427,11 @@ void CommandProcessor::process(const char* line, ReplyFn replyFn, void* ctx)
     // ── OI — OTOS init ────────────────────────────────────────────────────────
     // OI  → OK oi
     if (strcmp(verb, "OI") == 0) {
-        if (!_robot.otos.is_initialized()) {
+        if (!_robot->otos.is_initialized()) {
             replyErr(rbuf, sizeof(rbuf), "nodev", "oi", corr_id, replyFn, ctx);
             return;
         }
-        _robot.otos.init();
+        _robot->otos.init();
         replyOK(rbuf, sizeof(rbuf), "oi", nullptr, corr_id, replyFn, ctx);
         return;
     }
@@ -1315,11 +1439,11 @@ void CommandProcessor::process(const char* line, ReplyFn replyFn, void* ctx)
     // ── OZ — OTOS zero (reset tracking) ──────────────────────────────────────
     // OZ  → OK oz
     if (strcmp(verb, "OZ") == 0) {
-        if (!_robot.otos.is_initialized()) {
+        if (!_robot->otos.is_initialized()) {
             replyErr(rbuf, sizeof(rbuf), "nodev", "oz", corr_id, replyFn, ctx);
             return;
         }
-        _robot.otos.setPositionRaw(0, 0, 0);
+        _robot->otos.setPositionRaw(0, 0, 0);
         replyOK(rbuf, sizeof(rbuf), "oz", nullptr, corr_id, replyFn, ctx);
         return;
     }
@@ -1327,11 +1451,11 @@ void CommandProcessor::process(const char* line, ReplyFn replyFn, void* ctx)
     // ── OR — OTOS reset tracking ──────────────────────────────────────────────
     // OR  → OK or
     if (strcmp(verb, "OR") == 0) {
-        if (!_robot.otos.is_initialized()) {
+        if (!_robot->otos.is_initialized()) {
             replyErr(rbuf, sizeof(rbuf), "nodev", "or", corr_id, replyFn, ctx);
             return;
         }
-        _robot.otos.resetTracking();
+        _robot->otos.resetTracking();
         replyOK(rbuf, sizeof(rbuf), "or", nullptr, corr_id, replyFn, ctx);
         return;
     }
@@ -1340,12 +1464,12 @@ void CommandProcessor::process(const char* line, ReplyFn replyFn, void* ctx)
     // OP  → OK rawpos x=<x> y=<y> h=<h>  (values are raw OTOS LSB, not mm)
     // 1 LSB ≈ 0.305 mm for position; TLM pose= is fused odometry in mm/cdeg.
     if (strcmp(verb, "OP") == 0) {
-        if (!_robot.otos.is_initialized()) {
+        if (!_robot->otos.is_initialized()) {
             replyErr(rbuf, sizeof(rbuf), "nodev", "op", corr_id, replyFn, ctx);
             return;
         }
         int16_t ox = 0, oy = 0, oh = 0;
-        _robot.otos.getPositionRaw(ox, oy, oh);
+        _robot->otos.getPositionRaw(ox, oy, oh);
         char body[64];
         snprintf(body, sizeof(body), "x=%d y=%d h=%d (raw LSB)", (int)ox, (int)oy, (int)oh);
         replyOK(rbuf, sizeof(rbuf), "rawpos", body, corr_id, replyFn, ctx);
@@ -1355,7 +1479,7 @@ void CommandProcessor::process(const char* line, ReplyFn replyFn, void* ctx)
     // ── OV — OTOS set position ────────────────────────────────────────────────
     // OV <x> <y> <h>  → OK setpos x=<x> y=<y> h=<h>
     if (strcmp(verb, "OV") == 0) {
-        if (!_robot.otos.is_initialized()) {
+        if (!_robot->otos.is_initialized()) {
             replyErr(rbuf, sizeof(rbuf), "nodev", "ov", corr_id, replyFn, ctx);
             return;
         }
@@ -1366,7 +1490,7 @@ void CommandProcessor::process(const char* line, ReplyFn replyFn, void* ctx)
         int16_t ox = (int16_t)atoi(tokens[1]);
         int16_t oy = (int16_t)atoi(tokens[2]);
         int16_t oh = (int16_t)atoi(tokens[3]);
-        _robot.otos.setPositionRaw(ox, oy, oh);
+        _robot->otos.setPositionRaw(ox, oy, oh);
         char body[48];
         snprintf(body, sizeof(body), "x=%d y=%d h=%d", (int)ox, (int)oy, (int)oh);
         replyOK(rbuf, sizeof(rbuf), "setpos", body, corr_id, replyFn, ctx);
@@ -1377,15 +1501,15 @@ void CommandProcessor::process(const char* line, ReplyFn replyFn, void* ctx)
     // OL        → OK linear scalar=<val>
     // OL <val>  → OK linear scalar=<val>
     if (strcmp(verb, "OL") == 0) {
-        if (!_robot.otos.is_initialized()) {
+        if (!_robot->otos.is_initialized()) {
             replyErr(rbuf, sizeof(rbuf), "nodev", "ol", corr_id, replyFn, ctx);
             return;
         }
         if (ntok >= 2) {
             int8_t val = (int8_t)atoi(tokens[1]);
-            _robot.otos.setLinearScalar(val);
+            _robot->otos.setLinearScalar(val);
         }
-        int8_t val = _robot.otos.getLinearScalar();
+        int8_t val = _robot->otos.getLinearScalar();
         char body[24];
         snprintf(body, sizeof(body), "scalar=%d", (int)val);
         replyOK(rbuf, sizeof(rbuf), "linear", body, corr_id, replyFn, ctx);
@@ -1396,15 +1520,15 @@ void CommandProcessor::process(const char* line, ReplyFn replyFn, void* ctx)
     // OA        → OK angular scalar=<val>
     // OA <val>  → OK angular scalar=<val>
     if (strcmp(verb, "OA") == 0) {
-        if (!_robot.otos.is_initialized()) {
+        if (!_robot->otos.is_initialized()) {
             replyErr(rbuf, sizeof(rbuf), "nodev", "oa", corr_id, replyFn, ctx);
             return;
         }
         if (ntok >= 2) {
             int8_t val = (int8_t)atoi(tokens[1]);
-            _robot.otos.setAngularScalar(val);
+            _robot->otos.setAngularScalar(val);
         }
-        int8_t val = _robot.otos.getAngularScalar();
+        int8_t val = _robot->otos.getAngularScalar();
         char body[24];
         snprintf(body, sizeof(body), "scalar=%d", (int)val);
         replyOK(rbuf, sizeof(rbuf), "angular", body, corr_id, replyFn, ctx);
@@ -1427,9 +1551,9 @@ void CommandProcessor::process(const char* line, ReplyFn replyFn, void* ctx)
         int val;
         if (ntok >= 3) {
             val = atoi(tokens[2]);
-            _robot.portio.setDigital((uint8_t)port, val != 0);
+            _robot->portio.setDigital((uint8_t)port, val != 0);
         } else {
-            val = _robot.portio.readDigital((uint8_t)port);
+            val = _robot->portio.readDigital((uint8_t)port);
         }
         char body[24];
         snprintf(body, sizeof(body), "p=%d v=%d", port, val);
@@ -1457,9 +1581,9 @@ void CommandProcessor::process(const char* line, ReplyFn replyFn, void* ctx)
                 replyErr(rbuf, sizeof(rbuf), "range", "val", corr_id, replyFn, ctx);
                 return;
             }
-            _robot.portio.setAnalog((uint8_t)port, (uint16_t)val);
+            _robot->portio.setAnalog((uint8_t)port, (uint16_t)val);
         } else {
-            val = _robot.portio.readAnalog((uint8_t)port);
+            val = _robot->portio.readAnalog((uint8_t)port);
         }
         char body[24];
         snprintf(body, sizeof(body), "p=%d v=%d", port, val);
