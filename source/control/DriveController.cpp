@@ -42,7 +42,6 @@ DriveController::DriveController(MotorController& mc, Odometry& odo, const Robot
     , _lastSMs(0)
     , _tgtL(0.0f)
     , _tgtR(0.0f)
-    , _tEndMs(0)
     , _dEncStartL(0)
     , _dEncStartR(0)
     , _dTargetMm(0)
@@ -191,26 +190,32 @@ void DriveController::beginTimed(float leftMms, float rightMms,
                                   TargetState& target, ReplyFn fn, void* ctx,
                                   const char* corr_id)
 {
-    float sL, sR;
-    applySaturation(leftMms, rightMms, _cfg, sL, sR);
-    _mc.startDriveClean(sL, sR);
-    _mc.setTarget(sL, sR);
-    _tgtL   = sL;
-    _tgtR   = sR;
-    _tEndMs = _lastTickMs + durationMs;
-    _mode   = DriveMode::TIMED;
+    // Convert (L, R) wheel speeds to body twist (v, ω) via the forward kinematics map.
+    // For equal L=R (straight drive), forward() gives v=(L+R)/2 and omega=0 — no steer bias.
+    float v_mms, omega_rads;
+    BodyKinematics::forward(leftMms, rightMms, _cfg.trackwidthMm, v_mms, omega_rads);
 
-    target.mode        = DriveMode::TIMED;
-    target.deadlineMs  = _tEndMs;
-    target.replyFn     = fn;
-    target.replyCtx    = ctx;
-    if (corr_id && corr_id[0] != '\0') {
-        strncpy(target.corrId, corr_id, sizeof(target.corrId) - 1);
-        target.corrId[sizeof(target.corrId) - 1] = '\0';
-    } else {
-        target.corrId[0] = '\0';
-    }
-    (void)now_ms;
+    // Configure a fresh MotionCommand with:
+    //   - TIME stop condition at durationMs.
+    //   - SOFT stop style (ramp to zero before completing).
+    //   - EVT "EVT done T" on completion (preserves wire contract).
+    //   - Reply sink for async EVT delivery.
+    _activeCmd.configure(v_mms, omega_rads, &_bvc);
+    _activeCmd.addStop(makeTimeStop((float)durationMs));
+    _activeCmd.setReplySink(fn, ctx, corr_id);
+    _activeCmd.setStopStyle(MotionCommand::StopStyle::SOFT);
+    _activeCmd.setDoneEvt("EVT done T");
+
+    // Snapshot hardware state for MotionBaseline.
+    HardwareState emptyState{};
+    const HardwareState& inputs = _hwState ? *_hwState : emptyState;
+    _activeCmd.start(inputs, now_ms);
+
+    // VELOCITY mode — distinct from STREAMING so the S-mode watchdog does not fire.
+    _mode = DriveMode::VELOCITY;
+
+    // Update target mode; reply sink captured by _activeCmd (not target.replyFn).
+    target.mode = DriveMode::VELOCITY;
 }
 
 void DriveController::beginDistance(float leftMms, float rightMms,
@@ -362,9 +367,9 @@ void DriveController::cancel(uint32_t now_ms, ReplyFn fn, void* ctx)
 // Runs at a fixed period set by RobotConfig::controlPeriodMs (default 10 ms).
 // Executes the drive-mode state machines:
 //   1. STREAMING watchdog — emits EVT safety_stop inline on keepalive timeout.
-//   2. T-mode — emits EVT done T inline when deadline reached.
-//   3. D-mode — emits EVT done D inline when distance reached or timeout.
-//   4. G-mode — advances PRE_ROTATE and PURSUE; emits EVT done G inline.
+//   2. D-mode — emits EVT done D inline when distance reached or timeout.
+//   3. G-mode — advances PRE_ROTATE and PURSUE; emits EVT done G inline.
+//   T-mode is now handled by the MotionCommand path (TIME stop condition).
 //
 // All EVT completions are emitted inline via target.replyFn() — safe because
 // there is no fiber boundary in the single cooperative main loop (014-005).
@@ -451,12 +456,6 @@ void DriveController::driveAdvance(HardwareState& inputs, MotorCommands& cmds,
             fullStop(nullptr, nullptr);
             emitEvt("EVT safety_stop", target);
         }
-    }
-
-    // T-mode: stop when deadline reached.
-    if (_mode == DriveMode::TIMED && now_ms >= _tEndMs) {
-        fullStop(nullptr, nullptr);
-        emitEvt("EVT done T", target);
     }
 
     // D-mode: stop when average encoder travel >= target, or on timeout. Uses a

@@ -1,13 +1,13 @@
 ---
-id: "003"
-title: "Migrate T timed-drive onto MotionCommand TIME stop"
-status: open
+id: '003'
+title: Migrate T timed-drive onto MotionCommand TIME stop
+status: done
 use-cases:
 - SUC-003
 depends-on:
-- "002"
-github-issue: ""
-issue: ""
+- '002'
+github-issue: ''
+issue: ''
 completes_issue: false
 ---
 <!-- CLASI: Before changing code or making plans, review the SE process in CLAUDE.md -->
@@ -52,13 +52,14 @@ no steer bias. Verify this is correct.
 
 ## Acceptance Criteria
 
-- [ ] `_tEndMs` member removed from `DriveController.h`/`.cpp`.
-- [ ] `EVT done T` wire format preserved (grep all test files for `done T` before editing).
-- [ ] Equal L=R inputs → no steer bias: `omega = 0` from `forward(L, L, ...)`.
-- [ ] T branch removed from `driveAdvance`.
-- [ ] `uv run --with pytest python -m pytest -q` passes at 1179/8 baseline.
-- [ ] Clean build: `python3 build.py --clean` succeeds.
-- [ ] Existing T-related tests in `test_motion_verbs_v2.py` pass unchanged.
+- [x] `_tEndMs` member removed from `DriveController.h`/`.cpp`.
+- [x] `EVT done T` wire format preserved (grep all test files for `done T` before editing).
+- [x] Equal L=R inputs → no steer bias: `omega = 0` from `forward(L, L, ...)`.
+- [x] T branch removed from `driveAdvance`.
+- [x] `uv run --with pytest python -m pytest -q` passes at 1226/8 baseline (updated from 1179 — baseline confirmed 1226 pass / 8 known fail).
+- [x] Clean build: `python3 build.py --clean` succeeds.
+- [x] Existing T-related tests in `test_motion_verbs_v2.py` pass unchanged.
+- [ ] On-robot bench (T drives for the duration, now ramps, stops with EVT done T) — stakeholder-deferred.
 
 ## Implementation Plan
 

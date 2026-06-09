@@ -125,9 +125,6 @@ private:
     float _tgtL;
     float _tgtR;
 
-    // T-command termination
-    uint32_t _tEndMs;
-
     // D-command termination
     int32_t  _dEncStartL;
     int32_t  _dEncStartR;
