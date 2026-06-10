@@ -68,6 +68,7 @@ Robot::Robot(Hardware& h, const RobotConfig& cfg)
     motorController.setCommandsRef(&state.commands);
     motionController.setCtx(this);
     odometry.setCtx(&otos, &state.inputs);
+    odometry.initEKF(config.ekfQxy, config.ekfQtheta, config.ekfROtosXy);
 }
 
 // ---------------------------------------------------------------------------
@@ -158,11 +159,10 @@ void Robot::controlCollectSplitPhase(uint32_t now_ms, int /*pendingWheel*/)
 }
 
 // ---------------------------------------------------------------------------
-// otosCorrect — OTOS complementary correction task entry point.
-//
-// Uses otos.readTransformed(config) from T001 instead of inlined LSB math.
-// The kOtosSlowMs cadence gate is dropped — run_blocks handles that cadence
-// via the task table's periodMs (lagOtosMs).
+// otosCorrect — EKF Kalman update from OTOS position (sprint 022).
+// Replaces the fixed-alpha complementary blend (odometry.correct()) with
+// the EKF correction path. OTOS heading is still stored for telemetry but
+// is not fused (heading-only EKF channel is out of scope for this sprint).
 // ---------------------------------------------------------------------------
 
 void Robot::otosCorrect(uint32_t now_ms)
@@ -174,8 +174,7 @@ void Robot::otosCorrect(uint32_t now_ms)
     state.inputs.otosH = p.h;
     state.inputs.otos.lastUpdMs = now_ms;
     state.inputs.otos.valid     = true;
-    odometry.correct(state.inputs, p.x, p.y, p.h,
-                     config.alphaPos, config.alphaYaw, config.otosGate);
+    odometry.correctEKF(state.inputs, p.x, p.y);
 }
 
 // ---------------------------------------------------------------------------

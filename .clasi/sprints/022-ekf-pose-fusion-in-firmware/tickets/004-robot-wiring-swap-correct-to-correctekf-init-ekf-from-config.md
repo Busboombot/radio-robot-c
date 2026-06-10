@@ -1,9 +1,12 @@
 ---
-id: "004"
-title: "Robot wiring (swap correct to correctEKF, init EKF from config)"
-status: open
-use-cases: [SUC-002, SUC-003]
-depends-on: ["003"]
+id: '004'
+title: Robot wiring (swap correct to correctEKF, init EKF from config)
+status: done
+use-cases:
+- SUC-002
+- SUC-003
+depends-on:
+- '003'
 completes_issue: false
 ---
 
@@ -22,7 +25,7 @@ No changes to `Robot.h`.
 
 ## Acceptance Criteria
 
-- [ ] `source/robot/Robot.cpp` — `Robot::otosCorrect()` replaces:
+- [x] `source/robot/Robot.cpp` — `Robot::otosCorrect()` replaces:
   ```cpp
   odometry.correct(state.inputs, p.x, p.y, p.h,
                    config.alphaPos, config.alphaYaw, config.otosGate);
@@ -33,13 +36,13 @@ No changes to `Robot.h`.
   ```
   The lines storing `state.inputs.otosX/Y/H` and `state.inputs.otos.lastUpdMs/valid`
   are unchanged (OTOS heading is still stored for telemetry).
-- [ ] `source/robot/Robot.cpp` — `Robot::Robot()` (constructor body) includes a
+- [x] `source/robot/Robot.cpp` — `Robot::Robot()` (constructor body) includes a
   call to `odometry.initEKF(config.ekfQxy, config.ekfQtheta, config.ekfROtosXy)`
   after the `odometry` member is constructed.
-- [ ] `source/robot/Robot.h` is NOT modified (no new declarations needed; the
+- [x] `source/robot/Robot.h` is NOT modified (no new declarations needed; the
   `Robot` constructor already takes `const RobotConfig& cfg`).
-- [ ] Firmware builds cleanly: `python3 build.py`.
-- [ ] Full test suite passes: `uv run --with pytest python -m pytest`.
+- [x] Firmware builds cleanly: `python3 build.py`.
+- [x] Full test suite passes: `uv run --with pytest python -m pytest`.
 
 ## Implementation Plan
 
