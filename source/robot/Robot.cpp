@@ -24,17 +24,16 @@
 // ---------------------------------------------------------------------------
 #ifdef HOST_BUILD
 #include <cstdint>
-#include <chrono>
 
-static uint32_t host_boot_ms() {
-    static auto t0 = std::chrono::steady_clock::now();
-    auto now = std::chrono::steady_clock::now();
-    return (uint32_t)std::chrono::duration_cast<std::chrono::milliseconds>(now - t0).count();
-}
+// Sim-injected clock — updated by sim_tick() and sim_command() in sim_api.cpp
+// so that Robot::systemTime() returns sim time rather than real wall-clock time.
+// This ensures time-based stop conditions (T, HALT TIME) use the same epoch as
+// driveAdvance(now_ms) and evaluate(now_ms), preventing immediate false-fire.
+extern uint32_t g_sim_now_ms;
 
 static const char* microbit_friendly_name() { return "sim"; }
 static uint32_t    microbit_serial_number()  { return 0; }
-static uint32_t    system_timer_current_time() { return host_boot_ms(); }
+static uint32_t    system_timer_current_time() { return g_sim_now_ms; }
 #endif
 
 // ---------------------------------------------------------------------------

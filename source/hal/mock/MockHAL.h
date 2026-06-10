@@ -1,5 +1,6 @@
 #pragma once
 #include <stdint.h>
+#include <cmath>
 #include "../Hardware.h"
 #include "MockMotor.h"
 #include "MockLineSensor.h"
@@ -7,6 +8,31 @@
 #include "MockOtosSensor.h"
 #include "MockPortIO.h"
 #include "MockServo.h"
+
+/**
+ * ExactPoseTracker — oracle ground-truth pose integrator.
+ *
+ * Uses midpoint integration identical to Odometry::predict but reads
+ * trueVelocityMms() (pre-slip) from each motor, so it is unaffected by
+ * the slip and noise model. Useful as a reference pose in tests.
+ */
+struct ExactPoseTracker {
+    float x = 0.0f, y = 0.0f, h = 0.0f;
+
+    void reset() { x = y = h = 0.0f; }
+
+    void update(float velLMms, float velRMms, float trackwidthMm, uint32_t dt_ms) {
+        float dt_s = dt_ms / 1000.0f;
+        float dL   = velLMms * dt_s;
+        float dR   = velRMms * dt_s;
+        float dC   = (dL + dR) * 0.5f;
+        float dTh  = (dR - dL) / trackwidthMm;
+        float hMid = h + dTh * 0.5f;
+        x += dC * cosf(hMid);
+        y += dC * sinf(hMid);
+        h += dTh;
+    }
+};
 
 /**
  * MockHAL — host-compilable Hardware implementation for unit tests.
@@ -34,21 +60,29 @@ public:
     void tick(uint32_t now_ms) override;
 
     // Test accessors ---------------------------------------------------------
-    MockMotor&      motorLMock()  { return _motorL; }
-    MockMotor&      motorRMock()  { return _motorR; }
-    MockLineSensor& lineMock()    { return _line; }
-    MockColorSensor& colorMock()  { return _color; }
-    MockOtosSensor& otosMock()    { return _otos; }
-    MockPortIO&     portIOMock()  { return _portIO; }
-    MockServo&      servoMock()   { return _servo; }
+    MockMotor&       motorLMock()    { return _motorL; }
+    MockMotor&       motorRMock()    { return _motorR; }
+    MockLineSensor&  lineMock()      { return _line; }
+    MockColorSensor& colorMock()     { return _color; }
+    MockOtosSensor&  otosMock()      { return _otos; }
+    MockPortIO&      portIOMock()    { return _portIO; }
+    MockServo&       servoMock()     { return _servo; }
+
+    // Exact-pose oracle (pre-slip, pre-noise ground truth).
+    ExactPoseTracker& exactPoseMock() { return _exactPose; }
+
+    // Set robot trackwidth (mm) so ExactPoseTracker can integrate correctly.
+    void setTrackwidth(float mm) { _trackwidthMm = mm; }
 
 private:
-    MockMotor       _motorL;
-    MockMotor       _motorR;
-    MockLineSensor  _line;
-    MockColorSensor _color;
-    MockOtosSensor  _otos;
-    MockPortIO      _portIO;
-    MockServo       _servo;
-    uint32_t        _lastTickMs = 0;
+    MockMotor        _motorL;
+    MockMotor        _motorR;
+    MockLineSensor   _line;
+    MockColorSensor  _color;
+    MockOtosSensor   _otos;
+    MockPortIO       _portIO;
+    MockServo        _servo;
+    uint32_t         _lastTickMs   = 0;
+    ExactPoseTracker _exactPose;
+    float            _trackwidthMm = 0.0f;
 };

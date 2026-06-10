@@ -1,5 +1,13 @@
 #include "MockMotor.h"
 #include "types/Config.h"
+#include <random>
+
+// Gaussian noise helper — returns a sample from N(0, sigma), or 0 if sigma <= 0.
+static float gaussianNoise(std::mt19937& rng, float sigma) {
+    if (sigma <= 0.0f) return 0.0f;
+    std::normal_distribution<float> dist(0.0f, sigma);
+    return dist(rng);
+}
 
 void MockMotor::setSpeed(int8_t pct) {
     _cmdSpeed = pct;
@@ -31,6 +39,9 @@ void MockMotor::resetEncoder() {
 }
 
 void MockMotor::tick(uint32_t dt_ms) {
-    float vel = (_cmdSpeed / 100.0f) * kNominalMaxMms * _offsetFactor;
-    _encoderMm += vel * (static_cast<float>(dt_ms) / 1000.0f);
+    float vel     = (_cmdSpeed / 100.0f) * kNominalMaxMms * _offsetFactor;
+    _trueVelMms   = vel;
+    float slip    = _slipStraight + _slipTurnExtra * _turnRate;
+    float noisy   = vel * (1.0f - slip) + gaussianNoise(_rng, _encoderNoiseSigma);
+    _encoderMm   += noisy * (static_cast<float>(dt_ms) / 1000.0f);
 }

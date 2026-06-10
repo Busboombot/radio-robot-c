@@ -20,6 +20,9 @@ def __getattr__(name: str):
     if name == "SerialConnection":
         from robot_radio.io.serial_conn import SerialConnection
         return SerialConnection
+    if name == "SimConnection":
+        from robot_radio.io.sim_conn import SimConnection
+        return SimConnection
     if name == "NezhaProtocol":
         from robot_radio.robot.protocol import NezhaProtocol
         return NezhaProtocol

@@ -91,7 +91,10 @@ struct SimHandle {
         , cfg(defaultRobotConfig())
         , robot(hal, cfg)
         , cmd(robot.buildCommandTable(nullptr, nullptr))
-    {}
+    {
+        // Wire robot geometry into MockHAL so ExactPoseTracker integrates correctly.
+        hal.setTrackwidth(cfg.trackwidthMm);
+    }
 };
 
 // ---------------------------------------------------------------------------
@@ -346,6 +349,49 @@ void sim_set_motor_offset(void* h, int side, float factor)
     SimHandle* s = static_cast<SimHandle*>(h);
     if (side == 0 || side > 1) s->hal.motorLMock().setOffsetFactor(factor);
     if (side == 1 || side > 1) s->hal.motorRMock().setOffsetFactor(factor);
+}
+
+// ---- Exact pose (oracle ground truth from ExactPoseTracker) ----
+float sim_get_exact_pose_x(void* h) {
+    return static_cast<SimHandle*>(h)->hal.exactPoseMock().x;
+}
+float sim_get_exact_pose_y(void* h) {
+    return static_cast<SimHandle*>(h)->hal.exactPoseMock().y;
+}
+float sim_get_exact_pose_h(void* h) {
+    return static_cast<SimHandle*>(h)->hal.exactPoseMock().h;
+}
+
+// ---- Encoder noise/slip (side: 0=left, 1=right, 2=both) ----
+void sim_set_motor_slip(void* h, int side, float straight, float turn_extra) {
+    SimHandle* s = static_cast<SimHandle*>(h);
+    if (side == 0 || side > 1) s->hal.motorLMock().setSlip(straight, turn_extra);
+    if (side == 1 || side > 1) s->hal.motorRMock().setSlip(straight, turn_extra);
+}
+void sim_set_encoder_noise(void* h, int side, float sigma_mm) {
+    SimHandle* s = static_cast<SimHandle*>(h);
+    if (side == 0 || side > 1) s->hal.motorLMock().setEncoderNoise(sigma_mm);
+    if (side == 1 || side > 1) s->hal.motorRMock().setEncoderNoise(sigma_mm);
+}
+
+// ---- OTOS sim model ----
+void sim_enable_otos_model(void* h) {
+    static_cast<SimHandle*>(h)->hal.otosMock().enableSimModel(true);
+}
+void sim_set_otos_linear_noise(void* h, float sigma_fraction) {
+    static_cast<SimHandle*>(h)->hal.otosMock().setLinearNoise(sigma_fraction);
+}
+void sim_set_otos_yaw_noise(void* h, float sigma_fraction) {
+    static_cast<SimHandle*>(h)->hal.otosMock().setYawNoise(sigma_fraction);
+}
+float sim_get_otos_x(void* h) {
+    return static_cast<SimHandle*>(h)->hal.otosMock().odomX();
+}
+float sim_get_otos_y(void* h) {
+    return static_cast<SimHandle*>(h)->hal.otosMock().odomY();
+}
+float sim_get_otos_h(void* h) {
+    return static_cast<SimHandle*>(h)->hal.otosMock().odomH();
 }
 
 } // extern "C"
