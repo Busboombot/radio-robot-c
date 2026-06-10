@@ -28,7 +28,7 @@ void MockHAL::tick(uint32_t now_ms) {
                 udt);
         }
 
-        // TODO: _otos.tick(...) — to be added in ticket 003.
+        _otos.tick(_motorL.trueVelocityMms(), _motorR.trueVelocityMms(), _trackwidthMm, udt);
 
         _line.tick(udt);
         _color.tick(udt);
