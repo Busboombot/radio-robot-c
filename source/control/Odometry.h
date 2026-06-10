@@ -3,6 +3,7 @@
 #include "RobotState.h"
 #include "CommandTypes.h"
 #include "IOtosSensor.h"
+#include "EKF.h"
 
 // Forward-declare Odometry so OdomCtx can hold a pointer to it.
 // The full class definition follows immediately below.
@@ -45,6 +46,8 @@ struct OdomCtx {
  * Sprint 010, Ticket 005.
  * Sprint 010, Ticket 006: adds correct() for OTOS complementary fusion.
  * Sprint 014, Ticket 004: pose moved to HardwareState; struct-based API.
+ * Sprint 022, Ticket 003: EKF integration — predict() drives EKF each tick;
+ *   initEKF()/correctEKF() wire noise params and OTOS position updates.
  */
 class Odometry : public Commandable {
 public:
@@ -68,7 +71,17 @@ public:
     // Midpoint (exact-arc) integration — primary predict step.
     // Reads s.encLMm / s.encRMm, computes deltas against _prevEncL/_prevEncR,
     // then writes the updated pose into s.poseX / s.poseY / s.poseHrad.
+    // Also advances the EKF and writes EKF state as the authoritative pose.
     void predict(HardwareState& s, float trackwidthMm);
+
+    // EKF initialisation — set process and measurement noise parameters.
+    // Must be called once at startup (e.g. from Robot constructor) before
+    // predict() or correctEKF() are called.
+    void initEKF(float q_xy, float q_theta, float r_otos_xy);
+
+    // EKF correction — apply an OTOS position observation.
+    // Calls _ekf.update(x_otos, y_otos) then writes EKF state back to s.
+    void correctEKF(HardwareState& s, float x_otos, float y_otos);
 
     // OTOS complementary correction — correct step of predict/correct.
     // (docs/kinematics-model.md §2.4; EKF upgrade path replaces this later.)
@@ -129,6 +142,8 @@ private:
     float    _prevEncR;   // last encoder snapshot, mm
 
     uint32_t _otosRejected; // count of OTOS samples rejected by outlier gate
+
+    EKF _ekf;              // Extended Kalman Filter — fuses encoder odometry with OTOS
 
     mutable OdomCtx _odomCtx; // context bundle for Commandable handlers
 

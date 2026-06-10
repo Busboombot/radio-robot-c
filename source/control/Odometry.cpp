@@ -20,6 +20,8 @@ Odometry::Odometry()
 
 void Odometry::predict(HardwareState& s, float trackwidthMm)
 {
+    float theta_before = s.poseHrad;   // heading before this step — MUST be first
+
     float dL = s.encLMm - _prevEncL;
     float dR = s.encRMm - _prevEncR;
     _prevEncL = s.encLMm;
@@ -32,6 +34,12 @@ void Odometry::predict(HardwareState& s, float trackwidthMm)
     s.poseX    += dCenter * cosf(thetaMid);
     s.poseY    += dCenter * sinf(thetaMid);
     s.poseHrad  = wrapPi(s.poseHrad + dTheta);
+
+    // EKF predict — propagate covariance using encoder-derived arc segment.
+    _ekf.predict(dCenter, dTheta, theta_before);
+    s.poseX    = _ekf.x();
+    s.poseY    = _ekf.y();
+    s.poseHrad = _ekf.theta();
 }
 
 // ---------------------------------------------------------------------------
@@ -91,6 +99,7 @@ void Odometry::setPose(HardwareState& s, int32_t x_mm, int32_t y_mm, int32_t h_c
     s.poseHrad = static_cast<float>(h_cdeg) * CDEG_TO_RAD;
     _prevEncL  = 0.0f;
     _prevEncR  = 0.0f;
+    _ekf.setPose(s.poseX, s.poseY, s.poseHrad);
 }
 
 // ---------------------------------------------------------------------------
@@ -123,6 +132,27 @@ void Odometry::update(HardwareState& s, float dL_mm, float dR_mm, float trackwid
 float Odometry::wrapPi(float theta)
 {
     return atan2f(sinf(theta), cosf(theta));
+}
+
+// ---------------------------------------------------------------------------
+// initEKF — set EKF process and measurement noise parameters.
+// ---------------------------------------------------------------------------
+
+void Odometry::initEKF(float q_xy, float q_theta, float r_otos_xy)
+{
+    _ekf.init(q_xy, q_theta, r_otos_xy);
+}
+
+// ---------------------------------------------------------------------------
+// correctEKF — apply an OTOS position observation through the EKF.
+// ---------------------------------------------------------------------------
+
+void Odometry::correctEKF(HardwareState& s, float x_otos, float y_otos)
+{
+    _ekf.update(x_otos, y_otos);
+    s.poseX    = _ekf.x();
+    s.poseY    = _ekf.y();
+    s.poseHrad = _ekf.theta();
 }
 
 // ===========================================================================

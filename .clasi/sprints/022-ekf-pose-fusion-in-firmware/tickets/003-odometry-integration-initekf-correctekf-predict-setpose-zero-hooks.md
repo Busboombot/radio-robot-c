@@ -1,9 +1,14 @@
 ---
-id: "003"
-title: "Odometry integration (initEKF, correctEKF, predict/setPose/zero hooks)"
-status: open
-use-cases: [SUC-001, SUC-002, SUC-003]
-depends-on: ["001", "002"]
+id: '003'
+title: Odometry integration (initEKF, correctEKF, predict/setPose/zero hooks)
+status: done
+use-cases:
+- SUC-001
+- SUC-002
+- SUC-003
+depends-on:
+- '001'
+- '002'
 completes_issue: false
 ---
 
@@ -24,13 +29,13 @@ tests and kept for backward compatibility).
 
 ## Acceptance Criteria
 
-- [ ] `source/control/Odometry.h` includes `"EKF.h"` and declares:
+- [x] `source/control/Odometry.h` includes `"EKF.h"` and declares:
   - `EKF _ekf` as a private value member
   - `void initEKF(float q_xy, float q_theta, float r_otos_xy)`
   - `void correctEKF(HardwareState& s, float x_otos, float y_otos)`
-- [ ] `source/control/Odometry.cpp` implements `initEKF()` as a direct call to
+- [x] `source/control/Odometry.cpp` implements `initEKF()` as a direct call to
   `_ekf.init(q_xy, q_theta, r_otos_xy)`.
-- [ ] `source/control/Odometry.cpp` implements `correctEKF()`:
+- [x] `source/control/Odometry.cpp` implements `correctEKF()`:
   ```cpp
   void Odometry::correctEKF(HardwareState& s, float x_otos, float y_otos) {
       _ekf.update(x_otos, y_otos);
@@ -39,7 +44,7 @@ tests and kept for backward compatibility).
       s.poseHrad = _ekf.theta();
   }
   ```
-- [ ] `Odometry::predict()` is extended — AFTER the existing midpoint integration
+- [x] `Odometry::predict()` is extended — AFTER the existing midpoint integration
   (after `s.poseHrad = wrapPi(s.poseHrad + dTheta)`) — with:
   ```cpp
   float theta_before = s.poseHrad - dTheta;   // must be captured BEFORE wrapPi write
@@ -56,13 +61,13 @@ tests and kept for backward compatibility).
   float theta_before = s.poseHrad;   // heading before this step
   ```
   Then pass it to `_ekf.predict(dCenter, dTheta, theta_before)`.
-- [ ] `Odometry::setPose()` calls `_ekf.setPose(static_cast<float>(x_mm),
+- [x] `Odometry::setPose()` calls `_ekf.setPose(static_cast<float>(x_mm),
   static_cast<float>(y_mm), static_cast<float>(h_cdeg) * CDEG_TO_RAD)` after
   setting the HardwareState fields.
-- [ ] `Odometry::zero()` inherits the EKF reset via its call to `setPose(s,0,0,0)`.
-- [ ] The existing `correct()` method is unchanged.
-- [ ] Firmware builds cleanly: `python3 build.py`.
-- [ ] Test suite passes: `uv run --with pytest python -m pytest` (existing
+- [x] `Odometry::zero()` inherits the EKF reset via its call to `setPose(s,0,0,0)`.
+- [x] The existing `correct()` method is unchanged.
+- [x] Firmware builds cleanly: `python3 build.py`.
+- [x] Test suite passes: `uv run --with pytest python -m pytest` (existing
   `test_otos_fusion.py` must still pass).
 
 ## Implementation Plan
