@@ -69,6 +69,12 @@ if options.revision:
     revision(options.revision)
     exit(0)
 
+# Regenerate DefaultConfig.cpp from the active robot JSON config so
+# calibration values are baked into the firmware at compile time.
+import subprocess as _sp
+_gen = os.path.join(os.path.dirname(__file__), "scripts", "gen_default_config.py")
+_sp.run([sys.executable, _gen], check=True)
+
 # out of source build!
 os.chdir("build")
 

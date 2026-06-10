@@ -2,7 +2,7 @@
 #include <stdint.h>
 #include "RobotState.h"
 #include "CommandTypes.h"
-#include "OtosSensor.h"
+#include "IOtosSensor.h"
 
 // Forward-declare Odometry so OdomCtx can hold a pointer to it.
 // The full class definition follows immediately below.
@@ -11,13 +11,15 @@ class Odometry;
 /**
  * OdomCtx — context bundle for Odometry Commandable handlers.
  *
- * Both pointers are populated by Odometry::setCtx() before any command
- * can arrive.  All seven OTOS command handlers (OI, OZ, OR, OP, OV, OL, OA)
- * reach the OtosSensor through this struct.
+ * All pointers are populated by Odometry::setCtx() before any command
+ * can arrive.  OTOS command handlers (OI, OZ, OR, OV, OL, OA) reach the
+ * OtosSensor through this struct.  handleOP reads hwState directly (cached
+ * state from the main loop) instead of calling otos->getPositionRaw().
  */
 struct OdomCtx {
-    Odometry*   odo;
-    OtosSensor* otos;
+    Odometry*            odo;
+    IOtosSensor*         otos;
+    const HardwareState* hwState;  // cached OTOS pose for OP read (no device call)
 };
 
 /**
@@ -50,9 +52,14 @@ public:
 
     virtual std::vector<CommandDescriptor> getCommands() const override;
 
-    // Bind the OtosSensor so command handlers can reach it.
-    // Called by Robot after construction.
-    void setCtx(OtosSensor* otos) { _odomCtx.odo = this; _odomCtx.otos = otos; }
+    // Bind the OtosSensor and cached HardwareState so command handlers can reach them.
+    // Called by Robot after construction.  hwState may be nullptr in unit tests
+    // that do not exercise OP; handleOP checks for null before dereferencing.
+    void setCtx(IOtosSensor* otos, const HardwareState* hwState = nullptr) {
+        _odomCtx.odo     = this;
+        _odomCtx.otos    = otos;
+        _odomCtx.hwState = hwState;
+    }
 
     // ---------------------------------------------------------------------------
     // Primary API — struct-based (014-004)

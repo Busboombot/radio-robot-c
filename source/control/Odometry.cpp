@@ -262,21 +262,37 @@ static void handleOR(const ArgList& /*args*/, const char* corrId,
                               corrId, replyFn, replyCtx);
 }
 
+// handleOP — report current OTOS pose from cached HardwareState.
+//
+// Reads hwState->otosX/Y/H (values written by Robot::otosCorrect() each OTOS
+// task tick) instead of calling otos->getPositionRaw() on the device.
+// This is the only Odometry command that does NOT access hardware (flag = CMD_NONE).
+// If hwState is null (test harness without OTOS), returns zeros.
+//
+// Reply format: OK op x=<mm> y=<mm> h=<mrad>
+//   x, y: OTOS position in integer mm.
+//   h: OTOS heading in integer mrad (milliradians, for precision).
 static void handleOP(const ArgList& /*args*/, const char* corrId,
                      ReplyFn replyFn, void* replyCtx, void* handlerCtx)
 {
     OdomCtx* c = reinterpret_cast<OdomCtx*>(handlerCtx);
     char rbuf[96];
-    if (!c->otos->is_initialized()) {
-        CommandProcessor::replyErr(rbuf, sizeof(rbuf), "nodev", "op",
-                                   corrId, replyFn, replyCtx);
-        return;
+
+    float x = 0.0f, y = 0.0f, h = 0.0f;
+    if (c->hwState != nullptr) {
+        x = c->hwState->otosX;
+        y = c->hwState->otosY;
+        h = c->hwState->otosH;
     }
-    int16_t ox = 0, oy = 0, oh = 0;
-    c->otos->getPositionRaw(ox, oy, oh);
+
+    // Convert heading from radians to integer milliradians for the reply.
+    int x_mm   = (int)x;
+    int y_mm   = (int)y;
+    int h_mrad = (int)(h * 1000.0f);
+
     char body[64];
-    snprintf(body, sizeof(body), "x=%d y=%d h=%d (raw LSB)", (int)ox, (int)oy, (int)oh);
-    CommandProcessor::replyOK(rbuf, sizeof(rbuf), "rawpos", body,
+    snprintf(body, sizeof(body), "x=%d y=%d h=%d", x_mm, y_mm, h_mrad);
+    CommandProcessor::replyOK(rbuf, sizeof(rbuf), "op", body,
                               corrId, replyFn, replyCtx);
 }
 
@@ -345,12 +361,12 @@ std::vector<CommandDescriptor> Odometry::getCommands() const
 {
     void* ctx = const_cast<OdomCtx*>(&_odomCtx);
     return {
-        makeCmd("OI", parseOI, handleOI, ctx, "badarg"), // OTOS init: re-initialise sensor
-        makeCmd("OZ", parseOZ, handleOZ, ctx, "badarg"), // OTOS zero: reset position to 0,0,0
-        makeCmd("OR", parseOR, handleOR, ctx, "badarg"), // OTOS read: one-shot position snapshot
-        makeCmd("OP", parseOP, handleOP, ctx, "badarg"), // OTOS position: report current x,y,h
-        makeCmd("OV", parseOV, handleOV, ctx, "badarg"), // OTOS velocity: report vx,vy,omega
-        makeCmd("OL", parseOL, handleOL, ctx, "badarg"), // OTOS linear scalar calibration
-        makeCmd("OA", parseOA, handleOA, ctx, "badarg"), // OTOS angular scalar calibration
+        makeCmd("OI", parseOI, handleOI, ctx, "badarg", ForceReply::NONE, CMD_ACCESS_HARDWARE), // OTOS init: re-initialise sensor
+        makeCmd("OZ", parseOZ, handleOZ, ctx, "badarg", ForceReply::NONE, CMD_ACCESS_HARDWARE), // OTOS zero: reset position to 0,0,0
+        makeCmd("OR", parseOR, handleOR, ctx, "badarg", ForceReply::NONE, CMD_ACCESS_HARDWARE), // OTOS read: one-shot position snapshot
+        makeCmd("OP", parseOP, handleOP, ctx, "badarg"), // OTOS position: report current x,y,h (reads cached state)
+        makeCmd("OV", parseOV, handleOV, ctx, "badarg", ForceReply::NONE, CMD_ACCESS_HARDWARE), // OTOS velocity: report vx,vy,omega
+        makeCmd("OL", parseOL, handleOL, ctx, "badarg", ForceReply::NONE, CMD_ACCESS_HARDWARE), // OTOS linear scalar calibration
+        makeCmd("OA", parseOA, handleOA, ctx, "badarg", ForceReply::NONE, CMD_ACCESS_HARDWARE), // OTOS angular scalar calibration
     };
 }

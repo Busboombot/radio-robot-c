@@ -1,7 +1,7 @@
 #pragma once
 #include "MicroBit.h"
 #include "I2CBus.h"
-#include "Sensor.h"
+#include "ILineSensor.h"
 #include <stdint.h>
 
 /**
@@ -24,17 +24,17 @@
  *   Higher alpha means more smoothing (output lags behind input more).
  *   EMA formula: ema = alpha * ema_prev + (1 - alpha) * new_sample
  */
-class LineSensor : public Sensor {
+class LineSensor : public ILineSensor {
 public:
     explicit LineSensor(I2CBus& i2c);
 
     // Probe the sensor (read all 4 channels); set _initialized to the result.
     // Returns _initialized.
-    bool begin() override;
+    bool begin() override;  // ILineSensor (via Sensor)
 
     // Fills out[0..3] with raw grayscale values (0=white, 255=black approx).
     // Returns false on I2C error. out may be nullptr (probe use).
-    bool readValues(uint16_t out[4]) const;
+    bool readValues(uint16_t out[4]) const override;
 
     // Snapshot current raw readings into the calibration minimum array.
     // Call this while the sensor is over a white surface.
@@ -49,7 +49,7 @@ public:
     // If min == max for a channel, span defaults to 255.
     // Applies EMA smoothing if _alpha > 0.0f.
     // Returns false on I2C error.
-    bool readNormalized(uint16_t out[4]);
+    bool readNormalized(uint16_t out[4]) override;
 
     // Set EMA smoothing coefficient for readNormalized.
     // alpha = 0.0 means no smoothing (default).

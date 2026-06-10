@@ -1,9 +1,9 @@
 #pragma once
 #include "CommandTypes.h"
-#include "PortIO.h"
+#include "IPortIO.h"
 
 /**
- * PortController — Commandable wrapper around PortIO that owns the P and PA
+ * PortController — Commandable wrapper around IPortIO that owns the P and PA
  * command descriptors.
  *
  * P  <port> [val]  — digital read/write; replies "OK port p=<port> v=<val>"
@@ -13,11 +13,11 @@
  */
 class PortController : public Commandable {
 public:
-    explicit PortController(PortIO& pio);
+    explicit PortController(IPortIO& pio);
     virtual std::vector<CommandDescriptor> getCommands() const override;
 
-    PortIO& pio() { return _pio; }
+    IPortIO& pio() { return _pio; }
 
 private:
-    PortIO& _pio;
+    IPortIO& _pio;
 };

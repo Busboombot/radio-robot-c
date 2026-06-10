@@ -2,6 +2,7 @@
 #include "MicroBit.h"
 #include "I2CBus.h"
 #include "Config.h"
+#include "IMotor.h"
 
 /**
  * Motor — I2C driver for one channel of the PlanetX Nezha V2 motor controller.
@@ -40,14 +41,14 @@
  *   0x77     | setGlobalSpeed() — global servo speed   | 008    | wrapped
  *   0x88     | readVersion() — firmware version        | 008    | wrapped
  */
-class Motor {
+class Motor : public IMotor {
 public:
     Motor(I2CBus& i2c, uint8_t motorId, int8_t fwdSign);
 
     // Set speed as signed percentage (-100..100). Positive = logical forward.
     // fwdSign is applied internally to map logical direction to chip direction.
     // Stores the commanded direction in _lastDir for readSpeed() sign inference.
-    void    setSpeed(int8_t pct);
+    void    setSpeed(int8_t pct) override;
 
     // Read cumulative encoder in mm using calibration from cfg.
     // Uses mmPerDegL if motorId==LEFT_MOTOR, mmPerDegR otherwise.
@@ -56,11 +57,11 @@ public:
     // High-resolution variant: cumulative encoder in mm as float (NOT truncated
     // to whole mm). Used by the velocity loop so the encoder-delta velocity
     // estimate isn't quantized to ±1 mm/tick (a throb source on the inner loop).
-    float   readEncoderMmF(const RobotConfig& cfg) const;
+    float   readEncoderMmF(const RobotConfig& cfg) const override;
 
     // Zero this motor's encoder accumulator (software offset reset,
     // matches chip TypeScript resetRelAngleValue() behaviour).
-    void    resetEncoder();
+    void    resetEncoder() override;
 
     /**
      * requestEncoder — split-phase encoder I/O, phase 1.
@@ -71,7 +72,7 @@ public:
      * sleep provides this guarantee. Only one wheel's request may be in
      * flight at a time; the LoopScheduler alternates wheels across ticks.
      */
-    void requestEncoder();
+    void requestEncoder() override;
 
     /**
      * collectEncoder — split-phase encoder I/O, phase 2.
@@ -82,7 +83,7 @@ public:
      * the vendor's required inter-transaction delay (≥ one loop period,
      * supplied by the cooperative scheduler's idle sleep).
      */
-    int32_t collectEncoder() const;
+    int32_t collectEncoder() const override;
 
     /**
      * readSpeed — read chip-native wheel velocity.
@@ -214,7 +215,7 @@ public:
      * Use for: startDrive(), startDriveClean(), stop() — any position snapshot
      * outside the normal control tick.  Cost: ~8 ms.
      */
-    float readEncoderMmFAtomic(const RobotConfig& cfg) const;
+    float readEncoderMmFAtomic(const RobotConfig& cfg) const override;
 
     /**
      * readEncoderMmFSettle — control-loop encoder read in mm (float).
@@ -226,7 +227,7 @@ public:
      * Use for: controlCollectSplitPhase() — both-encoder read every tick.
      * Do NOT use for one-off reads (use readEncoderMmFAtomic instead).
      */
-    float readEncoderMmFSettle(const RobotConfig& cfg) const;
+    float readEncoderMmFSettle(const RobotConfig& cfg) const override;
 
 private:
     I2CBus& _i2c;

@@ -1,6 +1,7 @@
 #pragma once
 #include "MicroBit.h"
 #include "Protocol.h"
+#include "CommandQueue.h"
 
 // Forward declarations to avoid pulling in the full header graph.
 struct Robot;
@@ -28,6 +29,12 @@ public:
     // The main cooperative loop. Never returns.
     void run_blocks();
 
+    // Serial-only hardware-free test loop. Never returns.
+    // Drains serial input only (no radio); dispatches non-hardware commands;
+    // reports "DBG skip <prefix>" for CMD_ACCESS_HARDWARE commands.
+    // Swap into main.cpp in place of run_blocks() to run a test build.
+    void run_test();
+
     // ---------------------------------------------------------------------------
     // Accessors used by task functions and command handlers.
     // ---------------------------------------------------------------------------
@@ -42,9 +49,24 @@ public:
     ReplyFn  activeTlmFn;    // telemetry stream (ASYNC, drop-tolerant)
     void*    activeCtx;
 
+    // Reset the system keepalive watchdog timestamp.
+    // Called by runCommsIn() after each inbound command is dispatched.
+    void resetWatchdog(uint32_t now_ms) { _watchdogMs = now_ms; }
+
 private:
     Robot&            _robot;
     CommandProcessor& _cmd;
     Communicator&     _comm;
     MicroBit&         _uBit;
+
+    // System keepalive watchdog (Sprint 020, Ticket 005).
+    // Reset in runCommsIn() on every inbound command.
+    // Fires EVT safety_stop + X if sTimeoutMs passes without any inbound command.
+    // 0 = not yet armed (no command received yet this session).
+    uint32_t _watchdogMs = 0;
+
+    // Command queue — owned by LoopScheduler, set on CommandProcessor at boot.
+    // Commands arriving via runCommsIn() are enqueued; the tick body drains one
+    // per iteration via cmd.dequeueOne(_queue), keeping behaviour transparent.
+    CommandQueue _queue;
 };

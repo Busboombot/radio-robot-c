@@ -1,22 +1,14 @@
 #pragma once
 #include "MicroBit.h"
 #include "I2CBus.h"
-#include "Sensor.h"
+#include "IOtosSensor.h"
 #include <stdint.h>
 
 struct RobotConfig;   // fwd decl — begin() applies the OTOS scalars from config
 
 /**
- * OtosPose — robot-frame position and heading returned by readTransformed().
- *
- * x, y: position in mm; h: heading in radians.
- * Flip and mounting-offset rotation already applied (uses cfg.odomUpsideDown
- * and cfg.odomYawDeg).  Mounting offsets (cfg.odomOffX/Y) are subtracted.
- */
-struct OtosPose { float x, y, h; };
-
-/**
  * OtosSensor — I2C driver for the SparkFun Optical Tracking Odometry Sensor (OTOS).
+ * OtosPose is defined in IOtosSensor.h (included above).
  *
  * I2C address: 0x17 (7-bit).
  *
@@ -32,7 +24,7 @@ struct OtosPose { float x, y, h; };
  *   0x20  POSITION_XL     (6 bytes, same format)
  *   0x26  VELOCITY_XL     (6 bytes)
  */
-class OtosSensor : public Sensor {
+class OtosSensor : public IOtosSensor {
 public:
     OtosSensor(I2CBus& i2c, const RobotConfig& cfg);
 
@@ -44,29 +36,29 @@ public:
     // Re-run device init: enable all signal processing (0x0F) and reset Kalman
     // tracking.  Called by begin() after detection; also exposed for the OI
     // command.  No-op if not initialized.
-    void init();
+    void init() override;
 
     // Write N to REG_IMU_CALIBRATION. Calibration runs asynchronously.
-    void calibrateImu(uint8_t samples);
+    void calibrateImu(uint8_t samples) override;
 
     // Write 0x01 to REG_RESET (resets Kalman filters, not position).
-    void resetTracking();
+    void resetTracking() override;
 
     // Read the raw position registers, convert LSBs to mm/rad, apply the
     // upside-down flip and mounting-offset rotation from cfg, and return the
     // result as an OtosPose.  Does NOT write to HardwareState or call
     // odometry.correct — those steps remain with the caller (Robot::otosCorrect).
     // Returns {0,0,0} if not initialized.
-    OtosPose readTransformed(const RobotConfig& cfg) const;
+    OtosPose readTransformed(const RobotConfig& cfg) const override;
 
-    void getPositionRaw(int16_t& x, int16_t& y, int16_t& h) const;
-    void setPositionRaw(int16_t x, int16_t y, int16_t h);
+    void getPositionRaw(int16_t& x, int16_t& y, int16_t& h) const override;
+    void setPositionRaw(int16_t x, int16_t y, int16_t h) override;
     void getVelocityRaw(int16_t& x, int16_t& y, int16_t& h) const;
 
-    int8_t getLinearScalar() const;
-    void   setLinearScalar(int8_t val);
-    int8_t getAngularScalar() const;
-    void   setAngularScalar(int8_t val);
+    int8_t getLinearScalar() const override;
+    void   setLinearScalar(int8_t val) override;
+    int8_t getAngularScalar() const override;
+    void   setAngularScalar(int8_t val) override;
 
 private:
     I2CBus&            _i2c;

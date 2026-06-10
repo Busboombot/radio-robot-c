@@ -41,17 +41,23 @@ struct MotionBaseline {
 // makePositionStop(targetX, targetY, radiusMm) to avoid confusion.
 // ---------------------------------------------------------------------------
 struct StopCondition {
-    enum class Kind : uint8_t { NONE, TIME, DISTANCE, HEADING, POSITION, SENSOR };
+    enum class Kind : uint8_t {
+        NONE, TIME, DISTANCE, HEADING, POSITION, SENSOR,
+        COLOR,    // fires when HSV distance from target <= ax
+        LINE_ANY  // fires when any line[0..3] satisfies threshold/cmp
+    };
     enum class Cmp  : uint8_t { GE, LE };
 
     Kind    kind   = Kind::NONE;
     float   a      = 0.0f;   // primary param (TIME: ms threshold; DISTANCE: mm threshold;
                               //   HEADING: target delta rad; POSITION: target Y mm;
-                              //   SENSOR: threshold)
-    float   b      = 0.0f;   // secondary param (HEADING: eps rad; POSITION: radius mm)
-    float   ax     = 0.0f;   // POSITION only: target X mm
+                              //   SENSOR/LINE_ANY: threshold; COLOR: target hue [0,360))
+    float   b      = 0.0f;   // secondary param (HEADING: eps rad; POSITION: radius mm;
+                              //   COLOR: target saturation [0,1])
+    float   ax     = 0.0f;   // POSITION only: target X mm; COLOR: HSV distance threshold
+    float   ay     = 0.0f;   // COLOR only: target value/brightness [0,1]
     uint8_t sensor = 0;      // SENSOR: channel selector (index into HardwareState fields)
-    Cmp     cmp    = Cmp::GE; // SENSOR: comparison direction
+    Cmp     cmp    = Cmp::GE; // SENSOR/LINE_ANY: comparison direction
 
     /**
      * evaluate — test whether this stop condition is satisfied this tick.
@@ -131,5 +137,46 @@ inline StopCondition makeSensorStop(uint8_t channel, float threshold,
     c.a      = threshold;
     c.sensor = channel;
     c.cmp    = cmp;
+    return c;
+}
+
+/**
+ * Stop when the color sensor HSV reading is within distThreshold of the
+ * target HSV colour (h [0,360), s [0,1], v [0,1]).
+ *
+ * The match uses wrap-aware hue distance:
+ *   dist = sqrt(hDist^2 + (s_sensor - s_target)^2 + (v_sensor - v_target)^2)
+ *   fires when dist <= distThreshold.
+ *
+ * Param layout:
+ *   a  = target hue, degrees [0,360)
+ *   b  = target saturation [0,1]
+ *   ay = target value/brightness [0,1]
+ *   ax = HSV distance threshold
+ */
+inline StopCondition makeColorStop(float targetH, float targetS, float targetV,
+                                    float distThreshold)
+{
+    StopCondition c;
+    c.kind = StopCondition::Kind::COLOR;
+    c.a    = targetH;
+    c.b    = targetS;
+    c.ay   = targetV;
+    c.ax   = distThreshold;
+    return c;
+}
+
+/**
+ * Stop when ANY of line[0..3] satisfies the threshold/cmp condition.
+ *
+ * cmp = GE: fires when any channel >= threshold.
+ * cmp = LE: fires when any channel <= threshold.
+ */
+inline StopCondition makeLineAnyStop(float threshold, StopCondition::Cmp cmp)
+{
+    StopCondition c;
+    c.kind = StopCondition::Kind::LINE_ANY;
+    c.a    = threshold;
+    c.cmp  = cmp;
     return c;
 }

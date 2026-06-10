@@ -1,9 +1,9 @@
 #pragma once
 #include "CommandTypes.h"
-#include "Servo.h"
+#include "IServo.h"
 
 /**
- * ServoController — Commandable wrapper around Servo that owns the GRIP
+ * ServoController — Commandable wrapper around IServo that owns the GRIP
  * command descriptor.
  *
  * GRIP <deg>  — set servo angle (0–180); replies "OK grip deg=<deg>"
@@ -13,11 +13,11 @@
  */
 class ServoController : public Commandable {
 public:
-    explicit ServoController(Servo& srv);
+    explicit ServoController(IServo& srv);
     virtual std::vector<CommandDescriptor> getCommands() const override;
 
-    Servo& servo() { return _srv; }
+    IServo& servo() { return _srv; }
 
 private:
-    Servo& _srv;
+    IServo& _srv;
 };

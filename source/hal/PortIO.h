@@ -1,5 +1,6 @@
 #pragma once
 #include "MicroBit.h"
+#include "IPortIO.h"
 #include <stdint.h>
 
 /**
@@ -12,21 +13,21 @@
  *
  * Port numbers are 1-based (1..4); out-of-range values return -1 or are ignored.
  */
-class PortIO {
+class PortIO : public IPortIO {
 public:
     explicit PortIO(MicroBitIO& io);
 
     // Set the digital output on port 1..4. Ignores out-of-range port.
-    void setDigital(uint8_t port, bool high);
+    void setDigital(uint8_t port, bool high) override;
 
     // Read the digital input on port 1..4. Returns 0 or 1, or -1 for invalid port.
-    int  readDigital(uint8_t port) const;
+    int  readDigital(uint8_t port) const override;
 
     // Set the analog (PWM) output on port 1..4, value 0..1023.
-    void setAnalog(uint8_t port, uint16_t val);
+    void setAnalog(uint8_t port, uint16_t val) override;
 
     // Read the analog input on port 1..4, value 0..1023. Returns -1 for invalid port.
-    int  readAnalog(uint8_t port) const;
+    int  readAnalog(uint8_t port) const override;
 
 private:
     MicroBitIO& _io;

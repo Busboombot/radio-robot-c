@@ -1,5 +1,9 @@
 ---
-status: pending
+status: in-progress
+sprint: '020'
+tickets:
+- 020-003
+- 020-004
 ---
 
 # Plan: Sprint 020 — Firmware Host Testing

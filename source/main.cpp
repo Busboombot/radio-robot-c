@@ -1,15 +1,9 @@
 #include "MicroBit.h"
 #include "Robot.h"
+#include "NezhaHAL.h"
 #include "CommandProcessor.h"
 #include "LoopScheduler.h"
 #include "Communicator.h"
-#include "I2CBus.h"
-#include "Motor.h"
-#include "OtosSensor.h"
-#include "LineSensor.h"
-#include "ColorSensor.h"
-#include "Servo.h"
-#include "PortIO.h"
 #include "Config.h"
 #include "Icons.h"
 #include "RadioChannel.h"
@@ -143,13 +137,12 @@ int main() {
     static RobotConfig cfg = defaultRobotConfig();
 
     // -----------------------------------------------------------------------
-    // 3. Devices (singletons) on the buses.
+    // 3. Hardware HAL — owns the I2CBus and all seven device objects.
     //
-    // I2CBus sits between uBit.i2c and every device so per-device transaction
-    // counts, error rates, and re-entrancy violations are observable via the
-    // DBG I2C command (ticket 015-003) without altering any transaction semantics.
+    // NezhaHAL wraps I2CBus (between uBit.i2c and every device) so per-device
+    // transaction counts, error rates, and re-entrancy violations remain
+    // observable via the DBG I2C command (ticket 015-003).
     // -----------------------------------------------------------------------
-    static I2CBus       bus(uBit.i2c);
 
     // I2C bus speed — 100 kHz (uBit.init() defaults to 400 kHz).
     //
@@ -163,13 +156,7 @@ int main() {
     // bus-wide. See docs/knowledge encoder-wedge note + WedgeTest.cpp.
     uBit.i2c.setFrequency(100000);
 
-    static Motor        motorL(bus, 2, cfg.fwdSignL);   // M2 left
-    static Motor        motorR(bus, 1, cfg.fwdSignR);   // M1 right
-    static OtosSensor   otos(bus, cfg);
-    static LineSensor   line(bus);
-    static ColorSensor  color(bus);
-    static Servo        gripper(uBit.io.P1);
-    static PortIO       portio(uBit.io);
+    static NezhaHAL hardware(uBit.i2c, uBit.io, cfg);
 
     // -----------------------------------------------------------------------
     // 4. Communications — begin() enables serial + radio.
@@ -178,21 +165,20 @@ int main() {
     comm.begin(rfChannel);
 
     // -----------------------------------------------------------------------
-    // 5. Device initialisation — comment a line out to disable that device.
-    //    begin() sets is_initialized(); read paths check it each tick.
+    // 5. Device initialisation — NezhaHAL::begin() calls otos, line, color
+    //    begin().  Comment individual lines inside NezhaHAL::begin() to
+    //    disable a sensor; is_initialized() gates each read task.
     // -----------------------------------------------------------------------
     // Settle so the sensors have time to power up before begin() probes them.
     uBit.sleep(2500);
-    otos.begin();
-    line.begin();
-    color.begin();
+    hardware.begin();
 
     // -----------------------------------------------------------------------
-    // 6. Robot — built from devices; owns config, state, and controllers.
+    // 6. Robot — built from HAL; owns config, state, and controllers.
     //    No direct i2c/serial/radio/MicroBit refs — fully encapsulated by
-    //    the device objects.
+    //    NezhaHAL and the device objects it owns.
     // -----------------------------------------------------------------------
-    static Robot robot(motorL, motorR, otos, line, color, gripper, portio, cfg);
+    static Robot robot(hardware, cfg);
 
     // -----------------------------------------------------------------------
     // 7. Run the cooperative main loop — never returns.
@@ -213,7 +199,7 @@ int main() {
 
     // Phase 2 — LoopScheduler and DebugCommandable are now constructable.
     static LoopScheduler sched(robot, cmd, comm, uBit);
-    static DbgCtx dbgCtx = { &sched, &bus, &robot };
+    static DbgCtx dbgCtx = { &sched, &hardware.bus(), &robot };
     static DebugCommandable dbgCmd(dbgCtx);
 
     // Phase 3 — replace cmd with the full table including DBG descriptors.
@@ -225,7 +211,7 @@ int main() {
 
     // Wire the I2CBus and EVT sink into MotorController so enc_wedged events
     // are emitted with bus stats and go to the active serial/radio channel.
-    robot.motorController.setI2CBus(&bus);
+    robot.motorController.setI2CBus(&hardware.bus());
     robot.motorController.setEvtSink(&sched.activeFn, &sched.activeCtx);
 
     sched.run_blocks();

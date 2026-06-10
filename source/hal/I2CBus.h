@@ -1,5 +1,7 @@
 #pragma once
+#ifndef HOST_BUILD
 #include "MicroBit.h"
+#endif
 #include <stdint.h>
 
 /**
@@ -47,7 +49,9 @@ public:
     // Construction
     // -----------------------------------------------------------------------
 
+#ifndef HOST_BUILD
     explicit I2CBus(MicroBitI2C& bus);
+#endif
 
     // -----------------------------------------------------------------------
     // I2C forwarding — mirror MicroBitI2C signatures exactly.
@@ -128,7 +132,9 @@ private:
         int      lastErr;
     };
 
+#ifndef HOST_BUILD
     MicroBitI2C& _bus;
+#endif
 
     // Re-entrancy guard state.
     volatile bool _inUse;

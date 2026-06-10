@@ -250,6 +250,12 @@ list(APPEND SOURCE_FILES ${S_FILES})
 list(APPEND SOURCE_FILES ${C_FILES})
 list(APPEND SOURCE_FILES ${CC_FILES})
 
+# Exclude host-only mock files from the firmware (CODAL) build.
+# The mock/ directory has no MicroBit/CODAL dependencies and must
+# not be compiled into firmware — it is used by the host CMake build
+# (ticket 020-003) and Python test harness only.
+list(FILTER SOURCE_FILES EXCLUDE REGEX ".*/hal/mock/.*")
+
 if("${SOURCE_FILES}" STREQUAL "")
     message(FATAL_ERROR "${BoldRed}No user application to build, please add a main.cpp at: ${PROJECT_SOURCE_DIR}/${CODAL_APP_SOURCE_DIR}${ColourReset}")
 endif()

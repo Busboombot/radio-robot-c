@@ -5,6 +5,8 @@
 #include "SerialPort.h"
 #include "Radio.h"
 #include "RobotState.h"
+#include "HaltController.h"
+#include <cstdio>
 
 // ---------------------------------------------------------------------------
 // Reply-sink adapters.
@@ -38,7 +40,7 @@ static void radioReply(const char* msg, void* ctx)
 // telemetry and EVT completions go back on the channel that sent the command.
 // ---------------------------------------------------------------------------
 
-static void runCommsIn(LoopScheduler& sched, uint32_t /*now*/)
+static void runCommsIn(LoopScheduler& sched, uint32_t now)
 {
     CommandProcessor& cmd    = sched.cmd();
     SerialPort&       serial = sched.comm().serial();
@@ -51,6 +53,7 @@ static void runCommsIn(LoopScheduler& sched, uint32_t /*now*/)
         sched.activeTlmFn = serialReplyTlm;
         sched.activeCtx   = &serial;
         cmd.process(buf, serialReply, &serial);
+        sched.resetWatchdog(now);
     }
 
     while (radio.poll(buf, sizeof(buf))) {
@@ -58,6 +61,7 @@ static void runCommsIn(LoopScheduler& sched, uint32_t /*now*/)
         sched.activeTlmFn = radioReply;
         sched.activeCtx   = &radio;
         cmd.process(buf, radioReply, &radio);
+        sched.resetWatchdog(now);
     }
 }
 
@@ -75,6 +79,65 @@ LoopScheduler::LoopScheduler(Robot& robot, CommandProcessor& cmd,
       _comm(comm),
       _uBit(uBit)
 {
+    // Wire the queue: commands arriving via process() are enqueued; the tick
+    // body drains one per iteration via dequeueOne(), keeping behaviour
+    // transparent in run_blocks() mode (enqueue + dequeue in same tick).
+    _cmd.setQueue(&_queue);
+
+    // Wire the same queue into MotionController so VW converter handlers
+    // (S, T, D, G, R, TURN) can push_front a VW ParsedCommand.
+    _robot.motionController.setQueue(&_queue);
+}
+
+// ---------------------------------------------------------------------------
+// run_test — serial-only hardware-free dispatch loop. Never returns.
+//
+// Reads from serial only (no radio). Commands arriving via process() are
+// enqueued via _queue. The inner drain dispatches non-hardware commands
+// normally; commands flagged CMD_ACCESS_HARDWARE are discarded with a
+// "DBG skip <prefix>" notice on serial.
+//
+// This lets the full command-transformation chain be exercised without
+// running motors: S/T/D/G/R/TURN handlers execute and push VW to the
+// queue; the VW entry is then detected as CMD_ACCESS_HARDWARE and skipped.
+//
+// Swap sched.run_blocks() → sched.run_test() in main.cpp for a test build.
+// ---------------------------------------------------------------------------
+
+void LoopScheduler::run_test()
+{
+    // Re-wire the queue: main.cpp Phase 3 reassigns CommandProcessor via
+    // operator=, which resets _queue to nullptr. Re-set it here so that
+    // process() enqueues rather than dispatching immediately, enabling the
+    // hardware-flag filter below.
+    _cmd.setQueue(&_queue);
+
+    SerialPort& serial = _comm.serial();
+    char buf[512];
+
+    while (true) {
+        // 1. Drain serial input (no radio — hardware-free loop).
+        while (serial.readLine(buf, sizeof(buf))) {
+            _cmd.process(buf, serialReply, &serial);
+            resetWatchdog(_uBit.systemTime());
+        }
+
+        // 2. Drain queue, filtering hardware commands.
+        ParsedCommand pc;
+        while (_queue.pop_front(pc)) {
+            if (pc.desc && (pc.desc->flags & CMD_ACCESS_HARDWARE)) {
+                char skip[64];
+                snprintf(skip, sizeof(skip), "DBG skip %s\n", pc.desc->prefix);
+                serialReply(skip, &serial);
+            } else if (pc.desc && pc.desc->handlerFn) {
+                pc.desc->handlerFn(pc.args, pc.corrId,
+                                   pc.replyFn, pc.replyCtx,
+                                   pc.desc->handlerCtx);
+            }
+        }
+
+        _uBit.sleep(10);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -97,7 +160,7 @@ void LoopScheduler::run_blocks()
     // ---- ENABLE FLAGS -------------------------------------------------------
     bool enControl = true;   // read encoders + run PID + write motors (metronome)
     bool enComms   = true;   // drain serial + radio command queues
-    bool enDrive   = true;   // advance S/T/D/G drive state machine + S-watchdog
+    bool enDrive   = true;   // advance S/T/D/G drive state machine
     bool enOdom    = true;   // dead-reckon pose from the encoders
     bool enOtos    = true;   // OTOS pose read + complementary fusion (timed)
     bool enLine    = true;   // line sensor read (timed)
@@ -135,7 +198,68 @@ void LoopScheduler::run_blocks()
             runCommsIn(*this, now);
         }
 
-        // ===== DRIVE: advance drive state machine + S-watchdog ==============
+        // ===== QUEUE: dispatch one enqueued command per tick =================
+        // runCommsIn() enqueues commands via cmd.process() → _queue.push_back().
+        // dequeueOne() dispatches the front command, keeping behaviour identical
+        // to the former immediate-dispatch path (enqueue + dequeue in same tick).
+        _cmd.dequeueOne(_queue);
+
+        // ===== SYSTEM WATCHDOG: fire safety_stop + X after sTimeoutMs of silence =====
+        // _watchdogMs == 0 means no command has been received yet this session;
+        // the watchdog stays disarmed until the first command arrives.
+        // Signed delta avoids uint32 underflow (see memory note: watchdog-uint32-underflow).
+        //
+        // Only fires when the robot is in an open-ended motion mode:
+        //   - STREAMING (S command, no active MotionCommand)
+        //   - VELOCITY/ARC (VW/R, active MotionCommand with no stop conditions)
+        // Self-terminating commands (T/D/G/TURN, with stop conditions) manage
+        // their own lifetime and are NOT interrupted by the system watchdog.
+        {
+            now = _uBit.systemTime();
+            MotionController& mc = _robot.motionController;
+            bool needsWatchdog =
+                (mc.mode() == DriveMode::STREAMING) ||
+                (mc.hasActiveCommand() && mc.activeCmd().isOpenEnded());
+            if (_watchdogMs != 0 && activeFn != nullptr && needsWatchdog) {
+                int32_t wdDelta = (int32_t)(now - _watchdogMs);
+                if (wdDelta > (int32_t)_robot.config.sTimeoutMs) {
+                    _watchdogMs = now;  // reset to avoid repeated firing every tick
+                    char wdBuf[64];
+                    CommandProcessor::replyEvt(wdBuf, sizeof(wdBuf),
+                                               "safety_stop", "",
+                                               activeFn, activeCtx);
+                    // Bypass the queue for internal emergency stop: set queue to
+                    // null so process() dispatches X immediately, then restore.
+                    _cmd.setQueue(nullptr);
+                    _cmd.process("X", activeFn, activeCtx);
+                    _cmd.setQueue(&_queue);
+                }
+            }
+        }
+
+        // ===== HALT CONDITIONS: evaluate user-registered stop conditions =====
+        // Runs after the watchdog check, before the motion tick.
+        // When a condition fires: emit EVT halt id=<n>, dispatch X or X soft.
+        {
+            now = _uBit.systemTime();
+            if (activeFn != nullptr) {
+                HaltAction ha = _robot.haltController.evaluate(
+                    _robot.state.inputs, now, activeFn, activeCtx);
+                // Bypass the queue for halt-triggered emergency stops: detach
+                // queue so process() dispatches immediately, then restore.
+                if (ha == HaltAction::HARD) {
+                    _cmd.setQueue(nullptr);
+                    _cmd.process("X", activeFn, activeCtx);
+                    _cmd.setQueue(&_queue);
+                } else if (ha == HaltAction::SOFT) {
+                    _cmd.setQueue(nullptr);
+                    _cmd.process("X soft", activeFn, activeCtx);
+                    _cmd.setQueue(&_queue);
+                }
+            }
+        }
+
+        // ===== DRIVE: advance drive state machine ==========================
         if (enDrive) {
             now = _uBit.systemTime();
             _robot.motionController.driveAdvance(

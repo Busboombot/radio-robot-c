@@ -135,7 +135,7 @@ static void handlePA(const ArgList& args, const char* corrId,
 // PortController implementation
 // ---------------------------------------------------------------------------
 
-PortController::PortController(PortIO& pio)
+PortController::PortController(IPortIO& pio)
     : _pio(pio)
 {
 }
@@ -144,7 +144,7 @@ std::vector<CommandDescriptor> PortController::getCommands() const
 {
     void* ctx = const_cast<PortController*>(this);
     return {
-        makeCmd("P",  parseP,  handleP,  ctx, "badarg"), // digital pin read/write
-        makeCmd("PA", parsePA, handlePA, ctx, "badarg"), // analog pin read/write
+        makeCmd("P",  parseP,  handleP,  ctx, "badarg", ForceReply::NONE, CMD_ACCESS_HARDWARE), // digital pin read/write
+        makeCmd("PA", parsePA, handlePA, ctx, "badarg", ForceReply::NONE, CMD_ACCESS_HARDWARE), // analog pin read/write
     };
 }

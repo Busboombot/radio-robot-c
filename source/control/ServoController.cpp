@@ -68,7 +68,7 @@ static void handleGrip(const ArgList& args, const char* corrId,
 // ServoController implementation
 // ---------------------------------------------------------------------------
 
-ServoController::ServoController(Servo& srv)
+ServoController::ServoController(IServo& srv)
     : _srv(srv)
 {
 }
@@ -77,6 +77,6 @@ std::vector<CommandDescriptor> ServoController::getCommands() const
 {
     void* ctx = const_cast<ServoController*>(this);
     return {
-        makeCmd("GRIP", parseGrip, handleGrip, ctx, "badarg"), // set/query gripper angle (0–180 deg)
+        makeCmd("GRIP", parseGrip, handleGrip, ctx, "badarg", ForceReply::NONE, CMD_ACCESS_HARDWARE), // set/query gripper angle (0–180 deg)
     };
 }

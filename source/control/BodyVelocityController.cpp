@@ -69,7 +69,9 @@ bool BodyVelocityController::advance(float dt_s)
         // the target using approach() so the integration cannot overshoot.
         //
         // aTarget: +aMax when v must increase to reach vTgtClamped, else -aDecel.
-        float aTarget = (vTgtClamped >= _v) ? _cfg.aMax : -_cfg.aDecel;
+        float aTarget = (_v < vTgtClamped) ? _cfg.aMax
+                      : (_v > vTgtClamped) ? -_cfg.aDecel
+                      : 0.0f;
         float jerkStep = _cfg.jMax * dt_s;
         _aLive = approach(_aLive, aTarget, jerkStep);
         // Integrate, but cap the step so we never overshoot vTgtClamped.
@@ -101,7 +103,9 @@ bool BodyVelocityController::advance(float dt_s)
         // S-curve path for yaw.  Same approach-based integration as linear
         // channel: prevents overshoot while preserving jerk-limited ramp.
         float yawJerkMaxRad = _cfg.yawJerkMax * kDegToRad;
-        float omegaATarget  = (omegaTgtClamped >= _omega) ? +yawAccMax_rad : -yawAccMax_rad;
+        float omegaATarget  = (_omega < omegaTgtClamped) ? +yawAccMax_rad
+                            : (_omega > omegaTgtClamped) ? -yawAccMax_rad
+                            : 0.0f;
         _omegaALive = approach(_omegaALive, omegaATarget, yawJerkMaxRad * dt_s);
         _omega = approach(_omega, omegaTgtClamped, fabsf(_omegaALive * dt_s));
     } else {
@@ -117,6 +121,13 @@ bool BodyVelocityController::advance(float dt_s)
     float vL, vR, sL, sR;
     BodyKinematics::inverse(_v, _omega, _cfg.trackwidthMm, vL, vR);
     BodyKinematics::saturate(vL, vR, _cfg.vWheelMax, _cfg.steerHeadroom, sL, sR);
+    // Anti-windup: if saturation clipped the output, back-calculate the effective
+    // body velocity so _v never builds up past the saturation ceiling.  Without
+    // this, _v silently overruns during ramp-up and produces a flat-spot plateau
+    // at the start of deceleration while _v burns back down to the ceiling.
+    if (sL != vL || sR != vR) {
+        BodyKinematics::forward(sL, sR, _cfg.trackwidthMm, _v, _omega);
+    }
     _mc.setTarget(sL, sR);
 
     return !atTarget();

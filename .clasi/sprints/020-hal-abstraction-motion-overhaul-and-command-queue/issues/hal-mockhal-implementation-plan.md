@@ -1,5 +1,9 @@
 ---
-status: pending
+status: in-progress
+sprint: '020'
+tickets:
+- 020-001
+- 020-002
 ---
 
 # HAL + MockHAL Implementation Plan

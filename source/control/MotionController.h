@@ -39,8 +39,16 @@ struct Robot;
  * pointer or the slow-cadence timer.
  */
 
+// Forward-declare CommandQueue so MotionCtx can hold a pointer to it.
+class CommandQueue;
+
 // Context bundle used by Commandable-registered handlers.
-struct MotionCtx { MotionController* mc; struct Robot* robot; };
+struct MotionCtx {
+    MotionController*  mc;
+    struct Robot*      robot;
+    CommandQueue*      queue;    // command queue for VW converter push_front; may be null in sim
+    CommandDescriptor  vwDesc;   // stable VW descriptor used by converters to build ParsedCommand
+};
 
 class MotionController : public Commandable {
 public:
@@ -102,9 +110,27 @@ public:
     // Used by the X verb and STOP handler when a VW command is active.
     void cancel(uint32_t now_ms, ReplyFn fn, void* ctx);
 
+    // Soft-stop: ramp BVC target to (0,0) under aMax.
+    // If a MotionCommand is active, arms its SOFT ramp-down path so
+    // EVT done is emitted when speed reaches zero.
+    // If no MotionCommand is active (STREAMING mode), sets BVC target to (0,0)
+    // and lets the profiler ramp — no EVT done in that case.
+    void softStop(uint32_t now_ms);
+
+    // Begin a raw velocity command: seeds BVC current state AND sets target
+    // immediately (no trapezoid ramp-up).  Used by the _VW verb.
+    // The system watchdog owns keepalive enforcement; no MotionCommand created.
+    void beginRawVelocity(float v_mms, float omega_rads);
+
     // setCtx — bind the Robot* for Commandable handlers.
     // Called by Robot's constructor after motionController is fully constructed.
-    void setCtx(struct Robot* r) { _ctx.mc = this; _ctx.robot = r; }
+    // Also initialises vwDesc so converter handlers can build a VW ParsedCommand.
+    void setCtx(struct Robot* r);
+
+    // setQueue — bind the CommandQueue for VW converter push_front.
+    // Called by LoopScheduler (or test harness) after the queue is created.
+    // Null (default) causes converter handlers to fall back to direct begin*() calls.
+    void setQueue(CommandQueue* q) { _ctx.queue = q; }
 
     // Query whether a MotionCommand is currently active (running or soft-stopping).
     // Used by CommandProcessor to distinguish new VW vs keepalive VW.
@@ -144,9 +170,6 @@ private:
 
     // Drive mode
     DriveMode _mode;
-
-    // S-mode watchdog
-    uint32_t _lastSMs;
 
     // Current speed targets (kept for internal use only)
     float _tgtL;

@@ -447,13 +447,13 @@ std::vector<CommandDescriptor> DebugCommandable::getCommands() const
     // Longest-prefix entries first within each group so dispatchTable picks
     // the most-specific match (e.g. "DBG LOOP RESET" beats "DBG LOOP").
     return {
-        makeCmd("DBG LOOP RESET", parseDbgLoopReset, handleDbgLoopReset, ctx, "badarg", ForceReply::SERIAL), // reset loop stats counters
-        makeCmd("DBG LOOP",       parseDbgLoop,      handleDbgLoop,      ctx, "badarg", ForceReply::SERIAL), // report loop timing stats
-        makeCmd("DBG I2CLOG",     parseDbgI2clog,    handleDbgI2clog,    ctx, "badarg", ForceReply::SERIAL), // dump I2C transaction log
-        makeCmd("DBG I2C",        parseDbgI2c,       handleDbgI2c,       ctx, "badarg", ForceReply::SERIAL), // report I2C bus error counts
-        makeCmd("DBG IRQGUARD",   parseDbgIrqguard,  handleDbgIrqguard,  ctx, "badarg", ForceReply::SERIAL), // enable/disable IRQ guard
-        makeCmd("DBG WEDGE",      parseDbgWedge,     handleDbgWedge,     ctx, "badarg", ForceReply::SERIAL), // run encoder wedge self-check
-        makeCmd("I2CW",           parseI2cw,         handleI2cw,         ctx, "badarg", ForceReply::SERIAL), // raw I2C write (addr reg data…)
-        makeCmd("I2CR",           parseI2cr,         handleI2cr,         ctx, "badarg", ForceReply::SERIAL), // raw I2C read (addr reg count)
+        makeCmd("DBG LOOP RESET", parseDbgLoopReset, handleDbgLoopReset, ctx, "badarg", ForceReply::SERIAL),                          // reset loop stats counters
+        makeCmd("DBG LOOP",       parseDbgLoop,      handleDbgLoop,      ctx, "badarg", ForceReply::SERIAL),                          // report loop timing stats
+        makeCmd("DBG I2CLOG",     parseDbgI2clog,    handleDbgI2clog,    ctx, "badarg", ForceReply::SERIAL, CMD_ACCESS_HARDWARE),     // dump I2C transaction log
+        makeCmd("DBG I2C",        parseDbgI2c,       handleDbgI2c,       ctx, "badarg", ForceReply::SERIAL, CMD_ACCESS_HARDWARE),     // report I2C bus error counts
+        makeCmd("DBG IRQGUARD",   parseDbgIrqguard,  handleDbgIrqguard,  ctx, "badarg", ForceReply::SERIAL),                          // enable/disable IRQ guard
+        makeCmd("DBG WEDGE",      parseDbgWedge,     handleDbgWedge,     ctx, "badarg", ForceReply::SERIAL, CMD_ACCESS_HARDWARE),     // run encoder wedge self-check
+        makeCmd("I2CW",           parseI2cw,         handleI2cw,         ctx, "badarg", ForceReply::SERIAL, CMD_ACCESS_HARDWARE),     // raw I2C write (addr reg data…)
+        makeCmd("I2CR",           parseI2cr,         handleI2cr,         ctx, "badarg", ForceReply::SERIAL, CMD_ACCESS_HARDWARE),     // raw I2C read (addr reg count)
     };
 }

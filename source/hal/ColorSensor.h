@@ -1,7 +1,7 @@
 #pragma once
 #include "MicroBit.h"
 #include "I2CBus.h"
-#include "Sensor.h"
+#include "IColorSensor.h"
 #include <stdint.h>
 
 /**
@@ -13,21 +13,21 @@
  *
  * begin() probes 0x43 first; if the probe fails, initialises APDS9960 at 0x39.
  */
-class ColorSensor : public Sensor {
+class ColorSensor : public IColorSensor {
 public:
     explicit ColorSensor(I2CBus& i2c);
 
     // Auto-detect chip variant. Returns false if neither 0x43 nor 0x39 responds.
     // Sets _initialized to the result.
-    bool begin() override;
+    bool begin() override;  // IColorSensor (via Sensor)
 
     // Fills r, g, b, c with 16-bit raw counts. Blocks up to ~250 ms.
-    bool readRGBC(uint16_t& r, uint16_t& g, uint16_t& b, uint16_t& c);
+    bool readRGBC(uint16_t& r, uint16_t& g, uint16_t& b, uint16_t& c) override;
 
     // Non-blocking poll: returns true and fills outputs only if fresh data is
     // available immediately. Returns false (does not block) if sensor is not ready.
     // Use this in time-critical loops instead of readRGBC().
-    bool pollRGBC(uint16_t& r, uint16_t& g, uint16_t& b, uint16_t& c);
+    bool pollRGBC(uint16_t& r, uint16_t& g, uint16_t& b, uint16_t& c) override;
 
 private:
     I2CBus& _i2c;

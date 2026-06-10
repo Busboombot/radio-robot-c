@@ -1,5 +1,11 @@
 ---
-status: pending
+status: in-progress
+sprint: '020'
+tickets:
+- 020-009
+- 020-010
+- 020-011
+- 020-012
 ---
 
 # Plan: Command Flags, VW Unification, Command Queue, and Test Loop

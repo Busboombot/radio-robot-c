@@ -1,11 +1,12 @@
 #pragma once
 #include "Config.h"
-#include "Motor.h"
-#include "OtosSensor.h"
-#include "LineSensor.h"
-#include "ColorSensor.h"
-#include "Servo.h"
-#include "PortIO.h"
+#include "Hardware.h"
+#include "IMotor.h"
+#include "IOtosSensor.h"
+#include "ILineSensor.h"
+#include "IColorSensor.h"
+#include "IServo.h"
+#include "IPortIO.h"
 #include "MotorController.h"
 #include "Odometry.h"
 #include "MotionController.h"
@@ -15,6 +16,7 @@
 #include "Protocol.h"
 #include "../types/CommandTypes.h"
 #include "../robot/ConfigRegistry.h"
+#include "../control/HaltController.h"
 
 // Forward declarations — keeps the header-graph shallow.
 class DebugCommandable;
@@ -38,36 +40,40 @@ struct RobotSysCtx {
  * class protects its own.  Caller code reaches subsystems directly instead
  * of going through forwarding methods.
  *
- * Devices (Motor, OtosSensor, LineSensor, ColorSensor, Servo, PortIO) are
- * constructed in main() as statics and held here as REFERENCES (not owned).
+ * Hardware is provided through a Hardware& (NezhaHAL on device, MockHAL in
+ * host tests). Robot binds interface refs from hal.motorL() etc.
  * The control layer (MotorController, Odometry, MotionController) and state
  * (RobotConfig, RobotStateContainer) are VALUE MEMBERS owned by Robot.
  *
  * Member declaration order is load-bearing (C++ initialises members in
  * declaration order):
- *   1. config, state           — owned values; state needs config
- *   2. motorL, motorR refs     — bound before motorController constructs
- *   3. otos, line, color, gripper, portio refs
- *   4. motorController         — needs motorL, motorR, config refs
- *   5. odometry                — default ctor
- *   6. motionController        — needs motorController, odometry, config
- *   7. portController          — needs portio ref
+ *   1. hal ref                 — must be first (initialised before interface refs)
+ *   2. config, state           — owned values; state needs config
+ *   3. motorL, motorR refs     — bound before motorController constructs
+ *   4. otos, line, color, gripper, portio refs
+ *   5. motorController         — needs motorL, motorR, config refs
+ *   6. odometry                — default ctor
+ *   7. motionController        — needs motorController, odometry, config
+ *   8. portController          — needs portio ref
  */
 struct Robot {
-    // ---- Owned value members (initialized first) ----
+    // ---- HAL reference (must be declared first) ----
+    Hardware&           hal;
+
+    // ---- Owned value members (initialized after hal) ----
     RobotConfig         config;   // owned copy; SET commands mutate this
     RobotStateContainer state;    // = defaultInputs(config)
 
-    // ---- Device references (bound in constructor, not owned) ----
+    // ---- Device interface references (bound from hal in constructor) ----
     // Declared before motorController so the refs are live when motorController
     // constructs and binds motorL/motorR.
-    Motor&              motorL;
-    Motor&              motorR;
-    OtosSensor&         otos;
-    LineSensor&         line;
-    ColorSensor&        colorSensor;  // named colorSensor to avoid macro collisions
-    Servo&              gripper;
-    PortIO&             portio;
+    IMotor&             motorL;
+    IMotor&             motorR;
+    IOtosSensor&        otos;
+    ILineSensor&        line;
+    IColorSensor&       colorSensor;  // named colorSensor to avoid macro collisions
+    IServo&             gripper;
+    IPortIO&            portio;
 
     // ---- Owned control-layer members (depend on refs above) ----
     MotorController     motorController;   // (motorL, motorR, config)
@@ -75,11 +81,10 @@ struct Robot {
     MotionController    motionController;  // (motorController, odometry, config)
     PortController      portController;    // (portio)
     ServoController     servoController;   // (gripper)
+    HaltController      haltController;    // user-facing named stop-condition registry
 
     // ---- Constructor ----
-    Robot(Motor& mL, Motor& mR, OtosSensor& o, LineSensor& l,
-               ColorSensor& c, Servo& g, PortIO& p,
-               const RobotConfig& cfg);
+    explicit Robot(Hardware& hal, const RobotConfig& cfg);
 
     // ---- Kept orchestration methods ----
     // These methods span multiple subsystems and are kept as Robot members

@@ -11,7 +11,7 @@
 // Set back to 0 to restore closed-loop PID.
 #define PID_BYPASS 0
 
-MotorController::MotorController(Motor& left, Motor& right, const RobotConfig& cal)
+MotorController::MotorController(IMotor& left, IMotor& right, const RobotConfig& cal)
     : _motorL(left), _motorR(right), _cal(cal),
       _vcL(cal.velKff, cal.velKp, cal.velKi, cal.velIMax, cal.minWheelMms, cal.velKaw),
       _vcR(cal.velKff, cal.velKp, cal.velKi, cal.velIMax, cal.minWheelMms, cal.velKaw),
@@ -294,9 +294,14 @@ void MotorController::controlTick(HardwareState& inputs, MotorCommands& cmds,
             if (_stuckCountL >= kWedgeThreshold && !_wedgeEmittedL) {
                 _wedgeEmittedL = true;
                 if (_evtFn && *_evtFn && _evtCtx && *_evtCtx) {
+#ifndef HOST_BUILD
                     uint32_t busErr    = _i2cBus ? (_i2cBus->errCount(0x10)) : 0;
                     uint32_t reentryN  = _i2cBus ? (_i2cBus->reentryViolations()) : 0;
                     int      lastErrV  = _i2cBus ? (_i2cBus->lastErr(0x10)) : 0;
+#else
+                    uint32_t busErr = 0, reentryN = 0;
+                    int lastErrV = 0;
+#endif
                     char evtBuf[96];
                     snprintf(evtBuf, sizeof(evtBuf),
                              "EVT enc_wedged wheel=L enc=%d n=%u err=%lu reentry=%lu lastErr=%d",
@@ -330,9 +335,14 @@ void MotorController::controlTick(HardwareState& inputs, MotorCommands& cmds,
             if (_stuckCountR >= kWedgeThreshold && !_wedgeEmittedR) {
                 _wedgeEmittedR = true;
                 if (_evtFn && *_evtFn && _evtCtx && *_evtCtx) {
+#ifndef HOST_BUILD
                     uint32_t busErr    = _i2cBus ? (_i2cBus->errCount(0x10)) : 0;
                     uint32_t reentryN  = _i2cBus ? (_i2cBus->reentryViolations()) : 0;
                     int      lastErrV  = _i2cBus ? (_i2cBus->lastErr(0x10)) : 0;
+#else
+                    uint32_t busErr = 0, reentryN = 0;
+                    int lastErrV = 0;
+#endif
                     char evtBuf[96];
                     snprintf(evtBuf, sizeof(evtBuf),
                              "EVT enc_wedged wheel=R enc=%d n=%u err=%lu reentry=%lu lastErr=%d",
@@ -353,6 +363,11 @@ void MotorController::controlTick(HardwareState& inputs, MotorCommands& cmds,
         cmds.pwmR = 0;
         _motorL.setSpeed(0);
         _motorR.setSpeed(0);
+        // Clear stale EMA velocity: MockMotor stops instantly, so the
+        // measurement should reflect 0 immediately rather than freezing
+        // at the last filtered value until the next drive command.
+        inputs.velLMms = 0.0f;
+        inputs.velRMms = 0.0f;
         return;
     }
 

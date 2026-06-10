@@ -82,8 +82,18 @@ typedef void (*HandlerFn)(const ArgList& args, const char* corrId,
 enum class ForceReply : uint8_t { NONE, SERIAL };
 
 // ---------------------------------------------------------------------------
+// Command flags — bitmask values for CommandDescriptor::flags.
+//   CMD_NONE            — command operates only on cached/config state
+//   CMD_ACCESS_HARDWARE — command reads or writes physical hardware
+//                         (motors, sensors, GPIO, I2C, servo)
+// ---------------------------------------------------------------------------
+static constexpr uint8_t CMD_NONE            = 0;
+static constexpr uint8_t CMD_ACCESS_HARDWARE = 1;
+
+// ---------------------------------------------------------------------------
 // CommandDescriptor — one entry in the command dispatch table.
-// 24 bytes per entry; ~42 commands ≈ 1008 bytes of static BSS.
+// 28 bytes per entry (flags field + 3 bytes pad to 4-byte alignment);
+// ~42 commands ≈ 1176 bytes of static BSS.
 //
 //   prefix      — command prefix string: "S", "DBG LOOP", "DBG LOOP RESET", …
 //   parseFn     — nullptr means pass raw tokens directly to handlerFn
@@ -91,6 +101,7 @@ enum class ForceReply : uint8_t { NONE, SERIAL };
 //   handlerCtx  — subsystem instance pointer; cast inside handlerFn
 //   errFmt      — ERR code emitted when parseFn returns ok=false
 //   forceReply  — channel override (see ForceReply)
+//   flags       — CMD_NONE or CMD_ACCESS_HARDWARE
 // ---------------------------------------------------------------------------
 struct CommandDescriptor {
     const char* prefix;
@@ -99,6 +110,7 @@ struct CommandDescriptor {
     void*       handlerCtx;
     const char* errFmt;
     ForceReply  forceReply;
+    uint8_t     flags;       // CMD_NONE or CMD_ACCESS_HARDWARE
 };
 
 // ---------------------------------------------------------------------------
@@ -116,8 +128,9 @@ public:
 // ---------------------------------------------------------------------------
 inline CommandDescriptor makeCmd(const char* prefix, ParseFn parseFn,
                                  HandlerFn handlerFn, void* ctx,
-                                 const char* errFmt  = "badarg",
-                                 ForceReply  forceReply = ForceReply::NONE) {
+                                 const char* errFmt     = "badarg",
+                                 ForceReply  forceReply = ForceReply::NONE,
+                                 uint8_t     flags      = CMD_NONE) {
     CommandDescriptor d;
     d.prefix      = prefix;
     d.parseFn     = parseFn;
@@ -125,5 +138,22 @@ inline CommandDescriptor makeCmd(const char* prefix, ParseFn parseFn,
     d.handlerCtx  = ctx;
     d.errFmt      = errFmt;
     d.forceReply  = forceReply;
+    d.flags       = flags;
     return d;
 }
+
+// ---------------------------------------------------------------------------
+// ParsedCommand — a fully parsed command ready for dispatch or queuing.
+//   desc      — points to the registered CommandDescriptor
+//   args      — parsed argument list (from parseFn, or empty)
+//   replyFn   — reply callback to call for each response line
+//   replyCtx  — opaque context forwarded to replyFn
+//   corrId    — correlation id string (up to 7 chars + NUL)
+// ---------------------------------------------------------------------------
+struct ParsedCommand {
+    const CommandDescriptor* desc;
+    ArgList  args;
+    ReplyFn  replyFn;
+    void*    replyCtx;
+    char     corrId[8];
+};
