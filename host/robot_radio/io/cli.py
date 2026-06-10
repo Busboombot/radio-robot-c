@@ -321,37 +321,10 @@ def _make_robot(args) -> tuple[QBotPro, SerialConnection, dict]:
     else:
         robot = Cutebot(conn)
 
-    # Calibration freshness check — avoids the ~2.1 s push on warm starts.
-    # Compute the expected OL int8 value from the active config.
-    expected_ol: int | None = None
-    if cfg is not None:
-        lin_scale = getattr(cfg, "otos_linear_scale", 1.0) or 1.0
-        expected_ol = _scale_to_int8(lin_scale)
-
-    # Query firmware's current OL value via proto (fast round-trip).
-    proto = getattr(robot, "_proto", None)
-    if proto is not None and expected_ol is not None:
-        actual_ol = proto.otos_get_linear_scalar()
-        _log(f"freshness check: firmware OL={actual_ol}, expected OL={expected_ol}")
-        if actual_ol is None:
-            # First query returned None — transient miss (port not fully settled
-            # after a cache-hit open, or relay garbling).  Retry once before
-            # concluding the firmware is uncalibrated and re-pushing.
-            actual_ol = proto.otos_get_linear_scalar()
-            _log(f"freshness check retry: firmware OL={actual_ol}, expected OL={expected_ol}")
-        if actual_ol != expected_ol:
-            # Mismatch (including None after retry): firmware was power-cycled
-            # or never calibrated this session.
-            print(
-                "Warning: firmware not calibrated — running sync cal automatically.",
-                file=sys.stderr,
-            )
-            _push_calibration(conn)
-        # else: fast path — calibration already pushed, skip.
-    else:
-        # Can't query (no proto, or no config to derive expected value) — push
-        # unconditionally to be safe.
-        _push_calibration(conn)
+    # Calibration values (ml, mr, tw, vel.*, OTOS scalars) are baked into the
+    # firmware at compile time by scripts/gen_default_config.py — no startup
+    # push needed.  Use `rogo cal` to force a re-push after editing robot JSON
+    # without reflashing.
 
     return robot, conn, result
 
