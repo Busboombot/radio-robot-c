@@ -81,7 +81,7 @@ RobotConfig defaultRobotConfig() {
     // Pose-control tunables
     p.aMax            = 300.0f;
     p.aDecel          = 250.0f;
-    p.turnInPlaceGate = 45.0f;
+    p.turnInPlaceGate = 35.0f;   // sim sweep optimum: ~35° minimizes time-to-target across all bearings (host_tests/arc_gate_sweep.ipynb)
     p.arriveTolMm     = 5.0f;
 
     // Body motion limits
