@@ -83,6 +83,11 @@ struct RobotConfig {
     float alphaYaw;    // OTOS heading blend gain [0, 1]
     float otosGate;    // outlier rejection distance threshold, mm
 
+    // EKF sensor fusion parameters (sprint 022)
+    float ekfQxy;       // process noise: position (mm^2) — default 2.0
+    float ekfQtheta;    // process noise: heading (rad^2) — default 0.005
+    float ekfROtosXy;   // OTOS measurement noise: position (mm^2) — default 50.0
+
     // OTOS calibration scalars and per-direction turn asymmetry (Sprint 012).
     // otosLinearScale: multiplier for OTOS linear calibration (e.g. 1.05).
     // otosAngularScale: multiplier for OTOS angular calibration (e.g. 0.987).

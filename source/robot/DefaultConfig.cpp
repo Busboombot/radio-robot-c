@@ -44,6 +44,11 @@ RobotConfig defaultRobotConfig() {
     p.alphaYaw        = 0.10f;
     p.otosGate        = 50.0f;
 
+    // EKF sensor fusion
+    p.ekfQxy         = 2.0f;
+    p.ekfQtheta      = 0.005f;
+    p.ekfROtosXy     = 50.0f;
+
     // OTOS calibration scalars — baked from robot config.
     // OtosSensor::begin() programs the hardware registers from these
     // values at firmware boot; no host-side OL/OA push required.
