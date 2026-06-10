@@ -82,6 +82,7 @@ void MotionCommand::start(const HardwareState& inputs, uint32_t now_ms)
     // Capture motion baseline.
     _baseline.t0Ms       = now_ms;
     _baseline.enc0Mm     = (inputs.encLMm + inputs.encRMm) * 0.5f;
+    _baseline.encDiff0Mm = inputs.encRMm - inputs.encLMm;
     _baseline.heading0Rad = inputs.poseHrad;
     _baseline.pose0X     = inputs.poseX;
     _baseline.pose0Y     = inputs.poseY;

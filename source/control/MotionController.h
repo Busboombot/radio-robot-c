@@ -104,6 +104,15 @@ public:
     void beginTurn(float headingCdeg, float epsCdeg, uint32_t now_ms,
                    TargetState& target, ReplyFn fn, void* ctx,
                    const char* corr_id = nullptr);
+
+    // RT command entry point: RELATIVE spin-in-place by relCdeg centidegrees,
+    // stopped on ENCODER ARC (ROTATION stop) — no heading odometry, no OTOS.
+    // arc = |relCdeg|/100 · π/180 · trackwidth/2; the encoder differential
+    // tracks rotation directly. A tight TIME stop bounds the spin so a frozen
+    // read can never run away. EVT "EVT done RT". Positive ⇒ CCW.
+    void beginRotation(float relCdeg, uint32_t now_ms,
+                       TargetState& target, ReplyFn fn, void* ctx,
+                       const char* corr_id = nullptr);
     void stop(uint32_t now_ms, ReplyFn fn, void* ctx);
 
     // Cancel the active MotionCommand (HARD stop) and go IDLE.

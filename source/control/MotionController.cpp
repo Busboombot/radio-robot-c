@@ -474,6 +474,60 @@ void MotionController::beginTurn(float headingCdeg, float epsCdeg, uint32_t now_
     target.mode = DriveMode::VELOCITY;
 }
 
+// ---------------------------------------------------------------------------
+// beginRotation — RELATIVE spin-in-place, stopped on ENCODER ARC.
+//
+// Unlike beginTurn (which stops on heading odometry), this stops purely on the
+// encoder differential — the geometry-verified arc for the requested angle —
+// so it does not depend on poseHrad/OTOS at all. A tight TIME stop bounds the
+// spin so a frozen encoder read can never run away.
+// ---------------------------------------------------------------------------
+void MotionController::beginRotation(float relCdeg, uint32_t now_ms,
+                                     TargetState& target, ReplyFn fn, void* ctx,
+                                     const char* corr_id)
+{
+    const float kDegToRad = 3.14159265f / 180.0f;
+    // Spin rate for RT — deliberately moderate (not yawRateMax) so the SOFT
+    // ramp-down coasts little. Coast-anticipation (kRtCoastArcMm) fires the
+    // ROTATION stop early so the ramp lands on target. Both tuned in sim.
+    const float kRtRateDps    = 100.0f;
+    const float kRtCoastArcMm = 8.0f;   // ~7.3° SOFT-ramp coast at 100°/s (sim-tuned)
+
+    float tw   = _cfg.trackwidthMm;
+    // Per-wheel arc = |deg|·(π/180)·(trackwidth/2). The ROTATION stop fires when
+    // |Δ(encR - encL)|/2 reaches (arc - coast anticipation).
+    float arc  = fabsf(relCdeg) / 100.0f * kDegToRad * (tw * 0.5f);
+    float stopArc = arc - kRtCoastArcMm;
+    if (stopArc < 0.0f) stopArc = 0.0f;
+    float rateDps = (_cfg.yawRateMax < kRtRateDps) ? _cfg.yawRateMax : kRtRateDps;
+    float omega_sign = (relCdeg >= 0.0f) ? 1.0f : -1.0f;   // + ⇒ CCW
+    float omega = omega_sign * rateDps * kDegToRad;        // rad/s
+
+    _activeCmd.configure(0.0f, omega, &_bvc);
+    _activeCmd.addStop(makeRotationStop(stopArc));         // primary: encoder arc
+
+    // Tight time bound (runaway guard): nominal spin time = arc / wheel-linear-
+    // speed (|omega|·tw/2), plus headroom for ramp + coast.
+    float wheelSpeed = fabsf(omega) * (tw * 0.5f);          // mm/s
+    float nominalMs  = (wheelSpeed > 1e-3f) ? (arc / wheelSpeed) * 1000.0f : 0.0f;
+    float timeoutMs  = 2.0f * nominalMs + 1000.0f;
+    _activeCmd.addStop(makeTimeStop(timeoutMs));
+
+    _activeCmd.setReplySink(fn, ctx, corr_id);
+    // SOFT stop: ramp ω to 0 (this is what actually halts the motors; HARD
+    // leaves _active=false so driveAdvance stops feeding the BVC and the wheels
+    // coast on). Coast-anticipation above compensates for the ramp arc.
+    _activeCmd.setStopStyle(MotionCommand::StopStyle::SOFT);
+    _activeCmd.setDoneEvt("EVT done RT");
+
+    HardwareState emptyState{};
+    const HardwareState& inputs = _hwState ? *_hwState : emptyState;
+    _activeCmd.start(inputs, now_ms);
+
+    _mode = DriveMode::VELOCITY;
+    target.mode = DriveMode::VELOCITY;
+}
+
 void MotionController::stop(uint32_t now_ms, ReplyFn fn, void* ctx)
 {
     // Cancel any active MotionCommand before calling fullStop().
@@ -605,7 +659,13 @@ void MotionController::driveAdvance(HardwareState& inputs, MotorCommands& cmds,
 
         bool still_running = _activeCmd.tick(inputs, now_ms, dt_s);
         if (!still_running) {
-            // MotionCommand terminated; go IDLE.
+            // MotionCommand terminated; the robot stops its OWN motors here.
+            // Without this the last BVC wheel target persists and the motor PID
+            // keeps driving it forever (runaway), since IDLE mode no longer
+            // advances the BVC to write fresh (zero) setpoints. _mc.stop() zeros
+            // tgtLMms/tgtRMms and resets the PID, so driving=false next tick.
+            _mc.stop();
+            _bvc.reset();
             _mode = DriveMode::IDLE;
             target.mode = DriveMode::IDLE;
             // Reset G phase so a subsequent go-to command starts clean.
@@ -1310,6 +1370,54 @@ static void handleTURN(const ArgList& args, const char* corrId,
     CommandProcessor::replyOK(rbuf, sizeof(rbuf), "turn", body, corrId, replyFn, replyCtx);
 }
 
+// ── RT (relative turn, encoder-arc stop) ───────────────────────────────────────
+
+static ParseResult parseRT(const char* const* tokens, int ntokens,
+                            const KVPair* /*kvs*/, int /*nkv*/)
+{
+    ParseResult res;
+    if (ntokens < 1) {
+        res.ok = false; res.err.code = "badarg"; res.err.detail = nullptr; return res;
+    }
+    int rel_cdeg = atoi(tokens[0]);
+    if (rel_cdeg < -180000 || rel_cdeg > 180000) {   // ±1800° relative
+        res.ok = false; res.err.code = "range"; res.err.detail = "deg"; return res;
+    }
+    res.ok = true;
+    res.args.count = 1;
+    setIntArg(res.args.args[0], rel_cdeg);
+    return res;
+}
+
+// handleRT — RELATIVE spin-in-place by rel_cdeg, stopped on encoder arc.
+// Enqueues a VW with "rot=<cdeg>" so the VW handler (loop context) calls
+// beginRotation(). Falls back to a direct call when the queue is null (sim /
+// unit test).
+static void handleRT(const ArgList& args, const char* corrId,
+                     ReplyFn replyFn, void* replyCtx, void* handlerCtx)
+{
+    MotionCtx* ctx = static_cast<MotionCtx*>(handlerCtx);
+    int rel_cdeg = args.args[0].ival;
+
+    if (ctx->queue != nullptr) {
+        ArgList vwArgs;
+        vwArgs.count = 2;
+        setIntArg(vwArgs.args[0], 0);   // v = 0 (spin in place)
+        setIntArg(vwArgs.args[1], 0);   // omega placeholder (computed by beginRotation)
+        vwArgs.count = packKVArg(vwArgs, 2, "rot", rel_cdeg);
+        pushVW(ctx, vwArgs, corrId, replyFn, replyCtx);
+    } else {
+        uint32_t now = ctx->robot->systemTime();
+        ctx->mc->beginRotation((float)rel_cdeg, now, ctx->robot->state.target,
+                               replyFn, replyCtx, corrId);
+    }
+
+    char body[32];
+    snprintf(body, sizeof(body), "rot=%d", rel_cdeg);
+    char rbuf[64];
+    CommandProcessor::replyOK(rbuf, sizeof(rbuf), "rt", body, corrId, replyFn, replyCtx);
+}
+
 // ── VW ───────────────────────────────────────────────────────────────────────
 //
 // VW — body-twist velocity command (open-ended, keepalive watchdog).
@@ -1397,6 +1505,19 @@ static void handleVW(const ArgList& args, const char* corrId,
     // ── Stop-param dispatch ─────────────────────────────────────────────────
     // Converter handlers (S, T, D, G, R, TURN) pack stop params as STR args
     // at args[2..].  Scan them here to select the appropriate begin*() call.
+
+    // Check for RT (relative rotation): "rot=<cdeg>" present.
+    if (vwHasKey(args, "rot")) {
+        int rot_cdeg = vwScanKV(args, "rot", 0);
+        ctx->mc->beginRotation((float)rot_cdeg, now,
+                               ctx->robot->state.target,
+                               replyFn, replyCtx, corrId);
+        char body[32];
+        snprintf(body, sizeof(body), "rot=%d", rot_cdeg);
+        char rbuf[64];
+        CommandProcessor::replyOK(rbuf, sizeof(rbuf), "vw", body, corrId, replyFn, replyCtx);
+        return;
+    }
 
     // Check for TURN: "h=<cdeg>" present (and no "x" key).
     if (vwHasKey(args, "h") && !vwHasKey(args, "x")) {
@@ -1652,8 +1773,9 @@ std::vector<CommandDescriptor> MotionController::getCommands() const {
         makeCmd("T",    parseT,      handleT,    ctx, "badarg"), // timed drive (ms)
         makeCmd("D",    parseD,      handleD,    ctx, "badarg"), // distance drive (mm)
         makeCmd("G",    parseG,      handleG,    ctx, "badarg"), // goto encoder position
-        makeCmd("R",    parseR,      handleR,    ctx, "badarg"), // rotate in place (deg)
-        makeCmd("TURN", parseTURN,   handleTURN, ctx, "badarg"), // arc turn (radius, deg)
+        makeCmd("R",    parseR,      handleR,    ctx, "badarg"), // arc drive: R <speed> <radius_mm> (beginArc)
+        makeCmd("TURN", parseTURN,   handleTURN, ctx, "badarg"), // spin in place to absolute heading: TURN <cdeg> [eps=] (beginTurn)
+        makeCmd("RT",   parseRT,     handleRT,   ctx, "badarg"), // relative spin by <cdeg>, encoder-arc stop (beginRotation)
         makeCmd("VW",   parseVW,     handleVW,   ctx, "badarg", ForceReply::NONE, CMD_ACCESS_HARDWARE), // velocity + angular vel (unicycle)
         makeCmd("_VW",  parse_VW,    handle_VW,  ctx, "badarg", ForceReply::NONE, CMD_ACCESS_HARDWARE), // raw velocity (no ramp): seed+set BVC immediately
         makeCmd("X",    parseX,      handleX,    ctx, "badarg", ForceReply::NONE, CMD_ACCESS_HARDWARE), // stop immediately (or "X soft" for ramp)

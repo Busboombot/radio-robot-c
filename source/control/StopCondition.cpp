@@ -193,6 +193,17 @@ bool StopCondition::evaluate(const HardwareState& s, uint32_t now_ms,
             }
             return false;
         }
+
+        case Kind::ROTATION: {
+            // `a` = target per-wheel arc (mm). For a spin the wheels move in
+            // opposite directions, so the encoder DIFFERENTIAL (encR - encL)
+            // tracks rotation while the sum (used by DISTANCE) stays ~0.
+            // Per-wheel arc = |Δdiff| / 2.  Uses raw encoder values (not
+            // filtered) — same rationale as DISTANCE: the filter can stall.
+            float diff = (s.encRMm - s.encLMm) - base.encDiff0Mm;
+            if (diff < 0.0f) diff = -diff;
+            return (diff * 0.5f) >= a;
+        }
     }
 
     // Unreachable; silence compiler warnings.

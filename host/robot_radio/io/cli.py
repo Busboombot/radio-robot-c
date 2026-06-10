@@ -1002,14 +1002,13 @@ def cmd_stop(args):
 def cmd_turn(args):
     """Turn in place by N degrees (positive = CCW/left, negative = CW/right).
 
-    Default (closed-loop): reads the current OTOS heading, converts the
-    relative angle to an absolute target, sends the firmware TURN verb, and
-    waits for EVT done TURN — no daemon or camera required.  The firmware runs
-    a MotionCommand HEADING-stop turn on the robot itself (sprint-018 firmware).
+    Sends the firmware RT command — a RELATIVE spin computed on the robot from
+    the encoder arc (arc = |deg|·π/180·trackwidth/2), stopped on the encoder
+    differential. Pure dead reckoning: no OTOS, no heading odometry, no host
+    loop. A firmware time bound guarantees it can't run away. rogo just sends
+    the angle and waits for EVT done RT.
 
-    The legacy open-loop T-command path (using rotational_slip from
-    nezha-1.json) is still available with --open-loop for callers that need
-    the old behaviour or are running pre-010 firmware.
+    The legacy open-loop T-command path is still available with --open-loop.
     """
     if getattr(args, "open_loop", False):
         cal = _load_robot_calibration()
@@ -1022,10 +1021,7 @@ def cmd_turn(args):
         conn.disconnect()
         return
 
-    # Closed-loop via firmware TURN verb (absolute-heading turn, MotionCommand
-    # HEADING stop, on-robot OTOS — no camera).  `rogo turn` takes a RELATIVE
-    # angle, so we read the current OTOS heading from a SNAP→TLM frame, convert
-    # to an absolute target heading, send TURN, and wait for EVT done TURN.
+    # ── Default: firmware RT (relative encoder-arc turn, computed on-robot) ───
     from robot_radio.robot.protocol import NezhaProtocol
 
     robot, conn, _ = _make_robot(args)
@@ -1034,48 +1030,20 @@ def cmd_turn(args):
         conn.disconnect()
         sys.exit("Error: rogo turn requires a Nezha robot with NezhaProtocol.")
 
-    # Current heading (centi-degrees) from a SNAP→TLM pose frame.
-    frame = _snap_tlm(conn)
-    if frame is None or frame.pose is None:
-        conn.disconnect()
-        sys.exit("Error: rogo turn needs OTOS pose to convert a relative turn "
-                 "to an absolute heading (SNAP returned no pose=). Is OTOS up?")
-    cur_cdeg = frame.pose[2]
-
-    # Relative request → absolute target heading, wrapped to [-18000, 18000].
-    # The firmware turns the shortest path to this absolute heading, so relative
-    # turns with |angle| > 180° collapse to their shortest equivalent.
-    target_cdeg = round(cur_cdeg + args.degrees * 100)
-    target_cdeg = ((target_cdeg + 18000) % 36000) - 18000
-
-    eps_cdeg = getattr(args, "eps_cdeg", None)
+    rel_cdeg = int(round(args.degrees * 100))
     corr = "1"
-    _log(f"turn {args.degrees:+.1f}° : heading {cur_cdeg / 100:+.1f}° -> "
-         f"TURN {target_cdeg} (abs)"
-         f"{' eps=' + str(eps_cdeg) if eps_cdeg else ''} #{corr} (closed-loop OTOS)")
-
-    proto.turn(target_cdeg, eps_cdeg=eps_cdeg, corr_id=corr)
-    outcome = proto.wait_for_evt_done("TURN", timeout_ms=20000, corr_id=corr)
-
-    # Read the achieved heading for an error report.
-    achieved_cdeg: float | None = None
-    final = _snap_tlm(conn)
-    if final is not None and final.pose is not None:
-        achieved_cdeg = final.pose[2]
+    _log(f"turn {args.degrees:+.1f}° → RT {rel_cdeg} (encoder-arc, on-robot)")
+    proto.send(f"RT {rel_cdeg} #{corr}", 400)
+    outcome = proto.wait_for_evt_done("RT", timeout_ms=20000, corr_id=corr)
     conn.disconnect()
 
     if outcome == "timeout":
-        print("WARNING: no EVT done TURN received within 20 s "
-              "(turn may not have completed)")
+        print("WARNING: no EVT done RT received within 20 s "
+              "(is the firmware new enough to have RT?)")
     elif outcome == "safety_stop":
-        print("WARNING: TURN ended in safety_stop")
+        print("WARNING: RT ended in safety_stop")
     else:
-        if achieved_cdeg is not None:
-            err_cdeg = ((target_cdeg - achieved_cdeg + 18000) % 36000) - 18000
-            print(f"done: heading={achieved_cdeg / 100:+.1f}°  "
-                  f"error={err_cdeg / 100:+.1f}°")
-        else:
-            print("done: EVT done TURN received")
+        print(f"done: turned {args.degrees:+.0f}° (RT, encoder dead-reckoning)")
 
 
 def _spin_to_world_yaw(proto, field, tag_id, target_deg, speed, tol_deg):

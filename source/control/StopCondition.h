@@ -10,6 +10,7 @@
 struct MotionBaseline {
     uint32_t t0Ms;          // system time at command start, ms
     float    enc0Mm;        // (encLMm + encRMm) * 0.5 at start, mm
+    float    encDiff0Mm;    // (encRMm - encLMm) at start, mm — for ROTATION stop
     float    heading0Rad;   // pose heading at start, rad
     float    pose0X;        // pose X at start, mm
     float    pose0Y;        // pose Y at start, mm
@@ -44,7 +45,8 @@ struct StopCondition {
     enum class Kind : uint8_t {
         NONE, TIME, DISTANCE, HEADING, POSITION, SENSOR,
         COLOR,    // fires when HSV distance from target <= ax
-        LINE_ANY  // fires when any line[0..3] satisfies threshold/cmp
+        LINE_ANY, // fires when any line[0..3] satisfies threshold/cmp
+        ROTATION  // fires when per-wheel encoder arc (from the differential) >= a
     };
     enum class Cmp  : uint8_t { GE, LE };
 
@@ -90,6 +92,16 @@ inline StopCondition makeDistanceStop(float distanceMm)
     StopCondition c;
     c.kind = StopCondition::Kind::DISTANCE;
     c.a    = distanceMm;
+    return c;
+}
+
+/** Stop when per-wheel encoder arc (|Δ(encR-encL)|/2) reaches arcMm.
+ *  Used by RT / beginRotation for spin-in-place dead reckoning. */
+inline StopCondition makeRotationStop(float arcMm)
+{
+    StopCondition c;
+    c.kind = StopCondition::Kind::ROTATION;
+    c.a    = arcMm;
     return c;
 }
 

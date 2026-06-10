@@ -533,7 +533,7 @@ static void handleHelp(const ArgList& /*args*/, const char* corrId,
     char rbuf[520];
     CommandProcessor::replyOK(rbuf, sizeof(rbuf), "help",
         "PING ECHO ID VER HELP SET GET GET VEL STREAM SNAP "
-        "S T D G R TURN VW RF X STOP GRIP ZERO "
+        "S T D G R TURN RT VW RF X STOP GRIP ZERO "
         "OI OZ OR OP OV OL OA P PA "
         "[sensor=<ch>:<op>:<thr>]",
         corrId, replyFn, replyCtx);
