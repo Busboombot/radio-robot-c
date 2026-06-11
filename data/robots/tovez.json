@@ -69,7 +69,8 @@
     "rotation_gain": 0.956,
     "rotation_offset_deg": 1.045,
     "rotation_gain_neg": 0.954,
-    "rotation_offset_deg_neg": 1.158
+    "rotation_offset_deg_neg": 1.158,
+    "ekf_r_otos_theta": 0.01
   },
   "control": {
     "vel_kp": 0.3,

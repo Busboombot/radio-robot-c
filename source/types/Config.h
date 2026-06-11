@@ -10,8 +10,9 @@ constexpr uint8_t TLM_FIELD_VEL   = (1u << 2);  // vel=vL,vR  (per-wheel mm/s, a
 constexpr uint8_t TLM_FIELD_LINE  = (1u << 3);  // line=4ch
 constexpr uint8_t TLM_FIELD_COLOR = (1u << 4);  // color=4ch
 constexpr uint8_t TLM_FIELD_TWIST = (1u << 5);  // twist=v,omega  (fused body velocity, Sprint 023)
-constexpr uint8_t TLM_FIELD_OTOS  = (1u << 6);  // otos=x,y,h  (raw OTOS pose mm/mm/cdeg, Sprint 023 bench)
-constexpr uint8_t TLM_FIELD_ALL   = 0xFFu;      // all fields (default)
+constexpr uint8_t TLM_FIELD_OTOS   = (1u << 6);  // otos=x,y,h  (raw OTOS pose mm/mm/cdeg, Sprint 023 bench)
+constexpr uint8_t TLM_FIELD_EKFREJ = (1u << 7);  // ekf_rej=<n> (cumulative EKF rejection count, Sprint 024)
+constexpr uint8_t TLM_FIELD_ALL    = 0xFFu;      // all fields (default)
 
 struct RobotConfig {
     // Motor forward-direction signs: +1 = CW is forward, -1 = CCW is forward.
@@ -91,10 +92,13 @@ struct RobotConfig {
     float ekfROtosXy;   // OTOS measurement noise: position (mm^2) — default 50.0
 
     // EKF velocity fusion parameters (sprint 023)
-    float ekfQv;        // process noise: body linear speed (mm^2/s^2) — default 50.0
-    float ekfQomega;    // process noise: yaw rate (rad^2/s^2) — default 0.01
-    float ekfROtosV;    // OTOS velocity measurement noise: body speed (mm^2/s^2) — default 200.0
-    float ekfREncV;     // encoder velocity measurement noise: body speed (mm^2/s^2) — default 100.0
+    float ekfQv;          // process noise: body linear speed (mm^2/s^2) — default 50.0
+    float ekfQomega;      // process noise: yaw rate (rad^2/s^2) — default 0.01
+    float ekfROtosV;      // OTOS velocity measurement noise: body speed (mm^2/s^2) — default 200.0
+    float ekfREncV;       // encoder velocity measurement noise: body speed (mm^2/s^2) — default 100.0
+
+    // EKF heading fusion parameters (sprint 024-004)
+    float ekfROtosTheta;  // OTOS heading measurement noise (rad^2) — default 0.01 ≈ (5.7°)²
 
     // OTOS calibration scalars and per-direction turn asymmetry (Sprint 012).
     // otosLinearScale: multiplier for OTOS linear calibration (e.g. 1.05).

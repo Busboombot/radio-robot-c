@@ -9,6 +9,8 @@ Sprint 022, Ticket T005 — original 3-state EKF mirror.
 Sprint 023, Ticket T006 — extended to 5-state (x, y, theta, v, omega);
   added TestPredictVelocity, TestUpdateVelocity, TestMahalanobisGating,
   TestSetPoseRebaseline, TestGoldenVectors, TestReplayHarness.
+Sprint 024, Ticket 004 — added update_heading(); sane P-prior in set_pose();
+  TestUpdateHeading, TestSetPosePrior, TestHeadingConvergence.
 """
 
 from __future__ import annotations
@@ -39,7 +41,7 @@ def wrap_pi(theta: float) -> float:
 # ---------------------------------------------------------------------------
 
 class EKF:
-    """Python mirror of the C++ EKF class (sprint 023, ticket T006).
+    """Python mirror of the C++ EKF class (sprint 023 T006, sprint 024 T004).
 
     State: [x_mm, y_mm, theta_rad, v_mmps, omega_rads]
     Motion model: position block = arc-segment (midpoint integration);
@@ -48,7 +50,18 @@ class EKF:
       update_position(x_otos, y_otos): 2D position, Mahalanobis gate 5.99.
       update_velocity(v_meas, omega_meas, r_v, r_omega): two scalar 1-DOF
         updates, each gated at 3.84.
+      update_heading(theta_meas, r_theta): scalar heading, Mahalanobis gate 3.84,
+        wrap-safe innovation. Sprint 024-004.
+
+    set_pose() sets a sane diagonal P-prior (sprint 024-004) instead of zeroing P.
     """
+
+    # Sane P-prior constants — must match EKF.h constexpr values exactly.
+    # (5 * pi/180)^2 = 0.007615... ≈ 0.00762 — use the same approximation as the C++.
+    _PRIOR_XY    = 100.0    # mm^2
+    _PRIOR_THETA = (5.0 * math.pi / 180.0) ** 2  # rad^2  ≈ 0.00762
+    _PRIOR_V     = 100.0    # (mm/s)^2
+    _PRIOR_OMEGA = 0.01     # (rad/s)^2
 
     def __init__(self):
         self._x = [0.0] * 5
@@ -58,6 +71,7 @@ class EKF:
         self._r_otos_v = 0.0
         self._r_enc_v = 0.0
         self._rejected = 0
+        self._rej_head_streak = 0
 
     def init(self, q_xy: float, q_theta: float, q_v: float, q_omega: float,
              r_otos_xy: float, r_otos_v: float, r_enc_v: float) -> None:
@@ -85,18 +99,30 @@ class EKF:
         self._r_otos_v = r_otos_v
         self._r_enc_v = r_enc_v
         self._rejected = 0
+        self._rej_head_streak = 0
 
         self._x = [0.0] * 5
         self._P = [[0.0] * 5 for _ in range(5)]
 
     def set_pose(self, x: float, y: float, theta: float) -> None:
-        """Overwrite state with a known pose; zero v and omega; reset covariance."""
+        """Overwrite state with a known pose; zero v and omega; set sane P-prior.
+
+        Sprint 024-004: instead of zeroing P, set a diagonal prior that reflects
+        realistic uncertainty so Mahalanobis gates are not falsely tight after a
+        pose injection. Mirrors EKF::setPose() in source/control/EKF.cpp exactly.
+        """
         self._x[0] = float(x)
         self._x[1] = float(y)
         self._x[2] = float(theta)
         self._x[3] = 0.0   # v
         self._x[4] = 0.0   # omega
+        # Zero all P, then set sane diagonal.
         self._P = [[0.0] * 5 for _ in range(5)]
+        self._P[0][0] = self._PRIOR_XY
+        self._P[1][1] = self._PRIOR_XY
+        self._P[2][2] = self._PRIOR_THETA
+        self._P[3][3] = self._PRIOR_V
+        self._P[4][4] = self._PRIOR_OMEGA
 
     def predict(self, dCenter: float, dTheta: float,
                 theta_before: float, dt_s: float = 0.0) -> None:
@@ -304,6 +330,44 @@ class EKF:
             self._rejected += 1
         # else: degenerate — skip silently
 
+    def update_heading(self, theta_meas: float, r_theta: float) -> None:
+        """Update step: fuse OTOS heading as a scalar (1-DOF) Kalman update.
+
+        Sprint 024-004. Mirrors EKF::updateHeading() in source/control/EKF.cpp.
+
+        Observation model: H = [0,0,1,0,0] (observes state index 2, theta).
+          P*H^T selects column 2 of P: (P*H^T)[i] = P[i][2].
+
+        Innovation (wrap-safe): y = wrap_pi(theta_meas - _x[2])
+        Innovation covariance:  s = P[2][2] + r_theta
+        Mahalanobis gate:       y^2 / s > 3.84 → reject (chi-square 1-DOF)
+        Kalman gain:            K[i] = P[i][2] / s
+        State update:           _x[i] += K[i] * y
+        Covariance update:      P[i][k] -= K[i] * P[2][k]
+
+        _rej_head_streak: increments on rejection, resets to 0 on acceptance.
+        """
+        y = wrap_pi(theta_meas - self._x[2])
+        s = self._P[2][2] + r_theta
+
+        if s > 1e-12 and (y * y / s) <= 3.84:
+            # Accepted.
+            self._rej_head_streak = 0
+            k = [self._P[i][2] / s for i in range(5)]
+            for i in range(5):
+                self._x[i] += k[i] * y
+            self._x[2] = wrap_pi(self._x[2])
+            p2k = [self._P[2][kk] for kk in range(5)]
+            for i in range(5):
+                for kk in range(5):
+                    self._P[i][kk] -= k[i] * p2k[kk]
+        elif s <= 1e-12:
+            # Degenerate — skip silently.
+            pass
+        else:
+            self._rejected += 1
+            self._rej_head_streak += 1
+
     # Sprint 022 backward-compat alias: update() — no Mahalanobis gate.
     # The sprint-022 EKF had no gate; this alias preserves that behavior so
     # existing sprint-022 test classes continue to pass without modification.
@@ -405,6 +469,10 @@ class EKF:
     @property
     def rejected_count(self) -> int:
         return self._rejected
+
+    @property
+    def rej_head_streak(self) -> int:
+        return self._rej_head_streak
 
 
 # ---------------------------------------------------------------------------
@@ -722,19 +790,38 @@ class TestSetPose:
         e.set_pose(100.0, 200.0, 0.5)
         assert e.theta == pytest.approx(0.5, abs=1e-9)
 
-    def test_set_pose_zeros_covariance(self):
-        """After set_pose(), all P entries are zero."""
+    def test_set_pose_sets_sane_prior(self):
+        """After set_pose(), P has the sane diagonal prior (sprint 024-004).
+
+        Old behaviour (before sprint 024): P was zeroed, creating falsely tight
+        Mahalanobis gates after pose injection.  New behaviour: set a modest
+        diagonal that reflects real uncertainty so re-acquisition is not strangled.
+        Off-diagonal entries remain zero.
+        """
         e = _make_ekf_default()
         # Build up some covariance first
         for _ in range(5):
             e.predict(10.0, 0.1, 0.0)
         # Now reset
         e.set_pose(0.0, 0.0, 0.0)
+        # Diagonal must match the sane prior constants.
+        assert e._P[0][0] == pytest.approx(EKF._PRIOR_XY,    abs=1e-9), \
+            f"P[0][0] should be {EKF._PRIOR_XY}, got {e._P[0][0]}"
+        assert e._P[1][1] == pytest.approx(EKF._PRIOR_XY,    abs=1e-9), \
+            f"P[1][1] should be {EKF._PRIOR_XY}, got {e._P[1][1]}"
+        assert e._P[2][2] == pytest.approx(EKF._PRIOR_THETA, rel=1e-5), \
+            f"P[2][2] should be ~{EKF._PRIOR_THETA:.6f}, got {e._P[2][2]}"
+        assert e._P[3][3] == pytest.approx(EKF._PRIOR_V,     abs=1e-9), \
+            f"P[3][3] should be {EKF._PRIOR_V}, got {e._P[3][3]}"
+        assert e._P[4][4] == pytest.approx(EKF._PRIOR_OMEGA, abs=1e-9), \
+            f"P[4][4] should be {EKF._PRIOR_OMEGA}, got {e._P[4][4]}"
+        # Off-diagonal entries must be zero.
         for i in range(5):
             for j in range(5):
-                assert e._P[i][j] == pytest.approx(0.0, abs=1e-12), (
-                    f"P[{i}][{j}] = {e._P[i][j]} is not zero after set_pose"
-                )
+                if i != j:
+                    assert e._P[i][j] == pytest.approx(0.0, abs=1e-12), (
+                        f"P[{i}][{j}] = {e._P[i][j]} should be zero (off-diagonal)"
+                    )
 
     def test_predict_after_set_pose_advances_from_new_pose(self):
         """Predict after set_pose(100, 0, 0) with dCenter=50 → x≈150."""
@@ -1173,3 +1260,242 @@ class TestReplayHarness:
         # They may start the same but after OTOS updates should differ.
         differs = any(abs(a - b) > 1e-6 for a, b in zip(xs_enc, xs_otos))
         assert differs, "encoder-only and +OTOS-position trajectories should differ"
+
+
+# ---------------------------------------------------------------------------
+# TestSetPosePrior — set_pose() sets sane diagonal P-prior (sprint 024-004)
+# ---------------------------------------------------------------------------
+
+class TestSetPosePrior:
+    """set_pose() initialises a sane diagonal P-prior, not a zero matrix."""
+
+    def test_p00_equals_prior_xy(self):
+        """P[0][0] = PRIOR_XY (100 mm^2) after set_pose."""
+        e = _make_ekf_default()
+        e.set_pose(0.0, 0.0, 0.0)
+        assert e._P[0][0] == pytest.approx(EKF._PRIOR_XY, abs=1e-9)
+
+    def test_p11_equals_prior_xy(self):
+        """P[1][1] = PRIOR_XY (100 mm^2) after set_pose."""
+        e = _make_ekf_default()
+        e.set_pose(0.0, 0.0, 0.0)
+        assert e._P[1][1] == pytest.approx(EKF._PRIOR_XY, abs=1e-9)
+
+    def test_p22_equals_prior_theta(self):
+        """P[2][2] ≈ (5°)^2 after set_pose."""
+        e = _make_ekf_default()
+        e.set_pose(0.0, 0.0, 0.0)
+        expected = (5.0 * math.pi / 180.0) ** 2
+        assert e._P[2][2] == pytest.approx(expected, rel=1e-5)
+
+    def test_p33_equals_prior_v(self):
+        """P[3][3] = PRIOR_V after set_pose."""
+        e = _make_ekf_default()
+        e.set_pose(0.0, 0.0, 0.0)
+        assert e._P[3][3] == pytest.approx(EKF._PRIOR_V, abs=1e-9)
+
+    def test_p44_equals_prior_omega(self):
+        """P[4][4] = PRIOR_OMEGA after set_pose."""
+        e = _make_ekf_default()
+        e.set_pose(0.0, 0.0, 0.0)
+        assert e._P[4][4] == pytest.approx(EKF._PRIOR_OMEGA, abs=1e-9)
+
+    def test_off_diagonal_zero(self):
+        """All off-diagonal entries of P are zero after set_pose."""
+        e = _make_ekf_default()
+        # Build up covariance, then reset.
+        for _ in range(5):
+            e.predict(10.0, 0.1, 0.0)
+        e.set_pose(10.0, 20.0, 0.3)
+        for i in range(5):
+            for j in range(5):
+                if i != j:
+                    assert e._P[i][j] == pytest.approx(0.0, abs=1e-12), (
+                        f"Off-diagonal P[{i}][{j}] = {e._P[i][j]} should be zero"
+                    )
+
+    def test_prior_theta_approx_5deg_squared(self):
+        """P[2][2] prior is approximately (5 degrees)^2 in radians^2."""
+        e = _make_ekf_default()
+        e.set_pose(0.0, 0.0, 0.0)
+        five_deg_rad = 5.0 * math.pi / 180.0
+        assert e._P[2][2] == pytest.approx(five_deg_rad ** 2, rel=1e-4)
+
+
+# ---------------------------------------------------------------------------
+# TestUpdateHeading — heading fusion closes the loop on OTOS heading (sprint 024-004)
+# ---------------------------------------------------------------------------
+
+class TestUpdateHeading:
+    """update_heading() fuses heading measurement; state moves; P narrows."""
+
+    def _make_ekf_with_heading_cov(self, heading_state: float = 0.0) -> EKF:
+        """EKF with nonzero P[2][2] so update_heading() produces a visible effect.
+
+        Build P[2][2] via predicts (each adds Q_THETA = 0.01).
+        After 100 predicts: P[2][2] = 1.0.  With r_theta=0.1:
+          s = 1.0 + 0.1 = 1.1; for small innovations, gate passes.
+        """
+        e = _make_ekf_default()
+        for _ in range(100):
+            e.predict(0.0, 0.0, 0.0)  # pure covariance growth, P[2][2] → 1.0
+        e._x[2] = heading_state
+        return e
+
+    def test_heading_state_moves_toward_measurement(self):
+        """EKF at theta=0.5, OTOS at theta=0.0: after update, theta < 0.5."""
+        e = self._make_ekf_with_heading_cov(heading_state=0.5)
+        theta_before = e.theta
+        e.update_heading(0.0, 0.1)
+        assert e.theta < theta_before, \
+            f"theta={e.theta} should have moved toward 0.0 from {theta_before}"
+
+    def test_p22_decreases_after_update(self):
+        """P[2][2] is smaller after update_heading (uncertainty reduced)."""
+        e = self._make_ekf_with_heading_cov(heading_state=0.0)
+        p22_before = e._P[2][2]
+        e.update_heading(0.0, 0.1)
+        assert e._P[2][2] < p22_before, \
+            f"P[2][2] should decrease: before={p22_before}, after={e._P[2][2]}"
+
+    def test_wrap_safe_innovation_negative_pi_boundary(self):
+        """Innovation wraps correctly across the -pi boundary.
+
+        State theta near -pi+0.1, measurement near +pi-0.1.
+        Without wrap: innovation ≈ 2*pi - 0.2 (huge, rejected).
+        With wrap:    innovation ≈ -0.2 rad (small, accepted).
+        """
+        e = self._make_ekf_with_heading_cov(heading_state=-(math.pi - 0.1))
+        r_theta = 0.1
+        meas = math.pi - 0.1
+        # Naive (unwrapped) innovation = meas - state ≈ 2*pi - 0.2 → large → rejected
+        # Wrapped innovation = wrap_pi(meas - state) ≈ -0.2 → small → accepted
+        wrapped_innov = wrap_pi(meas - e.theta)
+        assert abs(wrapped_innov) < 0.5, \
+            f"wrapped innovation {wrapped_innov:.3f} should be small (~-0.2)"
+        theta_before = e.theta
+        e.update_heading(meas, r_theta)
+        # Should be accepted (state should change)
+        assert e.theta != pytest.approx(theta_before, abs=1e-9), \
+            "update_heading should have been accepted (state should change)"
+
+    def test_large_innovation_rejected_and_streak_increments(self):
+        """Huge heading outlier is rejected; streak counter increments."""
+        e = self._make_ekf_with_heading_cov(heading_state=0.0)
+        # After 100 predicts: P[2][2] = 100 * Q_THETA = 100 * 0.01 = 1.0.
+        # s = P[2][2] + r_theta = 1.0 + 0.001 = 1.001.
+        # Innovation = wrap_pi(3.0 - 0.0) = 3.0 (within (-pi,pi]).
+        # d2 = 3.0^2 / 1.001 = 8.99 > 3.84 → should be rejected.
+        r_tiny = 0.001
+        streak_before = e.rej_head_streak
+        rejected_before = e.rejected_count
+        theta_before = e.theta
+        P_before = [e._P[i][:] for i in range(5)]
+        e.update_heading(3.0, r_tiny)  # innovation = 3.0 > sqrt(3.84 * 1.001) ≈ 1.96
+        assert e.rejected_count == rejected_before + 1, "rejection count should increment"
+        assert e.rej_head_streak == streak_before + 1, "streak should increment"
+        assert e.theta == pytest.approx(theta_before, abs=1e-12), "state unchanged on reject"
+        for i in range(5):
+            assert e._P[i] == pytest.approx(P_before[i], abs=1e-12), \
+                f"P[{i}] should be unchanged on rejection"
+
+    def test_accepted_resets_streak(self):
+        """A rejection followed by an acceptance resets the streak to 0."""
+        e = self._make_ekf_with_heading_cov(heading_state=0.0)
+        # First: force a rejection (huge innovation, tiny R).
+        e.update_heading(3.0, 0.001)
+        assert e.rej_head_streak >= 1, "streak should be >= 1 after rejection"
+        # Now: small innovation → accepted.
+        e.update_heading(0.0, 0.1)
+        assert e.rej_head_streak == 0, "streak should reset to 0 on acceptance"
+
+    def test_block_decoupled_x_y_unchanged_for_zero_cross_terms(self):
+        """After a straight predict, P[2][0]=P[2][1]=0: x and y unchanged by update_heading."""
+        e = _make_ekf_default()
+        # After init: P=0 for all. After one straight predict: P[2][0]=P[2][1]=0
+        # (because a=-dCenter*sin(0)=0, b=dCenter*cos(0), only P[0][0] grows).
+        e.predict(100.0, 0.0, 0.0)
+        x_before = e.x
+        y_before = e.y
+        # Manually ensure P[2][2] is nonzero so the update does something.
+        e._P[2][2] = 0.1
+        e.update_heading(0.5, 0.1)
+        # K[0] = P[0][2] / s = 0 / s = 0; K[1] = P[1][2] / s = 0 → x, y unchanged.
+        assert e.x == pytest.approx(x_before, abs=1e-9), "x should not change"
+        assert e.y == pytest.approx(y_before, abs=1e-9), "y should not change"
+
+
+# ---------------------------------------------------------------------------
+# TestHeadingConvergence — heading fusion closes the gap where drift occurs
+#   (field-profile: heading diverges on turns without OTOS correction)
+# ---------------------------------------------------------------------------
+
+class TestHeadingConvergence:
+    """Heading fusion: with OTOS corrections, heading stays near truth."""
+
+    def test_heading_tracks_otos_truth_over_turns(self):
+        """After N turns with OTOS heading corrections, fused heading stays within ~2° of truth.
+
+        Scenario: simulate a 90° turn in 18 predict steps (5° per step), with a
+        small encoder bias of +5% (so encoder ends at ~94.5°, truth at 90°).
+        OTOS fires once per turn at the truth heading.  After the correction, the
+        fused heading should be within ~2° of truth.
+
+        The key invariant: with OTOS heading fusion active, cumulative heading drift
+        is bounded; without fusion it accumulates monotonically.
+        """
+        r_theta = 0.01   # matches firmware default ekfROtosTheta
+
+        def simulate_turn_with_correction(truth_deg: float, encoder_bias: float = 1.05):
+            """Run a 90° turn (in 18 x 5° steps) with encoder bias, then correct once."""
+            e = _make_ekf_default()
+            # Start with steady-state covariance (enough predicts so P isn't degenerate).
+            for _ in range(50):
+                e.predict(0.0, 0.0, 0.0)
+
+            # Execute turn: 18 steps of 5° each, encoder reads 5%*encoder_bias each.
+            step_truth_rad  = math.radians(truth_deg / 18.0)
+            step_encoder_rad = step_truth_rad * encoder_bias
+            for _ in range(18):
+                e.predict(0.0, step_encoder_rad, e.theta)
+
+            # Single OTOS heading correction at truth.
+            truth_h = math.radians(truth_deg)
+            e.update_heading(truth_h, r_theta)
+
+            err_deg = abs(wrap_pi(e.theta - truth_h)) * 180.0 / math.pi
+            return err_deg
+
+        # Test for 90° turn with 5% encoder bias.
+        err = simulate_turn_with_correction(90.0, encoder_bias=1.05)
+        assert err < 2.0, (
+            f"Heading error {err:.2f}° > 2.0° after OTOS correction on 90° turn"
+        )
+
+    def test_uncorrected_heading_diverges_per_turn(self):
+        """Without OTOS corrections, accumulated encoder error grows each turn.
+
+        Verifies that the error is real and that correction (TestHeadingConvergence
+        above) is the actual fix, not just a lucky coincidence.
+        """
+        r_theta = 0.01
+        encoder_error_per_turn = 0.175  # ~10° per turn
+
+        e = _make_ekf_default()
+        for _ in range(20):
+            e.predict(0.0, 0.0, 0.0)
+
+        # 4 turns with NO OTOS correction.
+        total_encoder_error = 0.0
+        truth_h = 0.0
+        for _ in range(4):
+            truth_h += math.pi / 2
+            total_encoder_error += encoder_error_per_turn
+            e.predict(0.0, encoder_error_per_turn, e.theta)
+            # No update_heading call!
+
+        final_err_deg = abs(wrap_pi(e.theta - truth_h)) * 180.0 / math.pi
+        # Without correction, error should be large (4 * 10° = 40°).
+        assert final_err_deg > 10.0, (
+            f"Expected large heading error without correction; got {final_err_deg:.2f}°"
+        )

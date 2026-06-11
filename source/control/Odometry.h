@@ -87,28 +87,32 @@ public:
     // EKF initialisation — set process and measurement noise parameters.
     // Must be called once at startup (e.g. from Robot constructor) before
     // predict() or correctEKF() are called.
-    //   q_xy       — process noise variance for x and y (mm^2)
-    //   q_theta    — process noise variance for heading (rad^2)
-    //   q_v        — process noise variance for linear velocity (mm/s)^2
-    //   q_omega    — process noise variance for angular velocity (rad/s)^2
-    //   r_otos_xy  — OTOS position measurement noise variance (mm^2)
-    //   r_otos_v   — OTOS velocity measurement noise variance ((mm/s)^2)
-    //   r_enc_v    — encoder velocity measurement noise variance ((mm/s)^2)
+    //   q_xy         — process noise variance for x and y (mm^2)
+    //   q_theta      — process noise variance for heading (rad^2)
+    //   q_v          — process noise variance for linear velocity (mm/s)^2
+    //   q_omega      — process noise variance for angular velocity (rad/s)^2
+    //   r_otos_xy    — OTOS position measurement noise variance (mm^2)
+    //   r_otos_v     — OTOS velocity measurement noise variance ((mm/s)^2)
+    //   r_enc_v      — encoder velocity measurement noise variance ((mm/s)^2)
+    //   r_otos_theta — OTOS heading measurement noise variance (rad^2)
     void initEKF(float q_xy, float q_theta, float q_v, float q_omega,
-                 float r_otos_xy, float r_otos_v, float r_enc_v);
+                 float r_otos_xy, float r_otos_v, float r_enc_v,
+                 float r_otos_theta);
 
-    // EKF correction — fuse OTOS position and velocity measurements, plus
-    // encoder-derived velocity, into the 5-state EKF.
-    // Calls _ekf.updatePosition(), then _ekf.updateVelocity() for OTOS vel,
-    // then _ekf.updateVelocity() for encoder vel. All three channels apply
-    // Mahalanobis gating internally. Writes all EKF outputs back to s.
+    // EKF correction — fuse OTOS position, heading, and velocity measurements,
+    // plus encoder-derived velocity, into the 5-state EKF.
+    // Call order: updatePosition → updateHeading → updateVelocity(OTOS) →
+    //             updateVelocity(enc). All channels apply Mahalanobis gating
+    // internally. Writes all EKF outputs back to s.
     //   x_otos, y_otos         — OTOS position observation (mm)
+    //   theta_otos_rad         — OTOS heading observation (rad) — sprint 024-004
     //   v_otos_mmps            — OTOS body-frame linear velocity (mm/s)
     //   omega_otos_rads        — OTOS angular velocity (rad/s)
     //   v_enc_mmps             — encoder-derived linear velocity (mm/s)
     //   omega_enc_rads         — encoder-derived angular velocity (rad/s)
     void correctEKF(HardwareState& s,
                     float x_otos, float y_otos,
+                    float theta_otos_rad,
                     float v_otos_mmps, float omega_otos_rads,
                     float v_enc_mmps, float omega_enc_rads);
 
@@ -190,11 +194,12 @@ private:
     // uint32_t but delta is cast to int32_t before arithmetic to avoid underflow.
     uint32_t _lastPredictMs;  // timestamp of last predict() call (0 = not yet called)
 
-    // Velocity noise params stored from initEKF() — passed to updateVelocity().
+    // Noise params stored from initEKF() — passed to update*() methods.
     // Using _rOtosV for both v and omega of OTOS source (symmetric simplification),
     // and _rEncV for both v and omega of encoder source.
-    float _rOtosV;  // OTOS velocity measurement noise variance ((mm/s)^2)
-    float _rEncV;   // encoder velocity measurement noise variance ((mm/s)^2)
+    float _rOtosV;     // OTOS velocity measurement noise variance ((mm/s)^2)
+    float _rEncV;      // encoder velocity measurement noise variance ((mm/s)^2)
+    float _rOtosTheta; // OTOS heading measurement noise variance (rad^2) — sprint 024-004
 
     // Encoder-derived velocity from the most recent predict() call.
     // Set to 0 until the first valid predict() tick (dt > 0).

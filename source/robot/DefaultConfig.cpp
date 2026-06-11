@@ -55,6 +55,9 @@ RobotConfig defaultRobotConfig() {
     p.ekfROtosV      = 200.0f;
     p.ekfREncV       = 100.0f;
 
+    // EKF heading fusion (Sprint 024-004)
+    p.ekfROtosTheta  = 0.01f;  // ~(5.7 deg)^2
+
     // OTOS calibration scalars — baked from robot config.
     // OtosSensor::begin() programs the hardware registers from these
     // values at firmware boot; no host-side OL/OA push required.

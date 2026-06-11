@@ -70,7 +70,8 @@ Robot::Robot(Hardware& h, const RobotConfig& cfg)
     odometry.setCtx(&otos, &state.inputs);
     odometry.initEKF(config.ekfQxy, config.ekfQtheta,
                      config.ekfQv, config.ekfQomega,
-                     config.ekfROtosXy, config.ekfROtosV, config.ekfREncV);
+                     config.ekfROtosXy, config.ekfROtosV, config.ekfREncV,
+                     config.ekfROtosTheta);
 }
 
 // ---------------------------------------------------------------------------
@@ -197,6 +198,7 @@ void Robot::otosCorrect(uint32_t now_ms)
     float enc_omega = odometry.lastEncOmega();
 
     odometry.correctEKF(state.inputs, p.x, p.y,
+                        p.h,
                         vel.v_mmps, vel.omega_rads,
                         enc_v, enc_omega);
 }
