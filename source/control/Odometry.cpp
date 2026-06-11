@@ -10,6 +10,7 @@ Odometry::Odometry()
     , _otosRejected(0)
     , _lastPredictMs(0)
     , _rOtosV(0.0f), _rEncV(0.0f)
+    , _lastEncV(0.0f), _lastEncOmega(0.0f)
     , _odomCtx{this, nullptr}
 {
 }
@@ -47,6 +48,15 @@ void Odometry::predict(HardwareState& s, float trackwidthMm, uint32_t now_ms)
     s.poseX    += dCenter * cosf(thetaMid);
     s.poseY    += dCenter * sinf(thetaMid);
     s.poseHrad  = wrapPi(s.poseHrad + dTheta);
+
+    // Compute encoder-rate velocity for this tick.
+    // Guard against dt_s == 0 (first tick or duplicate timestamp): skip velocity
+    // computation and retain previous value (which is 0 on the very first tick).
+    if (dt_s > 0.0f) {
+        _lastEncV     = dCenter / dt_s;        // body linear speed (mm/s)
+        _lastEncOmega = dTheta  / dt_s;        // yaw rate (rad/s)
+    }
+    // else: retain previous _lastEncV/_lastEncOmega (0 on first tick)
 
     // EKF predict — propagate state and covariance using encoder-derived arc segment.
     _ekf.predict(dCenter, dTheta, theta_before, dt_s);

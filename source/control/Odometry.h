@@ -166,6 +166,18 @@ public:
     // ---------------------------------------------------------------------------
     void update(HardwareState& s, float dL_mm, float dR_mm, float trackwidthMm);
 
+    // Encoder-rate velocity from the most recent predict() call.
+    // Stored so correctEKF() (called from otosCorrect()) can pass them to the
+    // EKF velocity update channels without changing the cooperative loop's
+    // call signature.  Zero-initialised; updated each predict() tick.
+    //
+    // Design choice: store on Odometry rather than pass through the loop caller
+    // because predict() and otosCorrect() run on different loop phases (enOdom
+    // vs enOtos), so threading enc_v through the caller would require storing
+    // them in HardwareState or Robot anyway — no fewer coupling points.
+    float lastEncV()     const { return _lastEncV; }     // body linear speed, mm/s
+    float lastEncOmega() const { return _lastEncOmega; } // yaw rate, rad/s
+
 private:
     // Intermediate compute state: previous encoder snapshot (not in HardwareState
     // because Odometry runs at a different cadence than the control task).
@@ -183,6 +195,11 @@ private:
     // and _rEncV for both v and omega of encoder source.
     float _rOtosV;  // OTOS velocity measurement noise variance ((mm/s)^2)
     float _rEncV;   // encoder velocity measurement noise variance ((mm/s)^2)
+
+    // Encoder-derived velocity from the most recent predict() call.
+    // Set to 0 until the first valid predict() tick (dt > 0).
+    float _lastEncV;     // body linear speed (mm/s)
+    float _lastEncOmega; // yaw rate (rad/s)
 
     EKF _ekf;              // Extended Kalman Filter — fuses encoder odometry with OTOS
 

@@ -45,12 +45,14 @@ class TLMFrame:
     ``t`` is the robot clock in milliseconds at sensor-sample time.
     ``pose`` heading is in centi-degrees (integer), positions in mm.
     ``vel`` is per-wheel measured speed in mm/s (chip-preferred, encoder fallback).
+    ``twist`` is fused body-frame velocity: (v_mmps, omega_mradps) as integers.
     """
     t: int | None = None
     mode: str | None = None
     enc: tuple[int, int] | None = None          # (left_mm, right_mm)
     pose: tuple[int, int, int] | None = None    # (x_mm, y_mm, heading_cdeg)
     vel: tuple[int, int] | None = None          # (vL_mmps, vR_mmps) — per-wheel mm/s
+    twist: tuple[int, int] | None = None        # (v_mmps, omega_mradps) — fused body velocity
     line: tuple[int, int, int, int] | None = None   # (g1, g2, g3, g4)
     color: tuple[int, int, int, int] | None = None  # (r, g, b, c)
 
@@ -161,6 +163,14 @@ def parse_tlm(line: str) -> TLMFrame | None:
             parts = kv["vel"].split(",")
             if len(parts) == 2:
                 frame.vel = (int(parts[0]), int(parts[1]))
+        except ValueError:
+            pass
+
+    if "twist" in kv:
+        try:
+            parts = kv["twist"].split(",")
+            if len(parts) == 2:
+                frame.twist = (int(parts[0]), int(parts[1]))
         except ValueError:
             pass
 

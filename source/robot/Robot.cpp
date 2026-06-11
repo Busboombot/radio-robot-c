@@ -161,10 +161,19 @@ void Robot::controlCollectSplitPhase(uint32_t now_ms, int /*pendingWheel*/)
 }
 
 // ---------------------------------------------------------------------------
-// otosCorrect — EKF Kalman update from OTOS position (sprint 022).
-// Replaces the fixed-alpha complementary blend (odometry.correct()) with
-// the EKF correction path. OTOS heading is still stored for telemetry but
-// is not fused (heading-only EKF channel is out of scope for this sprint).
+// otosCorrect — EKF Kalman update from OTOS position and velocity (sprint 023).
+//
+// Reads OTOS position, velocity, and acceleration.  Passes position + velocity
+// to correctEKF() for EKF fusion.  Stores acceleration in HardwareState for
+// host telemetry via RobotState.
+//
+// Encoder-rate velocity (enc_v, enc_omega) is retrieved from the most recent
+// predict() call via Odometry::lastEncV()/lastEncOmega().  Design choice:
+// these are stored on Odometry rather than threaded through the cooperative
+// loop caller because predict() and otosCorrect() run on different loop phases
+// (enOdom vs enOtos), so passing them through the caller would require
+// HardwareState fields or Robot members anyway — no fewer coupling points.
+// Storing them on Odometry keeps the call sites unchanged.
 // ---------------------------------------------------------------------------
 
 void Robot::otosCorrect(uint32_t now_ms)
@@ -176,9 +185,20 @@ void Robot::otosCorrect(uint32_t now_ms)
     state.inputs.otosH = p.h;
     state.inputs.otos.lastUpdMs = now_ms;
     state.inputs.otos.valid     = true;
-    // T003: extended correctEKF signature — velocity args wired in T004.
-    // Passing zeros for OTOS and encoder velocity until T004 reads them.
-    odometry.correctEKF(state.inputs, p.x, p.y, 0.0f, 0.0f, 0.0f, 0.0f);
+
+    // Read OTOS velocity and acceleration; store acceleration for telemetry.
+    OtosVelocity vel = otos.readVelocityTransformed(config);
+    OtosAccel    acc = otos.readAccelTransformed(config);
+    state.inputs.otosAccelX = acc.ax_mmps2;
+    state.inputs.otosAccelY = acc.ay_mmps2;
+
+    // Retrieve encoder-rate velocity from the most recent predict() tick.
+    float enc_v     = odometry.lastEncV();
+    float enc_omega = odometry.lastEncOmega();
+
+    odometry.correctEKF(state.inputs, p.x, p.y,
+                        vel.v_mmps, vel.omega_rads,
+                        enc_v, enc_omega);
 }
 
 // ---------------------------------------------------------------------------
@@ -268,6 +288,7 @@ int Robot::buildTlmFrame(char* buf, int len)
     bool haveVel = (config.tlmFields & TLM_FIELD_VEL) != 0;
     float velL = haveVel ? state.inputs.velLMms : 0.0f;
     float velR = haveVel ? state.inputs.velRMms : 0.0f;
+    bool haveTwist = (config.tlmFields & TLM_FIELD_TWIST) != 0;
 
     char modeChar = 'I';
     switch (motionController.mode()) {
@@ -294,6 +315,15 @@ int Robot::buildTlmFrame(char* buf, int len)
     }
     if (haveVel) {
         n = snprintf(buf + pos, (size_t)rem, " vel=%d,%d", (int)velL, (int)velR);
+        if (n > 0 && n < rem) { pos += n; rem -= n; }
+    }
+    if (haveTwist) {
+        // fusedV is body linear speed in mm/s (integer).
+        // fusedOmega is yaw rate in rad/s; convert to mrad/s (integer) matching
+        // the omega_mrads convention used by VW command and NezhaProtocol.vw().
+        n = snprintf(buf + pos, (size_t)rem, " twist=%d,%d",
+                     (int)state.inputs.fusedV,
+                     (int)(state.inputs.fusedOmega * 1000.0f));
         if (n > 0 && n < rem) { pos += n; rem -= n; }
     }
     if (haveLine) {
@@ -709,6 +739,7 @@ static void handleStream(const ArgList& args, const char* corrId,
                     if (strcmp(fbuf, "vel")   == 0) mask |= TLM_FIELD_VEL;
                     if (strcmp(fbuf, "line")  == 0) mask |= TLM_FIELD_LINE;
                     if (strcmp(fbuf, "color") == 0) mask |= TLM_FIELD_COLOR;
+                    if (strcmp(fbuf, "twist") == 0) mask |= TLM_FIELD_TWIST;
                     flen = 0;
                     if (*c == '\0') break;
                 }
@@ -725,11 +756,12 @@ static void handleStream(const ArgList& args, const char* corrId,
                 { TLM_FIELD_VEL,   "vel"   },
                 { TLM_FIELD_LINE,  "line"  },
                 { TLM_FIELD_COLOR, "color" },
+                { TLM_FIELD_TWIST, "twist" },
             };
             int brem = (int)sizeof(body);
             int bw = snprintf(body + bpos, (size_t)brem, "fields=");
             if (bw > 0 && bw < brem) { bpos += bw; brem -= bw; }
-            for (int fi = 0; fi < 5 && brem > 1; ++fi) {
+            for (int fi = 0; fi < 6 && brem > 1; ++fi) {
                 if (robot->config.tlmFields & kFieldNames[fi].bit) {
                     if (needComma) { body[bpos++] = ','; --brem; }
                     bw = snprintf(body + bpos, (size_t)brem, "%s", kFieldNames[fi].name);

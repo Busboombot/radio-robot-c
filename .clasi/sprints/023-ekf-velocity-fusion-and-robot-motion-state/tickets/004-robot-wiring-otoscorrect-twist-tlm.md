@@ -1,7 +1,7 @@
 ---
 id: '004'
 title: Robot wiring (otosCorrect velocity read + twist TLM field)
-status: open
+status: done
 use-cases:
 - SUC-001
 - SUC-002
@@ -27,7 +27,7 @@ This is pure wiring in `Robot.cpp` — no new algorithms.
 ## Acceptance Criteria
 
 **`Robot::Robot()` constructor (SUC-001):**
-- [ ] `odometry.initEKF(...)` call updated to pass all seven params:
+- [x] `odometry.initEKF(...)` call updated to pass all seven params:
   ```cpp
   odometry.initEKF(config.ekfQxy, config.ekfQtheta,
                    config.ekfQv, config.ekfQomega,
@@ -35,27 +35,27 @@ This is pure wiring in `Robot.cpp` — no new algorithms.
   ```
 
 **`Robot::otosCorrect()` (SUC-002, SUC-003):**
-- [ ] After reading position via `otos.readTransformed(config)`, also call
+- [x] After reading position via `otos.readTransformed(config)`, also call
   `OtosVelocity vel = otos.readVelocityTransformed(config)` and
   `OtosAccel acc = otos.readAccelTransformed(config)`.
-- [ ] `state.inputs.otosAccelX = acc.ax_mmps2` and
+- [x] `state.inputs.otosAccelX = acc.ax_mmps2` and
   `state.inputs.otosAccelY = acc.ay_mmps2` stored.
-- [ ] `odometry.correctEKF(state.inputs, p.x, p.y, vel.v_mmps, vel.omega_rads, enc_v, enc_omega)` called.
+- [x] `odometry.correctEKF(state.inputs, p.x, p.y, vel.v_mmps, vel.omega_rads, enc_v, enc_omega)` called.
   `enc_v` and `enc_omega` are the encoder-rate values computed by the most recent
   `predict()` call. The cleanest approach: store the last predict's `enc_v`/`enc_omega`
   as private members on `Robot` (or `Odometry`) so `otosCorrect()` can retrieve
   them. Alternative: pass them as parameters from the cooperative loop that calls
   both `predict()` and `otosCorrect()`. Choose the approach that requires the
   fewest new cross-method coupling points. Document the choice.
-- [ ] `otos.readVelocityTransformed()` and `readAccelTransformed()` calls are
+- [x] `otos.readVelocityTransformed()` and `readAccelTransformed()` calls are
   guarded by `otos.is_initialized()` (same guard as existing position read).
 
 **`Robot::buildTlmFrame()` (SUC-006):**
-- [ ] New `TLM_FIELD_TWIST` check:
+- [x] New `TLM_FIELD_TWIST` check:
   ```cpp
   bool haveTwist = (config.tlmFields & TLM_FIELD_TWIST) != 0;
   ```
-- [ ] When `haveTwist`, emit:
+- [x] When `haveTwist`, emit:
   ```cpp
   n = snprintf(buf + pos, (size_t)rem, " twist=%d,%d",
                (int)state.inputs.fusedV,
@@ -63,19 +63,19 @@ This is pure wiring in `Robot.cpp` — no new algorithms.
   ```
   `fusedV` is integer mm/s; `fusedOmega` is converted to integer mrad/s (matching
   the `omega_mrads` convention used by the existing `VW` command and `NezhaProtocol.vw()`).
-- [ ] The `twist=` field is emitted after `vel=` (if present) and before `line=`,
+- [x] The `twist=` field is emitted after `vel=` (if present) and before `line=`,
   following the existing field ordering.
 
 **`STREAM fields=` parser (SUC-006):**
-- [ ] The `STREAM fields=...` token parser in `Robot.cpp` recognises `"twist"` and
+- [x] The `STREAM fields=...` token parser in `Robot.cpp` recognises `"twist"` and
   sets `TLM_FIELD_TWIST` in the mask.
-- [ ] The `STREAM fields=...` dump loop (that prints active fields) includes
+- [x] The `STREAM fields=...` dump loop (that prints active fields) includes
   `{ TLM_FIELD_TWIST, "twist" }` in its table.
 
 **Build and test:**
-- [ ] `python3 build.py` passes cleanly.
-- [ ] `uv run --with pytest python -m pytest -v` passes.
-- [ ] The cooperative loop caller of `predict()` (the control fiber in Robot.cpp)
+- [x] `python3 build.py` passes cleanly.
+- [x] `uv run --with pytest python -m pytest -v` passes.
+- [x] The cooperative loop caller of `predict()` (the control fiber in Robot.cpp)
   is updated to pass `now_ms` as the new argument.
 
 ## Implementation Plan
