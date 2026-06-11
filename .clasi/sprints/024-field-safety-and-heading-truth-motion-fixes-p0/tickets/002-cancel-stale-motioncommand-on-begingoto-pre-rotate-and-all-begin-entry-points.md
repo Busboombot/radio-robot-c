@@ -1,12 +1,12 @@
 ---
 id: '002'
 title: Cancel stale MotionCommand on beginGoTo PRE_ROTATE and all begin* entry points
-status: open
+status: done
 use-cases:
-  - SUC-001
-  - SUC-002
+- SUC-001
+- SUC-002
 depends-on:
-  - '001'
+- '001'
 github-issue: ''
 issue: d07-motioncommand-ownership-in-pre-rotate.md
 completes_issue: true
@@ -47,22 +47,23 @@ observable on the wire (an explicit cancellation EVT) rather than silently absor
 
 ## Acceptance Criteria
 
-- [ ] Every `begin*()` entry point — `beginGoTo()` (PRE_ROTATE and PURSUE
+- [x] Every `begin*()` entry point — `beginGoTo()` (PRE_ROTATE and PURSUE
   branches), `beginTurn()`, `beginVelocity()`, `beginArc()` — executes
   `if (_activeCmd.active()) _activeCmd.cancel(HARD)` immediately before the
   first `_activeCmd.configure()` call.
-- [ ] **Sim:** start a TURN (leave command active), then issue `G` mid-flight →
+- [x] **Sim:** start a TURN (leave command active), then issue `G` mid-flight →
   exactly one command is active afterward (the new G command), no stale/duplicate
   EVT labels, robot pre-rotates under the PRE_ROTATE MotionCommand stops from ticket 001.
-- [ ] **Unit:** assert that `_activeCmd.active()` is false immediately after
+- [x] **Unit:** assert that `_activeCmd.active()` is false immediately after
   `beginGoTo()` returns when a prior TURN command was active on entry. Assert
   the prior command's cancellation EVT appears in the reply stream.
-- [ ] **Field-profile sim (slip on, fusion on):** back-to-back G commands produce
+- [x] **Field-profile sim (slip on, fusion on):** back-to-back G commands produce
   no duplicate or mismatched EVT labels; each G produces exactly one
   `EVT done G` or `EVT timeout G`.
 - [ ] **Hardware:** issuing G to cancel a running TURN emits a cancellation EVT for
   the TURN followed by normal G flow; no ghost commands appear in the TLM stream.
-- [ ] Existing exact-profile host_tests pass unmodified.
+  [deferred → sprint-end bench gate]
+- [x] Existing exact-profile host_tests pass unmodified.
 
 ## Implementation Plan
 

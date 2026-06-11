@@ -158,6 +158,14 @@ void MotionController::beginVelocity(float v_mms, float omega_rads, uint32_t now
                                      TargetState& target, ReplyFn fn, void* ctx,
                                      const char* corr_id)
 {
+    // Cancel any stale MotionCommand before configuring the new one.
+    // cancel(HARD) emits "EVT cancelled" via the stored reply sink (making the
+    // transition observable on the wire), then goes IDLE.  configure() below
+    // clears the reply sink pointer afterward — no use-after-free.
+    if (_activeCmd.active()) {
+        _activeCmd.cancel(MotionCommand::StopStyle::HARD);
+    }
+
     // Configure a fresh MotionCommand for body-twist (v, ω) with:
     //   - No TIME stop (keepalive watchdog is now the system watchdog in
     //     LoopScheduler — fires EVT safety_stop + X after sTimeoutMs silence).
@@ -192,6 +200,11 @@ void MotionController::beginArc(float speedMms, float radiusMm, uint32_t now_ms,
     // This matches BodyKinematics::inverse where CCW-positive ω gives vL < vR.
     float kappa = (radiusMm != 0.0f) ? (1.0f / radiusMm) : 0.0f;
     float omega  = speedMms * kappa;
+
+    // Cancel any stale MotionCommand before configuring the new one.
+    if (_activeCmd.active()) {
+        _activeCmd.cancel(MotionCommand::StopStyle::HARD);
+    }
 
     // Configure a fresh MotionCommand for body-twist (v, ω) with:
     //   - No stop conditions (open-ended; host cancels via X or R 0 r).
@@ -402,6 +415,14 @@ void MotionController::beginGoTo(float tx, float ty, float speedMms, uint32_t no
                           : 0.0f;
         float timeoutMs = 2.0f * nominalMs + 2000.0f;
 
+        // Cancel any stale MotionCommand before configuring PRE_ROTATE.
+        // If a TURN (or prior G) is still active, cancel(HARD) emits its
+        // cancellation EVT via the stored reply sink, then goes IDLE.
+        // configure() below clears the stale reply sink — no use-after-free.
+        if (_activeCmd.active()) {
+            _activeCmd.cancel(MotionCommand::StopStyle::HARD);
+        }
+
         // Configure PRE_ROTATE as a supervised spin-in-place command.
         // No reply sink: PRE_ROTATE does NOT emit "EVT done G" on HEADING success
         // (the transition to PURSUE happens in driveAdvance without a wire event).
@@ -428,6 +449,11 @@ void MotionController::beginGoTo(float tx, float ty, float speedMms, uint32_t no
         float distanceMm = sqrtf(tx * tx + ty * ty);
         float pursueSpd  = (_gSpeed > 1.0f) ? _gSpeed : 1.0f;
         float pursueTimeoutMs = 2.0f * (distanceMm / pursueSpd) * 1000.0f + 4000.0f;
+
+        // Cancel any stale MotionCommand before configuring PURSUE.
+        if (_activeCmd.active()) {
+            _activeCmd.cancel(MotionCommand::StopStyle::HARD);
+        }
 
         _activeCmd.configure(_gSpeed, 0.0f, &_bvc);
         _activeCmd.addStop(makePositionStop(_gTargetXWorld, _gTargetYWorld, _cfg.arriveTolMm));
@@ -477,6 +503,11 @@ void MotionController::beginTurn(float headingCdeg, float epsCdeg, uint32_t now_
     //   = |wrap((currentHeadingRad + delta_rad) - currentHeadingRad - delta_rad)| < eps
     //   = |wrap(0)| < eps → fires when robot has rotated by delta_rad from baseline.
     // This matches the absolute target theta_rad exactly (since delta_rad = theta_rad - baseline).
+
+    // Cancel any stale MotionCommand before configuring the new one.
+    if (_activeCmd.active()) {
+        _activeCmd.cancel(MotionCommand::StopStyle::HARD);
+    }
 
     // Configure a fresh MotionCommand with:
     //   - target twist (0, ω): spin-in-place.
