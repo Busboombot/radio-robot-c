@@ -1,5 +1,8 @@
 ---
-status: pending
+status: in-progress
+sprint: '024'
+tickets:
+- 024-004
 ---
 
 # D1 — Fuse OTOS heading into the EKF (heading is currently open-loop)

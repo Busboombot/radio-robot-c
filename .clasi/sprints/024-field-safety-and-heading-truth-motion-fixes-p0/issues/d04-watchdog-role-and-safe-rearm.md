@@ -1,5 +1,8 @@
 ---
-status: pending
+status: in-progress
+sprint: '024'
+tickets:
+- 024-003
 ---
 
 # D4 — Watchdog: separate link-loss from motion-supervision; re-arm SAFE

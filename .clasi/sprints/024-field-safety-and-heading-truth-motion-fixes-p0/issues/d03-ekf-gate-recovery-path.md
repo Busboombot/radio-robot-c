@@ -1,5 +1,8 @@
 ---
-status: pending
+status: in-progress
+sprint: '024'
+tickets:
+- 024-005
 ---
 
 # D3 — EKF Mahalanobis gate has no recovery path (divergence trap)

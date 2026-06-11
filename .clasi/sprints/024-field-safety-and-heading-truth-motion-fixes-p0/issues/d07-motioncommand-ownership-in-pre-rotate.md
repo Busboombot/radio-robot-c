@@ -1,5 +1,8 @@
 ---
-status: pending
+status: in-progress
+sprint: '024'
+tickets:
+- 024-002
 ---
 
 # D7 — beginGoTo PRE_ROTATE must own/cancel the active MotionCommand

@@ -1,5 +1,8 @@
 ---
-status: pending
+status: in-progress
+sprint: '024'
+tickets:
+- 024-001
 ---
 
 # D5 — Bound the GO_TO PRE_ROTATE phase (stop the wild spin)

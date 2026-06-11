@@ -1,5 +1,8 @@
 ---
-status: pending
+status: in-progress
+sprint: '024'
+tickets:
+- 024-006
 ---
 
 # D2 — Apply `rotationalSlip` where rotation is measured (it is calibrated but dead)
