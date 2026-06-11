@@ -1,7 +1,7 @@
 ---
 id: '023'
 title: EKF Velocity Fusion and Robot Motion State
-status: planning-docs
+status: done
 branch: sprint/023-ekf-velocity-fusion-and-robot-motion-state
 use-cases:
 - SUC-001
