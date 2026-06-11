@@ -173,6 +173,15 @@ int main() {
     uBit.sleep(2500);
     hardware.begin();
 
+    // OTOS (mandatory) detection is occasionally lost to a transient nRF52 TWIM
+    // glitch on its single boot probe, leaving the sensor "nodev" until the next
+    // power cycle even though the encoder bus is healthy. Retry the probe a few
+    // times with a short settle so one bad read self-recovers at boot.
+    for (int i = 0; i < 10 && !hardware.otos().is_initialized(); ++i) {
+        uBit.sleep(50);
+        hardware.otos().begin();
+    }
+
     // -----------------------------------------------------------------------
     // 6. Robot — built from HAL; owns config, state, and controllers.
     //    No direct i2c/serial/radio/MicroBit refs — fully encapsulated by

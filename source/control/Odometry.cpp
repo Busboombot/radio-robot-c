@@ -8,6 +8,9 @@
 Odometry::Odometry()
     : _prevEncL(0.0f), _prevEncR(0.0f)
     , _otosRejected(0)
+    , _lastPredictMs(0)
+    , _rOtosV(0.0f), _rEncV(0.0f)
+    , _lastEncV(0.0f), _lastEncOmega(0.0f)
     , _odomCtx{this, nullptr}
 {
 }
@@ -18,8 +21,19 @@ Odometry::Odometry()
 // Reads s.encLMm / s.encRMm; writes s.poseX / s.poseY / s.poseHrad.
 // ---------------------------------------------------------------------------
 
-void Odometry::predict(HardwareState& s, float trackwidthMm)
+void Odometry::predict(HardwareState& s, float trackwidthMm, uint32_t now_ms)
 {
+    // Compute dt — use signed cast to avoid uint32 underflow on rollover.
+    // (See watchdog-uint32-underflow project finding: never plain-subtract
+    //  two uint32 ms stamps without a signed cast.)
+    float dt_s = 0.0f;
+    if (_lastPredictMs == 0) {
+        // First call: seed the timestamp, skip velocity update this tick.
+        _lastPredictMs = now_ms;
+    } else {
+        dt_s = (int32_t)(now_ms - _lastPredictMs) * 0.001f;
+    }
+
     float theta_before = s.poseHrad;   // heading before this step — MUST be first
 
     float dL = s.encLMm - _prevEncL;
@@ -35,11 +49,26 @@ void Odometry::predict(HardwareState& s, float trackwidthMm)
     s.poseY    += dCenter * sinf(thetaMid);
     s.poseHrad  = wrapPi(s.poseHrad + dTheta);
 
-    // EKF predict — propagate covariance using encoder-derived arc segment.
-    _ekf.predict(dCenter, dTheta, theta_before);
+    // Compute encoder-rate velocity for this tick.
+    // Guard against dt_s == 0 (first tick or duplicate timestamp): skip velocity
+    // computation and retain previous value (which is 0 on the very first tick).
+    if (dt_s > 0.0f) {
+        _lastEncV     = dCenter / dt_s;        // body linear speed (mm/s)
+        _lastEncOmega = dTheta  / dt_s;        // yaw rate (rad/s)
+    }
+    // else: retain previous _lastEncV/_lastEncOmega (0 on first tick)
+
+    // EKF predict — propagate state and covariance using encoder-derived arc segment.
+    _ekf.predict(dCenter, dTheta, theta_before, dt_s);
     s.poseX    = _ekf.x();
     s.poseY    = _ekf.y();
     s.poseHrad = _ekf.theta();
+
+    // Write EKF velocity states back to HardwareState.
+    s.fusedV     = _ekf.v();
+    s.fusedOmega = _ekf.omega();
+
+    _lastPredictMs = now_ms;
 }
 
 // ---------------------------------------------------------------------------
@@ -97,8 +126,15 @@ void Odometry::setPose(HardwareState& s, int32_t x_mm, int32_t y_mm, int32_t h_c
     s.poseX    = static_cast<float>(x_mm);
     s.poseY    = static_cast<float>(y_mm);
     s.poseHrad = static_cast<float>(h_cdeg) * CDEG_TO_RAD;
-    _prevEncL  = 0.0f;
-    _prevEncR  = 0.0f;
+
+    // Re-baseline encoder snapshot to current encoder values (not 0.0f).
+    // This prevents a spurious encoder-delta jump on the very next predict()
+    // call after a camera fix (SI command) when encoders are non-zero.
+    // Note: zero() calls setPose(s, 0, 0, 0) at startup when encoders read 0,
+    // so _prevEncL = s.encLMm = 0 there — identical to the old behaviour on boot.
+    _prevEncL  = s.encLMm;
+    _prevEncR  = s.encRMm;
+
     _ekf.setPose(s.poseX, s.poseY, s.poseHrad);
 }
 
@@ -138,21 +174,42 @@ float Odometry::wrapPi(float theta)
 // initEKF — set EKF process and measurement noise parameters.
 // ---------------------------------------------------------------------------
 
-void Odometry::initEKF(float q_xy, float q_theta, float r_otos_xy)
+void Odometry::initEKF(float q_xy, float q_theta, float q_v, float q_omega,
+                       float r_otos_xy, float r_otos_v, float r_enc_v)
 {
-    _ekf.init(q_xy, q_theta, r_otos_xy);
+    _ekf.init(q_xy, q_theta, q_v, q_omega, r_otos_xy, r_otos_v, r_enc_v);
+    // Cache the velocity noise params for use in correctEKF() calls.
+    // _rOtosV is used for both v and omega of the OTOS source (symmetric
+    // simplification — v1 design; separate v/omega noise is a future extension).
+    _rOtosV = r_otos_v;
+    _rEncV  = r_enc_v;
 }
 
 // ---------------------------------------------------------------------------
 // correctEKF — apply an OTOS position observation through the EKF.
 // ---------------------------------------------------------------------------
 
-void Odometry::correctEKF(HardwareState& s, float x_otos, float y_otos)
+void Odometry::correctEKF(HardwareState& s,
+                          float x_otos, float y_otos,
+                          float v_otos_mmps, float omega_otos_rads,
+                          float v_enc_mmps, float omega_enc_rads)
 {
-    _ekf.update(x_otos, y_otos);
-    s.poseX    = _ekf.x();
-    s.poseY    = _ekf.y();
-    s.poseHrad = _ekf.theta();
+    // 1. Fuse OTOS position (Mahalanobis-gated inside EKF).
+    _ekf.updatePosition(x_otos, y_otos);
+
+    // 2. Fuse OTOS velocity (v, omega). Single scalar _rOtosV used for both
+    //    v and omega noise (symmetric simplification — v1 design).
+    _ekf.updateVelocity(v_otos_mmps, omega_otos_rads, _rOtosV, _rOtosV);
+
+    // 3. Fuse encoder-derived velocity (v, omega). Similarly symmetric.
+    _ekf.updateVelocity(v_enc_mmps, omega_enc_rads, _rEncV, _rEncV);
+
+    // Write all EKF outputs back to HardwareState.
+    s.poseX      = _ekf.x();
+    s.poseY      = _ekf.y();
+    s.poseHrad   = _ekf.theta();
+    s.fusedV     = _ekf.v();
+    s.fusedOmega = _ekf.omega();
 }
 
 // ===========================================================================

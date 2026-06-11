@@ -13,6 +13,25 @@ struct RobotConfig;
 struct OtosPose { float x, y, h; };
 
 /**
+ * OtosVelocity — body-frame velocity returned by readVelocityTransformed().
+ *
+ * v_mmps: forward body speed in mm/s (forward-axis projection after mounting
+ *         rotation; sign preserved — positive = forward).
+ * omega_rads: yaw rate in rad/s (positive = counter-clockwise).
+ * Flip and mounting-offset rotation already applied.
+ */
+struct OtosVelocity { float v_mmps; float omega_rads; };
+
+/**
+ * OtosAccel — body-frame acceleration returned by readAccelTransformed().
+ *
+ * ax_mmps2: forward body acceleration in mm/s^2.
+ * ay_mmps2: lateral body acceleration in mm/s^2.
+ * Flip and mounting-offset rotation already applied.
+ */
+struct OtosAccel { float ax_mmps2; float ay_mmps2; };
+
+/**
  * IOtosSensor — interface for the SparkFun OTOS odometry sensor.
  *
  * Extends Sensor so that begin() and is_initialized() are provided by the
@@ -30,6 +49,14 @@ public:
 
     // Read position registers, apply transform from cfg, and return OtosPose.
     virtual OtosPose readTransformed(const RobotConfig& cfg) const = 0;
+
+    // Read velocity registers, apply transform from cfg, and return OtosVelocity.
+    // v_mmps is the forward-axis body speed; omega_rads is the yaw rate.
+    virtual OtosVelocity readVelocityTransformed(const RobotConfig& cfg) const = 0;
+
+    // Read acceleration registers, apply transform from cfg, and return OtosAccel.
+    // ax_mmps2/ay_mmps2 are body-frame linear accelerations (angular discarded).
+    virtual OtosAccel readAccelTransformed(const RobotConfig& cfg) const = 0;
 
     // Re-run device init (signal processing + Kalman reset). No-op if not inited.
     virtual void init() = 0;

@@ -231,6 +231,12 @@ RobotConfig defaultRobotConfig() {{
     p.ekfQtheta      = 0.005f;
     p.ekfROtosXy     = 50.0f;
 
+    // EKF velocity fusion (Sprint 023)
+    p.ekfQv          = 50.0f;
+    p.ekfQomega      = 0.01f;
+    p.ekfROtosV      = 200.0f;
+    p.ekfREncV       = 100.0f;
+
     // OTOS calibration scalars — baked from robot config.
     // OtosSensor::begin() programs the hardware registers from these
     // values at firmware boot; no host-side OL/OA push required.

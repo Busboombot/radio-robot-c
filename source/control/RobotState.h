@@ -49,6 +49,14 @@ struct HardwareState {
     float    poseHrad;  // robot heading, radians
     ValueSet pose;      // freshness for pose (updated with enc)
 
+    // EKF fused velocity (Sprint 023 — written by Odometry::predict and correctEKF)
+    float    fusedV;       // body-frame linear speed, mm/s (from 5-state EKF)
+    float    fusedOmega;   // yaw rate, rad/s (from 5-state EKF)
+
+    // OTOS acceleration (passthrough; written by Robot::otosCorrect — Sprint 023)
+    float    otosAccelX;   // forward acceleration, mm/s^2
+    float    otosAccelY;   // lateral acceleration, mm/s^2
+
     // OTOS optical odometry sensor
     float    otosX;     // OTOS X reading, mm
     float    otosY;     // OTOS Y reading, mm

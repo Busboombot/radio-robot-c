@@ -1,18 +1,30 @@
 #pragma once
 #include <math.h>
+#include <stdint.h>
 
 // ===========================================================================
-// EKF — 3-state Extended Kalman Filter for pose fusion
+// EKF — 5-state Extended Kalman Filter for pose and velocity fusion
 //
-// State vector: x = [x_mm, y_mm, theta_rad]
+// State vector: x = [x_mm, y_mm, theta_rad, v_mmps, omega_rads]
 //
-// Motion model: arc-segment (midpoint integration), same geometry as Odometry.
-// Observation model: 2D position-only (OTOS x,y; heading not observed).
+// Motion model (predict):
+//   Position block [0..2]: arc-segment (midpoint integration), unchanged from
+//     sprint 022. F[0][2] = -dCenter*sin(theta_mid), F[1][2] = dCenter*cos(theta_mid).
+//   Velocity block [3..4]: random-walk identity sub-Jacobian.
+//     v_{k+1} = v_k + w_v,  omega_{k+1} = omega_k + w_omega.
+//   Block-decoupled: cross-block Jacobian entries are zero; cross-block P entries
+//     are initialized to zero and remain zero throughout.
 //
-// All matrix operations (3x3, 3x2) are unrolled as plain float arithmetic.
-// No heap allocation, no STL, no Eigen.
+// Update channels:
+//   updatePosition(x_otos, y_otos): 2D position observation, H is 2x5.
+//     Mahalanobis gating: chi-square 2-DOF threshold 5.99.
+//   updateVelocity(v_meas, omega_meas, r_v, r_omega): two sequential 1D
+//     scalar Kalman updates. Gate threshold: chi-square 1-DOF = 3.84.
 //
-// Sprint 022, Ticket 001.
+// All matrix operations (5x5, 5x2, 5x1) are fully unrolled as plain float
+// arithmetic. No heap allocation, no STL, no Eigen.
+//
+// Sprint 023, Ticket 001.
 // ===========================================================================
 
 class EKF {
@@ -22,32 +34,56 @@ public:
     // Initialize noise parameters and reset state to origin.
     //   q_xy      — process noise variance for x and y (mm^2)
     //   q_theta   — process noise variance for heading (rad^2)
+    //   q_v       — process noise variance for linear velocity (mm/s)^2
+    //   q_omega   — process noise variance for angular velocity (rad/s)^2
     //   r_otos_xy — OTOS measurement noise variance for x and y (mm^2)
-    void init(float q_xy, float q_theta, float r_otos_xy);
+    //   r_otos_v  — OTOS measurement noise variance for linear velocity (mm/s)^2
+    //   r_enc_v   — encoder measurement noise variance for linear velocity (mm/s)^2
+    void init(float q_xy, float q_theta, float q_v, float q_omega,
+              float r_otos_xy, float r_otos_v, float r_enc_v);
 
-    // Overwrite state with a known pose; reset covariance to zero.
+    // Overwrite state with a known pose; zeroes v and omega; reset covariance.
     void setPose(float x, float y, float theta);
 
-    // Predict step: arc-segment motion model.
-    //   dCenter     — distance traveled by the center point (mm)
-    //   dTheta      — change in heading (rad)
+    // Predict step: arc-segment motion model for position block; random-walk
+    // for velocity block. dt_s is the timestep in seconds (passed through for
+    // future full-coupling extension; not used in position block).
+    //   dCenter      — distance traveled by the center point (mm)
+    //   dTheta       — change in heading (rad)
     //   theta_before — heading at the start of this step (rad)
-    void predict(float dCenter, float dTheta, float theta_before);
+    //   dt_s         — timestep in seconds
+    void predict(float dCenter, float dTheta, float theta_before, float dt_s);
 
     // Update step: 2D position-only observation from OTOS.
-    void update(float x_otos, float y_otos);
+    // Applies Mahalanobis gating (chi-square 2-DOF threshold 5.99).
+    void updatePosition(float x_otos, float y_otos);
+
+    // Update step: fuse linear and angular velocity measurements.
+    // Performs two sequential scalar (1-DOF) Kalman updates.
+    // Each is independently gated (chi-square 1-DOF threshold 3.84).
+    //   v_meas    — measured linear velocity (mm/s)
+    //   omega_meas — measured angular velocity (rad/s)
+    //   r_v       — measurement noise variance for v (mm/s)^2
+    //   r_omega   — measurement noise variance for omega (rad/s)^2
+    void updateVelocity(float v_meas, float omega_meas, float r_v, float r_omega);
 
     // Accessors
-    float x()     const;
-    float y()     const;
-    float theta() const;
+    float    x()            const;
+    float    y()            const;
+    float    theta()        const;
+    float    v()            const;
+    float    omega()        const;
+    uint32_t rejectedCount() const;
 
 private:
-    float _x[3];      // state: [x_mm, y_mm, theta_rad]
-    float _P[3][3];   // covariance matrix
-    float _Q[3][3];   // process noise (diagonal)
-    float _r;         // OTOS position noise variance (scalar, same for x and y)
+    float    _x[5];       // state: [x_mm, y_mm, theta_rad, v_mmps, omega_rads]
+    float    _P[5][5];    // covariance matrix (5x5)
+    float    _Q[5][5];    // process noise (diagonal)
+    float    _rOtosXy;    // OTOS position noise variance (same for x and y)
+    float    _rOtosV;     // OTOS velocity noise variance
+    float    _rEncV;      // encoder velocity noise variance
+    uint32_t _rejected;   // count of gated (rejected) observations
 
-    // Wrap angle to (-π, π] using atan2f identity.
+    // Wrap angle to (-pi, pi] using atan2f identity.
     static float wrapPi(float theta);
 };

@@ -23,7 +23,9 @@ import math
 import threading
 import time
 
+from robot_radio.nav.pose import Pose
 from robot_radio.robot.protocol import NezhaProtocol, parse_tlm
+from robot_radio.robot.robot_state import RobotState
 
 
 class NezhaState:
@@ -61,6 +63,9 @@ class NezhaState:
         self.last_tlm_t: int | None = None   # robot clock of last TLM frame (ms)
         self.last_update_s: float = 0.0
         self.dt_s: float = 0.0
+        # Composite motion state — built from TLM frames that carry pose=.
+        # twist= is optional: when absent, v=0 and omega=0 are used.
+        self.robot_state: RobotState | None = None
 
     # ------------------------------------------------------------------
     # Wheel speed property
@@ -120,6 +125,29 @@ class NezhaState:
                     self.otos_pose = (float(x_mm), float(y_mm), float(h_cdeg))
                     # Convert centidegrees to radians: cdeg / 18000.0 * math.pi
                     self.heading_rad = h_cdeg / 18000.0 * math.pi
+
+                    # Build RobotState from pose (mandatory) + twist (optional).
+                    # Pose.x/y are in centimetres (nav convention); firmware x_mm in mm.
+                    pose_obj = Pose(
+                        x=float(x_mm) / 10.0,
+                        y=float(y_mm) / 10.0,
+                        heading=h_cdeg / 18000.0 * math.pi,
+                    )
+                    if tlm.twist is not None:
+                        v_mmps, omega_mradps = tlm.twist
+                        v_f     = float(v_mmps)
+                        omega_f = float(omega_mradps) / 1000.0  # mrad/s → rad/s
+                    else:
+                        v_f = 0.0
+                        omega_f = 0.0
+                    self.robot_state = RobotState(
+                        pose=pose_obj,
+                        v=v_f,
+                        omega=omega_f,
+                        accel=None,
+                        stamp=time.monotonic(),
+                    )
+
                 if tlm.line is not None:
                     self.line_sensor = tlm.line
                 if tlm.color is not None:

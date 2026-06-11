@@ -51,6 +51,14 @@ public:
     // Returns {0,0,0} if not initialized.
     OtosPose readTransformed(const RobotConfig& cfg) const override;
 
+    // Read velocity registers (REG_VELOCITY_XL = 0x26), apply the same flip
+    // and mounting rotation as readTransformed().  Returns {0,0} if not initialized.
+    OtosVelocity readVelocityTransformed(const RobotConfig& cfg) const override;
+
+    // Read acceleration registers (REG_ACCELERATION_XL = 0x2C), apply the same
+    // flip and mounting rotation.  Returns {0,0} if not initialized.
+    OtosAccel readAccelTransformed(const RobotConfig& cfg) const override;
+
     void getPositionRaw(int16_t& x, int16_t& y, int16_t& h) const override;
     void setPositionRaw(int16_t x, int16_t y, int16_t h) override;
     void getVelocityRaw(int16_t& x, int16_t& y, int16_t& h) const;
@@ -79,6 +87,7 @@ private:
     static constexpr uint8_t REG_OFFSET_XL          = 0x10;
     static constexpr uint8_t REG_POSITION_XL        = 0x20;
     static constexpr uint8_t REG_VELOCITY_XL        = 0x26;
+    static constexpr uint8_t REG_ACCELERATION_XL    = 0x2C;
 
     static constexpr uint8_t EXPECTED_PRODUCT_ID = 0x5F;
 

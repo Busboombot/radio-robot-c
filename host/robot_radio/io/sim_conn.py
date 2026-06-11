@@ -253,6 +253,17 @@ class SimConnection:
             raise ConnectionError("Not connected")
         self._lib.sim_enable_otos_model(self._h)
 
+    def enable_otos_fusion(self, on: bool = True) -> None:
+        """Run the firmware's OTOS EKF correction (Robot::otosCorrect) in sim_tick.
+
+        When enabled, the firmware ``pose`` is the fused EKF estimate (encoder
+        predict + OTOS update). When disabled (default), ``pose`` is encoder-only
+        dead reckoning.
+        """
+        if not self.is_open:
+            raise ConnectionError("Not connected")
+        self._lib.sim_set_otos_fusion(self._h, ctypes.c_int(1 if on else 0))
+
     def set_otos_noise(self, linear: float = 0.01, yaw: float = 0.025) -> None:
         """Set OTOS noise fractions.
 
@@ -431,6 +442,9 @@ class SimConnection:
 
         lib.sim_enable_otos_model.argtypes = [ctypes.c_void_p]
         lib.sim_enable_otos_model.restype = None
+
+        lib.sim_set_otos_fusion.argtypes = [ctypes.c_void_p, ctypes.c_int]
+        lib.sim_set_otos_fusion.restype = None
 
         lib.sim_set_otos_linear_noise.argtypes = [ctypes.c_void_p, ctypes.c_float]
         lib.sim_set_otos_linear_noise.restype = None

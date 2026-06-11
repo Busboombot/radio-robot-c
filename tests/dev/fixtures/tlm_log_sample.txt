@@ -1,0 +1,72 @@
+# Synthetic TLM log for EKF replay harness testing (sprint 023, T006).
+# Format: one TLM line per frame, as emitted by the firmware.
+# Sections:
+#   1. Straight-line forward (frames 1-20): enc/pose advance, twist=v,0
+#   2. 90-degree left turn (frames 21-30): enc/pose turn, twist=0,omega
+#   3. Straight-line after turn (frames 31-40): enc/pose advance, twist=v,0
+#   4. Camera fix (frame 41): large pose jump simulating SI command reset
+#   5. Continuation after camera fix (frames 42-50): encoder-only continuation
+#
+# enc=L,R: cumulative encoder odometry (mm), absolute totals.
+# pose=x,y,h: OTOS absolute pose (mm,mm,cdeg).
+# twist=v,omega: fused body velocity (mm/s, mrad/s).
+#
+# --- Section 1: Straight-line forward (20 frames, dt≈100ms, v≈200mm/s) ---
+TLM t=1000 mode=S enc=20,20 pose=20,0,0 twist=200,0
+TLM t=1100 mode=S enc=40,40 pose=40,0,0 twist=200,0
+TLM t=1200 mode=S enc=60,60 pose=60,0,0 twist=200,0
+TLM t=1300 mode=S enc=80,80 pose=80,0,0 twist=200,0
+TLM t=1400 mode=S enc=100,100 pose=100,0,0 twist=200,0
+TLM t=1500 mode=S enc=120,120 pose=120,0,0 twist=200,0
+TLM t=1600 mode=S enc=140,140 pose=140,0,0 twist=200,0
+TLM t=1700 mode=S enc=160,160 pose=160,0,0 twist=200,0
+TLM t=1800 mode=S enc=180,180 pose=180,0,0 twist=200,0
+TLM t=1900 mode=S enc=200,200 pose=200,0,0 twist=200,0
+TLM t=2000 mode=S enc=220,220 pose=220,0,0 twist=200,0
+TLM t=2100 mode=S enc=240,240 pose=240,0,0 twist=200,0
+TLM t=2200 mode=S enc=260,260 pose=260,0,0 twist=200,0
+TLM t=2300 mode=S enc=280,280 pose=280,0,0 twist=200,0
+TLM t=2400 mode=S enc=300,300 pose=300,0,0 twist=200,0
+TLM t=2500 mode=S enc=320,320 pose=320,0,0 twist=200,0
+TLM t=2600 mode=S enc=340,340 pose=340,0,0 twist=200,0
+TLM t=2700 mode=S enc=360,360 pose=360,0,0 twist=200,0
+TLM t=2800 mode=S enc=380,380 pose=380,0,0 twist=200,0
+TLM t=2900 mode=S enc=400,400 pose=400,0,0 twist=200,0
+# --- Section 2: 90-degree left turn (10 frames, track=100mm, dTheta=pi/2 total) ---
+# Turning: left wheel slower, right wheel faster. Approx track=100mm.
+# dTheta_per_frame = (pi/2)/10 ≈ 0.157 rad. omega ≈ 1571 mrad/s.
+TLM t=3000 mode=S enc=409,419 pose=399,4,900 twist=50,1571
+TLM t=3100 mode=S enc=418,438 pose=395,12,1800 twist=50,1571
+TLM t=3200 mode=S enc=427,457 pose=388,24,2700 twist=50,1571
+TLM t=3300 mode=S enc=436,476 pose=378,38,3600 twist=50,1571
+TLM t=3400 mode=S enc=445,495 pose=366,55,4500 twist=50,1571
+TLM t=3500 mode=S enc=454,514 pose=352,73,5400 twist=50,1571
+TLM t=3600 mode=S enc=463,533 pose=336,93,6300 twist=50,1571
+TLM t=3700 mode=S enc=472,552 pose=319,114,7200 twist=50,1571
+TLM t=3800 mode=S enc=481,571 pose=401,300,8100 twist=50,1571
+TLM t=3900 mode=S enc=490,590 pose=400,320,9000 twist=50,1571
+# --- Section 3: Straight-line heading=+90deg (10 frames, v≈200mm/s, heading=90deg) ---
+TLM t=4000 mode=S enc=510,610 pose=400,340,9000 twist=200,0
+TLM t=4100 mode=S enc=530,630 pose=400,360,9000 twist=200,0
+TLM t=4200 mode=S enc=550,650 pose=400,380,9000 twist=200,0
+TLM t=4300 mode=S enc=570,670 pose=400,400,9000 twist=200,0
+TLM t=4400 mode=S enc=590,690 pose=400,420,9000 twist=200,0
+TLM t=4500 mode=S enc=610,710 pose=400,440,9000 twist=200,0
+TLM t=4600 mode=S enc=630,730 pose=400,460,9000 twist=200,0
+TLM t=4700 mode=S enc=650,750 pose=400,480,9000 twist=200,0
+TLM t=4800 mode=S enc=670,770 pose=400,500,9000 twist=200,0
+TLM t=4900 mode=S enc=690,790 pose=400,520,9000 twist=200,0
+# --- Section 4: Camera fix (frame 41) — large pose jump (SI command fired) ---
+# Encoder values are non-zero (not reset). Pose jumps to world coordinates.
+# This exercises the setPose re-baseline fix (enc != 0 at time of setPose).
+TLM t=5000 mode=S enc=710,810 pose=395,600,9000 twist=10,0
+# --- Section 5: Encoder-only continuation (9 frames after camera fix) ---
+TLM t=5100 mode=S enc=730,830 pose=395,620,9000 twist=200,0
+TLM t=5200 mode=S enc=750,850 pose=395,640,9000 twist=200,0
+TLM t=5300 mode=S enc=770,870 pose=395,660,9000 twist=200,0
+TLM t=5400 mode=S enc=790,890 pose=395,680,9000 twist=200,0
+TLM t=5500 mode=S enc=810,910 pose=395,700,9000 twist=200,0
+TLM t=5600 mode=S enc=830,930 pose=395,720,9000 twist=200,0
+TLM t=5700 mode=S enc=850,950 pose=395,740,9000 twist=200,0
+TLM t=5800 mode=S enc=870,970 pose=395,760,9000 twist=200,0
+TLM t=5900 mode=S enc=890,990 pose=395,780,9000 twist=200,0

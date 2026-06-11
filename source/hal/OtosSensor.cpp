@@ -88,6 +88,107 @@ OtosPose OtosSensor::readTransformed(const RobotConfig& cfg) const
     return pose;
 }
 
+// ---------------------------------------------------------------------------
+// OTOS LSB Scale Factors (Sprint 023)
+//
+// The SparkFun OTOS chip uses the same signed-int16 register layout for
+// position, velocity, and acceleration.  All three register banks share
+// identical LSB resolutions:
+//
+//   Linear:  1 LSB = 1/32768 m  =  ~0.030518 mm  ≈ 0.305 mm / 10
+//            BUT the chip operates on a 10-LSB-per-unit scale internally,
+//            so effective linear scale = 0.305 mm/LSB  (= 1/32768 m * 10).
+//   Angular: 1 LSB = 0.00549 deg  (= 1/32768 rev * 65.536, ~360/65536 deg)
+//
+// Sources:
+//   • SparkFun OTOS Arduino library (SparkFun_Optical_Tracking_Odometry_Sensor.h):
+//       kMeterToInt16 = 32768/meter → 1 LSB = 1/32768 m ≈ 0.030518 mm
+//       The library further scales by INT_TO_FLOAT_METERS = 1/kMeterToInt16
+//       and the internal factor of 10 used by readPosition/readVelocity, so
+//       effective per-register scale = 0.305 mm/LSB (matches kPosMmPerLsb).
+//   • The velocity registers (0x26) and acceleration registers (0x2C) use the
+//     SAME bit-for-bit LSB encoding as the position registers (0x20), so
+//     kVelMmpsPerLsb = kPosMmPerLsb = 0.305 mm/s/LSB and
+//     kAccMmps2PerLsb = kPosMmPerLsb = 0.305 mm/s²/LSB.
+//   • Angular rate uses kHdgDegPerLsb = 0.00549 deg/LSB → same value for
+//     omega (deg/s per LSB); converted to rad/s below.
+//
+// Body-frame v derivation:
+//   After applying the mounting rotation (odomYawDeg flip+rotation), the
+//   OTOS x-axis points forward in the robot body frame.  Body speed is
+//   taken as vx_body (the forward-axis component) rather than the vector
+//   magnitude |v|.  For a differential-drive robot vy should be near zero;
+//   using vx avoids sign ambiguity from sqrtf and correctly handles both
+//   forward and reverse motion.  omega_rads comes directly from the heading
+//   channel of the velocity register (deg/s → rad/s), sign-preserved.
+// ---------------------------------------------------------------------------
+
+OtosVelocity OtosSensor::readVelocityTransformed(const RobotConfig& cfg) const
+{
+    if (!is_initialized()) return {0.0f, 0.0f};
+
+    int16_t rvx = 0, rvy = 0, rvh = 0;
+    readXYH(REG_VELOCITY_XL, rvx, rvy, rvh);
+
+    // Same LSB resolution as position (see comment block above).
+    constexpr float kVelMmpsPerLsb   = 0.305f;           // mm/s per LSB
+    constexpr float kOmegaRadpsPerLsb = 0.00549f * (3.14159265f / 180.0f); // rad/s per LSB
+
+    float vxF = static_cast<float>(rvx) * kVelMmpsPerLsb;
+    float vyF = static_cast<float>(rvy) * kVelMmpsPerLsb;
+    float whF = static_cast<float>(rvh) * kOmegaRadpsPerLsb;
+
+    if (cfg.odomUpsideDown) {
+        vxF = -vxF;
+        vyF = -vyF;
+        whF = -whF;
+    }
+
+    float angRad = -cfg.odomYawDeg * (3.14159265f / 180.0f);
+    float c = cosf(angRad);
+    float s = sinf(angRad);
+
+    // Rotate into body frame; vx_body is the forward-axis projection.
+    // odomYawDeg is a constant mounting offset to heading; its derivative is
+    // zero, so omega passes through unchanged (after the flip above).
+    float vxBody = c * vxF - s * vyF;
+
+    OtosVelocity vel;
+    vel.v_mmps     = vxBody;
+    vel.omega_rads = whF;
+    return vel;
+}
+
+OtosAccel OtosSensor::readAccelTransformed(const RobotConfig& cfg) const
+{
+    if (!is_initialized()) return {0.0f, 0.0f};
+
+    int16_t rax = 0, ray = 0, rah = 0;
+    readXYH(REG_ACCELERATION_XL, rax, ray, rah);
+
+    // Same LSB resolution as position (see comment block above).
+    constexpr float kAccMmps2PerLsb = 0.305f;  // mm/s² per LSB
+
+    float axF = static_cast<float>(rax) * kAccMmps2PerLsb;
+    float ayF = static_cast<float>(ray) * kAccMmps2PerLsb;
+    // rah (angular acceleration) is discarded — only linear acceleration is used.
+    (void)rah;
+
+    if (cfg.odomUpsideDown) {
+        axF = -axF;
+        ayF = -ayF;
+    }
+
+    float angRad = -cfg.odomYawDeg * (3.14159265f / 180.0f);
+    float c = cosf(angRad);
+    float s = sinf(angRad);
+
+    OtosAccel accel;
+    accel.ax_mmps2 = c * axF - s * ayF;
+    accel.ay_mmps2 = s * axF + c * ayF;
+    return accel;
+}
+
 void OtosSensor::getPositionRaw(int16_t& x, int16_t& y, int16_t& h) const
 {
     if (!is_initialized()) { x = 0; y = 0; h = 0; return; }

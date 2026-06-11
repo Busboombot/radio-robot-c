@@ -68,7 +68,9 @@ Robot::Robot(Hardware& h, const RobotConfig& cfg)
     motorController.setCommandsRef(&state.commands);
     motionController.setCtx(this);
     odometry.setCtx(&otos, &state.inputs);
-    odometry.initEKF(config.ekfQxy, config.ekfQtheta, config.ekfROtosXy);
+    odometry.initEKF(config.ekfQxy, config.ekfQtheta,
+                     config.ekfQv, config.ekfQomega,
+                     config.ekfROtosXy, config.ekfROtosV, config.ekfREncV);
 }
 
 // ---------------------------------------------------------------------------
@@ -159,10 +161,19 @@ void Robot::controlCollectSplitPhase(uint32_t now_ms, int /*pendingWheel*/)
 }
 
 // ---------------------------------------------------------------------------
-// otosCorrect — EKF Kalman update from OTOS position (sprint 022).
-// Replaces the fixed-alpha complementary blend (odometry.correct()) with
-// the EKF correction path. OTOS heading is still stored for telemetry but
-// is not fused (heading-only EKF channel is out of scope for this sprint).
+// otosCorrect — EKF Kalman update from OTOS position and velocity (sprint 023).
+//
+// Reads OTOS position, velocity, and acceleration.  Passes position + velocity
+// to correctEKF() for EKF fusion.  Stores acceleration in HardwareState for
+// host telemetry via RobotState.
+//
+// Encoder-rate velocity (enc_v, enc_omega) is retrieved from the most recent
+// predict() call via Odometry::lastEncV()/lastEncOmega().  Design choice:
+// these are stored on Odometry rather than threaded through the cooperative
+// loop caller because predict() and otosCorrect() run on different loop phases
+// (enOdom vs enOtos), so passing them through the caller would require
+// HardwareState fields or Robot members anyway — no fewer coupling points.
+// Storing them on Odometry keeps the call sites unchanged.
 // ---------------------------------------------------------------------------
 
 void Robot::otosCorrect(uint32_t now_ms)
@@ -174,7 +185,20 @@ void Robot::otosCorrect(uint32_t now_ms)
     state.inputs.otosH = p.h;
     state.inputs.otos.lastUpdMs = now_ms;
     state.inputs.otos.valid     = true;
-    odometry.correctEKF(state.inputs, p.x, p.y);
+
+    // Read OTOS velocity and acceleration; store acceleration for telemetry.
+    OtosVelocity vel = otos.readVelocityTransformed(config);
+    OtosAccel    acc = otos.readAccelTransformed(config);
+    state.inputs.otosAccelX = acc.ax_mmps2;
+    state.inputs.otosAccelY = acc.ay_mmps2;
+
+    // Retrieve encoder-rate velocity from the most recent predict() tick.
+    float enc_v     = odometry.lastEncV();
+    float enc_omega = odometry.lastEncOmega();
+
+    odometry.correctEKF(state.inputs, p.x, p.y,
+                        vel.v_mmps, vel.omega_rads,
+                        enc_v, enc_omega);
 }
 
 // ---------------------------------------------------------------------------
@@ -264,6 +288,7 @@ int Robot::buildTlmFrame(char* buf, int len)
     bool haveVel = (config.tlmFields & TLM_FIELD_VEL) != 0;
     float velL = haveVel ? state.inputs.velLMms : 0.0f;
     float velR = haveVel ? state.inputs.velRMms : 0.0f;
+    bool haveTwist = (config.tlmFields & TLM_FIELD_TWIST) != 0;
 
     char modeChar = 'I';
     switch (motionController.mode()) {
@@ -290,6 +315,25 @@ int Robot::buildTlmFrame(char* buf, int len)
     }
     if (haveVel) {
         n = snprintf(buf + pos, (size_t)rem, " vel=%d,%d", (int)velL, (int)velR);
+        if (n > 0 && n < rem) { pos += n; rem -= n; }
+    }
+    if (haveTwist) {
+        // fusedV is body linear speed in mm/s (integer).
+        // fusedOmega is yaw rate in rad/s; convert to mrad/s (integer) matching
+        // the omega_mrads convention used by VW command and NezhaProtocol.vw().
+        n = snprintf(buf + pos, (size_t)rem, " twist=%d,%d",
+                     (int)state.inputs.fusedV,
+                     (int)(state.inputs.fusedOmega * 1000.0f));
+        if (n > 0 && n < rem) { pos += n; rem -= n; }
+    }
+    if (config.tlmFields & TLM_FIELD_OTOS) {
+        // Raw OTOS pose (pre-fusion): x,y mm and heading in centidegrees,
+        // matching the pose= field encoding. Lets the host plot the raw OTOS
+        // sensor track alongside enc-derived and fused pose. 18000/pi cdeg/rad.
+        n = snprintf(buf + pos, (size_t)rem, " otos=%d,%d,%d",
+                     (int)state.inputs.otosX,
+                     (int)state.inputs.otosY,
+                     (int)(state.inputs.otosH * 5729.5779513f));
         if (n > 0 && n < rem) { pos += n; rem -= n; }
     }
     if (haveLine) {
@@ -705,6 +749,8 @@ static void handleStream(const ArgList& args, const char* corrId,
                     if (strcmp(fbuf, "vel")   == 0) mask |= TLM_FIELD_VEL;
                     if (strcmp(fbuf, "line")  == 0) mask |= TLM_FIELD_LINE;
                     if (strcmp(fbuf, "color") == 0) mask |= TLM_FIELD_COLOR;
+                    if (strcmp(fbuf, "twist") == 0) mask |= TLM_FIELD_TWIST;
+                    if (strcmp(fbuf, "otos")  == 0) mask |= TLM_FIELD_OTOS;
                     flen = 0;
                     if (*c == '\0') break;
                 }
@@ -721,11 +767,13 @@ static void handleStream(const ArgList& args, const char* corrId,
                 { TLM_FIELD_VEL,   "vel"   },
                 { TLM_FIELD_LINE,  "line"  },
                 { TLM_FIELD_COLOR, "color" },
+                { TLM_FIELD_TWIST, "twist" },
+                { TLM_FIELD_OTOS,  "otos"  },
             };
             int brem = (int)sizeof(body);
             int bw = snprintf(body + bpos, (size_t)brem, "fields=");
             if (bw > 0 && bw < brem) { bpos += bw; brem -= bw; }
-            for (int fi = 0; fi < 5 && brem > 1; ++fi) {
+            for (int fi = 0; fi < 7 && brem > 1; ++fi) {
                 if (robot->config.tlmFields & kFieldNames[fi].bit) {
                     if (needComma) { body[bpos++] = ','; --brem; }
                     bw = snprintf(body + bpos, (size_t)brem, "%s", kFieldNames[fi].name);
@@ -994,6 +1042,52 @@ static void handleSafe(const ArgList& args, const char* corrId,
     snprintf(body, sizeof(body), "%s timeout=%d",
              cfg.safetyEnabled ? "on" : "off", (int)cfg.sTimeoutMs);
     CommandProcessor::replyOK(rbuf, sizeof(rbuf), "safety", body,
+                              corrId, replyFn, replyCtx);
+}
+
+// ---------------------------------------------------------------------------
+// SI — set the odometry world pose directly (what G reads via getPoseFloat).
+//   SI <x_mm> <y_mm> <h_cdeg>
+// Establishes the robot's onboard pose from an external fix (e.g. the camera)
+// so a subsequent G/D/TURN drives in the correct world frame. This is the pose
+// the motion controller reads — unlike OV, which only nudges the raw OTOS chip.
+// Reply: OK setpose x=<mm> y=<mm> h=<cdeg>
+// ---------------------------------------------------------------------------
+
+static ParseResult parseSI(const char* const* tokens, int ntokens,
+                            const KVPair* /*kvs*/, int /*nkv*/)
+{
+    ParseResult r;
+    if (ntokens < 3) {
+        r.ok = false;
+        r.err = { "badarg", "SI x_mm y_mm h_cdeg" };
+        return r;
+    }
+    r.ok = true;
+    r.args.count = 3;
+    r.args.args[0].type = ArgType::INT; r.args.args[0].ival = atoi(tokens[0]);
+    r.args.args[1].type = ArgType::INT; r.args.args[1].ival = atoi(tokens[1]);
+    r.args.args[2].type = ArgType::INT; r.args.args[2].ival = atoi(tokens[2]);
+    return r;
+}
+
+static void handleSI(const ArgList& args, const char* corrId,
+                      ReplyFn replyFn, void* replyCtx, void* handlerCtx)
+{
+    char rbuf[80];
+    Robot* robot = ctxFrom(handlerCtx).robot;
+    if (robot == nullptr) {
+        CommandProcessor::replyErr(rbuf, sizeof(rbuf), "noctx", "SI",
+                                   corrId, replyFn, replyCtx);
+        return;
+    }
+    int32_t x_mm   = args.args[0].ival;
+    int32_t y_mm   = args.args[1].ival;
+    int32_t h_cdeg = args.args[2].ival;
+    robot->odometry.setPose(robot->state.inputs, x_mm, y_mm, h_cdeg);
+    char body[48];
+    snprintf(body, sizeof(body), "x=%d y=%d h=%d", (int)x_mm, (int)y_mm, (int)h_cdeg);
+    CommandProcessor::replyOK(rbuf, sizeof(rbuf), "setpose", body,
                               corrId, replyFn, replyCtx);
 }
 
@@ -1363,6 +1457,7 @@ std::vector<CommandDescriptor> Robot::buildCommandTable(
     cmds.push_back(makeCmd("RF",       parseRf,        handleRf,        sysCtxPtr, "badarg")); // set radio channel
     cmds.push_back(makeCmd("+",        parseKeepalive, handleKeepalive, sysCtxPtr, "badarg")); // keepalive: reset watchdog
     cmds.push_back(makeCmd("SAFE",     parseSafe,      handleSafe,      sysCtxPtr, "badarg")); // enable/disable safety watchdog + set timeout
+    cmds.push_back(makeCmd("SI",       parseSI,        handleSI,        sysCtxPtr, "badarg")); // set odometry world pose (x_mm y_mm h_cdeg)
     cmds.push_back(makeCmd("GET VEL",  parseGetVel,    handleGetVel,    sysCtxPtr, "badarg")); // get velocity PID params
     cmds.push_back(makeCmd("GET",      parseGet,       handleGet,       &_cfgCtx,  "badkey")); // get config value by key
     cmds.push_back(makeCmd("SET",      parseSet,       handleSet,       &_cfgCtx,  "badkey")); // set config value by key
