@@ -121,11 +121,19 @@ def test_raw_vw_command_no_ramp(sim):
     )
 
 
-def test_plus_keepalive_replies_ok(sim):
-    """+ command replies OK keepalive and does not start motion."""
+def test_plus_keepalive_is_quiet(sim):
+    """+ command (quiet keepalive, sprint 024-003) produces no reply and no motion.
+
+    After sprint 024-003, the '+' keepalive handler no longer emits 'OK keepalive'.
+    At 6.7 Hz the acks competed with TLM frames for the 250-byte TX buffer; the
+    host already filtered them so suppressing them on the firmware side is safe.
+    The watchdog is still reset by the command (via sim_command's watchdogMs update).
+    """
     r = sim.send_command("+")
-    assert "OK" in r.upper(), f"Expected OK from + command, got {repr(r)}"
-    assert "keepalive" in r.lower(), f"Expected 'keepalive' in reply, got {repr(r)}"
+    # Reply must be empty (quiet keepalive).
+    assert r.strip() == "", (
+        f"Expected empty reply from '+' (quiet keepalive), got {repr(r)}"
+    )
 
     # Encoders should not have moved.
     enc_l = float(sim._lib.sim_get_enc_l(sim._h))

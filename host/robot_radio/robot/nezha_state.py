@@ -66,6 +66,9 @@ class NezhaState:
         # Composite motion state — built from TLM frames that carry pose=.
         # twist= is optional: when absent, v=0 and omega=0 are used.
         self.robot_state: RobotState | None = None
+        # EKF gate rejection count — cumulative across all channels.
+        # Populated from TLM ekf_rej= field (sprint 024-005). None if not yet received.
+        self.ekf_rej: int | None = None
 
     # ------------------------------------------------------------------
     # Wheel speed property
@@ -154,6 +157,8 @@ class NezhaState:
                     self.color = tlm.color
                 if tlm.t is not None:
                     self.last_tlm_t = tlm.t
+                if tlm.ekf_rej is not None:
+                    self.ekf_rej = tlm.ekf_rej
 
     # ------------------------------------------------------------------
     # One-shot commands

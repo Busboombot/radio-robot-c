@@ -149,15 +149,22 @@ void sim_tick(void* h, uint32_t now_ms)
 
     // System keepalive watchdog — MUST mirror LoopScheduler.cpp exactly.
     // Fires EVT safety_stop + X when sTimeoutMs passes without any command.
-    // Covers ALL active motion (any non-IDLE drive mode or active MotionCommand);
-    // self-terminating commands (T/D/G/TURN) are NOT exempt — a stop condition
-    // that never fires (e.g. a stalled G pre-rotate) must still be caught. The
-    // host is required to stream "+" keepalives for the lifetime of any motion.
+    //
+    // TIME-stop exemption (sprint 024-003): commands that carry a TIME stop
+    // are exempt from the keepalive requirement — their TIME net fires
+    // regardless of host silence.  Open-ended streaming (S / VW / R) has no
+    // TIME stop and remains keepalive-bound.
     // Signed delta avoids uint32 underflow (same pattern as firmware).
     if (s->watchdogMs != 0) {
         MotionController& mc = s->robot.motionController;
         bool needsWatchdog =
             (mc.mode() != DriveMode::IDLE) || mc.hasActiveCommand();
+
+        // Exempt commands that carry their own TIME backstop — mirrors firmware.
+        if (mc.hasActiveCommand() && mc.activeCmd().hasTimeStop()) {
+            needsWatchdog = false;
+        }
+
         if (s->robot.config.safetyEnabled && needsWatchdog) {
             int32_t wdDelta = (int32_t)(now_ms - s->watchdogMs);
             if (wdDelta > (int32_t)s->robot.config.sTimeoutMs) {
@@ -172,8 +179,10 @@ void sim_tick(void* h, uint32_t now_ms)
     }
 
     // Odometry: dead-reckon pose from encoder deltas (mirrors run_blocks()).
+    // Pass rotationalSlip so the sim uses the same slip-corrected dTheta as firmware.
     s->robot.odometry.predict(s->robot.state.inputs,
-                              s->robot.config.trackwidthMm, now_ms);
+                              s->robot.config.trackwidthMm,
+                              s->robot.config.rotationalSlip, now_ms);
 
     // OTOS EKF correction (sprint 023) — opt-in via sim_set_otos_fusion().
     // The real firmware runs otosCorrect() on the enOtos loop phase; the sim

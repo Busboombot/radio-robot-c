@@ -119,6 +119,15 @@ public:
     // Used by the X verb and STOP handler when a VW command is active.
     void cancel(uint32_t now_ms, ReplyFn fn, void* ctx);
 
+    // SAFE one-shot disable — called by the SAFE off handler instead of
+    // directly clearing safetyEnabled.  Sets a one-shot flag so that the
+    // next begin*() call re-arms safetyEnabled = true before starting the
+    // new command, emits "EVT safety re-armed", and clears the flag.
+    // This makes SAFE off a temporary, self-resetting bypass: the operator
+    // can send an unconstrained test command, but motion safety is restored
+    // automatically when the next commanded motion begins.
+    void disableSafetyOneShot();
+
     // Soft-stop: ramp BVC target to (0,0) under aMax.
     // If a MotionCommand is active, arms its SOFT ramp-down path so
     // EVT done is emitted when speed reaches zero.
@@ -177,6 +186,12 @@ private:
     BodyVelocityController _bvc;        // body-level (v,ω) profiler
     MotionCommand          _activeCmd;  // the single active MotionCommand (VW, …)
 
+    // SAFE one-shot disable flag (sprint 024-003).
+    // Set true by disableSafetyOneShot() when SAFE off is received.
+    // Cleared (and safetyEnabled re-armed) by every begin*() entry point
+    // before configuring the new command.
+    bool _safeOneShotDisable = false;
+
     // Drive mode
     DriveMode _mode;
 
@@ -205,6 +220,11 @@ private:
     // Internal helpers
     void fullStop(ReplyFn fn, void* ctx);
     void getPoseFloat(float& x, float& y, float& h_rad) const;
+
+    // Re-arm safety and emit EVT if the one-shot disable flag is set.
+    // Called at the start of every begin*() entry point (after cancel guard,
+    // before configure).
+    void _checkSafeOneShot(ReplyFn fn, void* ctx);
 
     // Emit an EVT message inline via the captured reply sink.
     // Builds "<base> #<corrId>" if corrId is non-empty, else just <base>.

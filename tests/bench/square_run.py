@@ -126,7 +126,9 @@ def main() -> None:
     if not png:
         sys.exit("PING failed — robot silent. Power-cycle and retry.")
     print(f"PING ok (robot_t={png[0]} ms, rtt={png[1]:.0f} ms)")
-    proto.set_config(sTimeout=60000)
+    # sTimeout uses the firmware default (500 ms); TIME-stopped commands
+    # (G, TURN, D, T, RT) are exempt from the keepalive requirement after
+    # sprint 024-003, so the 60 s override is no longer needed here.
     trackwidth_mm = _get_trackwidth(proto)
     print(f"trackwidth = {trackwidth_mm:.1f} mm")
 

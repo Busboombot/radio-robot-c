@@ -9,7 +9,7 @@ Odometry::Odometry()
     : _prevEncL(0.0f), _prevEncR(0.0f)
     , _otosRejected(0)
     , _lastPredictMs(0)
-    , _rOtosV(0.0f), _rEncV(0.0f)
+    , _rOtosV(0.0f), _rEncV(0.0f), _rOtosTheta(0.0f)
     , _lastEncV(0.0f), _lastEncOmega(0.0f)
     , _odomCtx{this, nullptr}
 {
@@ -21,7 +21,8 @@ Odometry::Odometry()
 // Reads s.encLMm / s.encRMm; writes s.poseX / s.poseY / s.poseHrad.
 // ---------------------------------------------------------------------------
 
-void Odometry::predict(HardwareState& s, float trackwidthMm, uint32_t now_ms)
+void Odometry::predict(HardwareState& s, float trackwidthMm,
+                       float rotationalSlip, uint32_t now_ms)
 {
     // Compute dt — use signed cast to avoid uint32 underflow on rollover.
     // (See watchdog-uint32-underflow project finding: never plain-subtract
@@ -42,7 +43,11 @@ void Odometry::predict(HardwareState& s, float trackwidthMm, uint32_t now_ms)
     _prevEncR = s.encRMm;
 
     float dCenter   = (dL + dR) * 0.5f;
-    float dTheta    = (dR - dL) / trackwidthMm;
+    // Apply rotational-slip correction: encoder arc over-reports body rotation
+    // (wheel scrub during turns).  slip factor in [0.5, 1.0]; 0/unset → 1.0.
+    // (024-006: rotationalSlip is now active — was dead before this sprint.)
+    float slip      = effectiveSlip(rotationalSlip);
+    float dTheta    = ((dR - dL) / trackwidthMm) * slip;
     float thetaMid  = s.poseHrad + dTheta * 0.5f;
 
     s.poseX    += dCenter * cosf(thetaMid);
@@ -175,33 +180,43 @@ float Odometry::wrapPi(float theta)
 // ---------------------------------------------------------------------------
 
 void Odometry::initEKF(float q_xy, float q_theta, float q_v, float q_omega,
-                       float r_otos_xy, float r_otos_v, float r_enc_v)
+                       float r_otos_xy, float r_otos_v, float r_enc_v,
+                       float r_otos_theta)
 {
     _ekf.init(q_xy, q_theta, q_v, q_omega, r_otos_xy, r_otos_v, r_enc_v);
     // Cache the velocity noise params for use in correctEKF() calls.
     // _rOtosV is used for both v and omega of the OTOS source (symmetric
     // simplification — v1 design; separate v/omega noise is a future extension).
-    _rOtosV = r_otos_v;
-    _rEncV  = r_enc_v;
+    _rOtosV     = r_otos_v;
+    _rEncV      = r_enc_v;
+    _rOtosTheta = r_otos_theta;  // OTOS heading noise (sprint 024-004)
 }
 
 // ---------------------------------------------------------------------------
-// correctEKF — apply an OTOS position observation through the EKF.
+// correctEKF — apply OTOS position, heading, and velocity observations to
+// the EKF (sprint 024-004: heading fusion added).
+//
+// Update order: position → heading → velocity(OTOS) → velocity(enc).
+// All channels are Mahalanobis-gated inside EKF methods.
 // ---------------------------------------------------------------------------
 
 void Odometry::correctEKF(HardwareState& s,
                           float x_otos, float y_otos,
+                          float theta_otos_rad,
                           float v_otos_mmps, float omega_otos_rads,
                           float v_enc_mmps, float omega_enc_rads)
 {
     // 1. Fuse OTOS position (Mahalanobis-gated inside EKF).
     _ekf.updatePosition(x_otos, y_otos);
 
-    // 2. Fuse OTOS velocity (v, omega). Single scalar _rOtosV used for both
+    // 2. Fuse OTOS heading (sprint 024-004). H=[0,0,1,0,0]; wrap-safe innovation.
+    _ekf.updateHeading(theta_otos_rad, _rOtosTheta);
+
+    // 3. Fuse OTOS velocity (v, omega). Single scalar _rOtosV used for both
     //    v and omega noise (symmetric simplification — v1 design).
     _ekf.updateVelocity(v_otos_mmps, omega_otos_rads, _rOtosV, _rOtosV);
 
-    // 3. Fuse encoder-derived velocity (v, omega). Similarly symmetric.
+    // 4. Fuse encoder-derived velocity (v, omega). Similarly symmetric.
     _ekf.updateVelocity(v_enc_mmps, omega_enc_rads, _rEncV, _rEncV);
 
     // Write all EKF outputs back to HardwareState.

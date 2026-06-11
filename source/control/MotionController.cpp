@@ -129,12 +129,48 @@ void MotionController::setCtx(struct Robot* r)
 }
 
 // ---------------------------------------------------------------------------
+// _checkSafeOneShot — re-arm safety if the one-shot disable flag is set.
+//
+// Called at the start of every begin*() entry point after the cancel-if-active
+// guard (ticket 002) and before configure().  If _safeOneShotDisable is true:
+//   - restore _cfg.safetyEnabled = true
+//   - emit "EVT safety re-armed" via the command reply sink
+//   - clear the flag
+// This ensures SAFE off is a one-shot bypass: the operator can issue a single
+// motion command without keepalives, and safety is automatically restored for
+// that command and all subsequent ones.
+//
+// Note: _cfg is a const-ref; safetyEnabled lives in the mutable RobotConfig
+// owned by Robot.  Access via _ctx.robot->config when available, which IS the
+// same object as _cfg (Robot passes &cfg to MotionController).  Cast away
+// const here — we are legitimately mutating config.safetyEnabled as the
+// designated "re-arm" code path (ticket 024-003 decision: MotionController
+// owns the flag; architecture review confirmed).
+// ---------------------------------------------------------------------------
+void MotionController::_checkSafeOneShot(ReplyFn fn, void* ctx)
+{
+    if (!_safeOneShotDisable) return;
+    _safeOneShotDisable = false;
+    // Re-arm via the mutable Robot config (same object as _cfg).
+    if (_ctx.robot != nullptr) {
+        _ctx.robot->config.safetyEnabled = true;
+    }
+    // Emit the re-arm event.
+    if (fn) {
+        fn("EVT safety re-armed", ctx);
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Entry points
 // ---------------------------------------------------------------------------
 
 void MotionController::beginStream(float leftMms, float rightMms, uint32_t now_ms,
                                    TargetState& target, ReplyFn fn, void* ctx)
 {
+    // Re-arm safety if SAFE off was issued (one-shot disable, sprint 024-003).
+    _checkSafeOneShot(fn, ctx);
+
     // Convert wheel speeds to body twist via forward kinematics, then route
     // through BVC so all wheel commands go through the profiler path.
     float v, omega;
@@ -158,6 +194,17 @@ void MotionController::beginVelocity(float v_mms, float omega_rads, uint32_t now
                                      TargetState& target, ReplyFn fn, void* ctx,
                                      const char* corr_id)
 {
+    // Cancel any stale MotionCommand before configuring the new one.
+    // cancel(HARD) emits "EVT cancelled" via the stored reply sink (making the
+    // transition observable on the wire), then goes IDLE.  configure() below
+    // clears the reply sink pointer afterward — no use-after-free.
+    if (_activeCmd.active()) {
+        _activeCmd.cancel(MotionCommand::StopStyle::HARD);
+    }
+
+    // Re-arm safety if SAFE off was issued (one-shot disable, sprint 024-003).
+    _checkSafeOneShot(fn, ctx);
+
     // Configure a fresh MotionCommand for body-twist (v, ω) with:
     //   - No TIME stop (keepalive watchdog is now the system watchdog in
     //     LoopScheduler — fires EVT safety_stop + X after sTimeoutMs silence).
@@ -193,6 +240,14 @@ void MotionController::beginArc(float speedMms, float radiusMm, uint32_t now_ms,
     float kappa = (radiusMm != 0.0f) ? (1.0f / radiusMm) : 0.0f;
     float omega  = speedMms * kappa;
 
+    // Cancel any stale MotionCommand before configuring the new one.
+    if (_activeCmd.active()) {
+        _activeCmd.cancel(MotionCommand::StopStyle::HARD);
+    }
+
+    // Re-arm safety if SAFE off was issued (one-shot disable, sprint 024-003).
+    _checkSafeOneShot(fn, ctx);
+
     // Configure a fresh MotionCommand for body-twist (v, ω) with:
     //   - No stop conditions (open-ended; host cancels via X or R 0 r).
     //   - SOFT stop style (ramp to zero before completing).
@@ -225,6 +280,9 @@ void MotionController::beginTimed(float leftMms, float rightMms,
     // For equal L=R (straight drive), forward() gives v=(L+R)/2 and omega=0 — no steer bias.
     float v_mms, omega_rads;
     BodyKinematics::forward(leftMms, rightMms, _cfg.trackwidthMm, v_mms, omega_rads);
+
+    // Re-arm safety if SAFE off was issued (one-shot disable, sprint 024-003).
+    _checkSafeOneShot(fn, ctx);
 
     // Configure a fresh MotionCommand with:
     //   - TIME stop condition at durationMs.
@@ -272,6 +330,9 @@ void MotionController::beginDistance(float leftMms, float rightMms,
     // Store decel-hook state.
     _dDistTarget = (float)targetMm;
     _dOmega      = omega_rads;
+
+    // Re-arm safety if SAFE off was issued (one-shot disable, sprint 024-003).
+    _checkSafeOneShot(fn, ctx);
 
     // Timeout: 2× nominal travel time + 2 s safety margin.
     // The nominal time is |targetMm| / max(|vL|, |vR|) in seconds.
@@ -339,6 +400,10 @@ void MotionController::beginGoTo(float tx, float ty, float speedMms, uint32_t no
         target.corrId[0] = '\0';
     }
 
+    // Re-arm safety if SAFE off was issued (one-shot disable, sprint 024-003).
+    // Done before the PRE_ROTATE / PURSUE branch so both paths benefit.
+    _checkSafeOneShot(fn, ctx);
+
     // Turn-in-place gate: bearing is computed from the robot-relative input
     // (tx, ty) at command time — the robot frame IS the input frame here.
     float bearing = fabsf(atan2f(ty, tx));
@@ -384,16 +449,67 @@ void MotionController::beginGoTo(float tx, float ty, float speedMms, uint32_t no
         float omegaMax = 2.0f * _cfg.vWheelMax / _cfg.trackwidthMm;
         if (omega >  omegaMax) omega =  omegaMax;
         if (omega < -omegaMax) omega = -omegaMax;
-        _bvc.seedCurrent(0.0f, omega);
-        _bvc.setTarget(0.0f, omega);
+
+        // Replace raw BVC seeding with a supervised MotionCommand (sprint 024-001).
+        // This is the primary wild-spin fix: if the fused bearing is frozen or wrong
+        // (slip, encoder wedge, OTOS invalid), the spin is now bounded by the TIME net.
+        //
+        // HEADING stop: fires when the current heading is within gateRad of the
+        // signed bearing delta (atan2(ty, tx) = angle from robot forward to target).
+        // This is the normal-exit condition: robot has turned enough to pursue directly.
+        //
+        // TIME stop: 2× nominal + 2000 ms runaway net, exactly as beginTurn().
+        // omega is already clamped above (> 1e-3 guaranteed by the bearing > gateRad
+        // check and the omegaMax clamping), so the division is safe.
+        float bearingSigned = atan2f(ty, tx);   // signed angle, robot frame, (-π, π]
+        float nominalMs = (fabsf(omega) > 1e-3f)
+                          ? (fabsf(bearingSigned) / fabsf(omega)) * 1000.0f
+                          : 0.0f;
+        float timeoutMs = 2.0f * nominalMs + 2000.0f;
+
+        // Cancel any stale MotionCommand before configuring PRE_ROTATE.
+        // If a TURN (or prior G) is still active, cancel(HARD) emits its
+        // cancellation EVT via the stored reply sink, then goes IDLE.
+        // configure() below clears the stale reply sink — no use-after-free.
+        if (_activeCmd.active()) {
+            _activeCmd.cancel(MotionCommand::StopStyle::HARD);
+        }
+
+        // Configure PRE_ROTATE as a supervised spin-in-place command.
+        // No reply sink: PRE_ROTATE does NOT emit "EVT done G" on HEADING success
+        // (the transition to PURSUE happens in driveAdvance without a wire event).
+        // On TIME net expiry (runaway), driveAdvance emits "EVT done G" directly
+        // via target.replyFn so the caller gets a clean terminal event.
+        _activeCmd.configure(0.0f, omega, &_bvc);
+        _activeCmd.addStop(makeHeadingStop(bearingSigned, gateRad));
+        _activeCmd.addStop(makeTimeStop(timeoutMs));
+        // No setReplySink: EVT emission is handled by driveAdvance on termination.
+        _activeCmd.setStopStyle(MotionCommand::StopStyle::SOFT);
+        // BVC ramps under yawAccMax — no instant 180°/s seed (seedCurrent removed).
+        HardwareState emptyState{};
+        const HardwareState& hwInputs = _hwState ? *_hwState : emptyState;
+        _activeCmd.start(hwInputs, now_ms);
         _gPhase = GPhase::PRE_ROTATE;
     } else {
         // Target is roughly ahead — enter pursuit directly.
         // Configure MotionCommand with a POSITION stop at the world target.
         // The per-tick pursuit hook in driveAdvance will update the (v, ω) target
         // each tick before _activeCmd.tick() is called.
+        //
+        // PURSUE TIME net (sprint 024-001): bound the end-to-end drive so G is
+        // not the only motion verb without a TIME backstop.
+        float distanceMm = sqrtf(tx * tx + ty * ty);
+        float pursueSpd  = (_gSpeed > 1.0f) ? _gSpeed : 1.0f;
+        float pursueTimeoutMs = 2.0f * (distanceMm / pursueSpd) * 1000.0f + 4000.0f;
+
+        // Cancel any stale MotionCommand before configuring PURSUE.
+        if (_activeCmd.active()) {
+            _activeCmd.cancel(MotionCommand::StopStyle::HARD);
+        }
+
         _activeCmd.configure(_gSpeed, 0.0f, &_bvc);
         _activeCmd.addStop(makePositionStop(_gTargetXWorld, _gTargetYWorld, _cfg.arriveTolMm));
+        _activeCmd.addStop(makeTimeStop(pursueTimeoutMs));
         _activeCmd.setReplySink(fn, ctx, corr_id);
         _activeCmd.setStopStyle(MotionCommand::StopStyle::SOFT);
         _activeCmd.setDoneEvt("EVT done G");
@@ -439,6 +555,14 @@ void MotionController::beginTurn(float headingCdeg, float epsCdeg, uint32_t now_
     //   = |wrap((currentHeadingRad + delta_rad) - currentHeadingRad - delta_rad)| < eps
     //   = |wrap(0)| < eps → fires when robot has rotated by delta_rad from baseline.
     // This matches the absolute target theta_rad exactly (since delta_rad = theta_rad - baseline).
+
+    // Cancel any stale MotionCommand before configuring the new one.
+    if (_activeCmd.active()) {
+        _activeCmd.cancel(MotionCommand::StopStyle::HARD);
+    }
+
+    // Re-arm safety if SAFE off was issued (one-shot disable, sprint 024-003).
+    _checkSafeOneShot(fn, ctx);
 
     // Configure a fresh MotionCommand with:
     //   - target twist (0, ω): spin-in-place.
@@ -494,14 +618,25 @@ void MotionController::beginRotation(float relCdeg, uint32_t now_ms,
     const float kRtCoastArcMm = 8.0f;   // ~7.3° SOFT-ramp coast at 100°/s (sim-tuned)
 
     float tw   = _cfg.trackwidthMm;
-    // Per-wheel arc = |deg|·(π/180)·(trackwidth/2). The ROTATION stop fires when
-    // |Δ(encR - encL)|/2 reaches (arc - coast anticipation).
-    float arc  = fabsf(relCdeg) / 100.0f * kDegToRad * (tw * 0.5f);
+    // Per-wheel arc = |deg|·(π/180)·(trackwidth/2) / slip.
+    // Dividing by slip (< 1.0) enlarges the encoder-arc target so wheels travel
+    // far enough for the body to reach the commanded angle despite scrub.
+    // effectiveSlip() applies the same migration-safe clamp as Odometry::predict().
+    float slip = effectiveSlip(_cfg.rotationalSlip);
+    float arc  = fabsf(relCdeg) / 100.0f * kDegToRad * (tw * 0.5f) / slip;
     float stopArc = arc - kRtCoastArcMm;
     if (stopArc < 0.0f) stopArc = 0.0f;
     float rateDps = (_cfg.yawRateMax < kRtRateDps) ? _cfg.yawRateMax : kRtRateDps;
     float omega_sign = (relCdeg >= 0.0f) ? 1.0f : -1.0f;   // + ⇒ CCW
     float omega = omega_sign * rateDps * kDegToRad;        // rad/s
+
+    // Cancel any stale MotionCommand before configuring the new one.
+    if (_activeCmd.active()) {
+        _activeCmd.cancel(MotionCommand::StopStyle::HARD);
+    }
+
+    // Re-arm safety if SAFE off was issued (one-shot disable, sprint 024-003).
+    _checkSafeOneShot(fn, ctx);
 
     _activeCmd.configure(0.0f, omega, &_bvc);
     _activeCmd.addStop(makeRotationStop(stopArc));         // primary: encoder arc
@@ -548,6 +683,11 @@ void MotionController::cancel(uint32_t now_ms, ReplyFn fn, void* ctx)
     (void)now_ms;
     (void)fn;
     (void)ctx;
+}
+
+void MotionController::disableSafetyOneShot()
+{
+    _safeOneShotDisable = true;
 }
 
 void MotionController::softStop(uint32_t now_ms)
@@ -659,7 +799,57 @@ void MotionController::driveAdvance(HardwareState& inputs, MotorCommands& cmds,
 
         bool still_running = _activeCmd.tick(inputs, now_ms, dt_s);
         if (!still_running) {
-            // MotionCommand terminated; the robot stops its OWN motors here.
+            // MotionCommand terminated.
+            //
+            // PRE_ROTATE special case (sprint 024-001): when the PRE_ROTATE
+            // MotionCommand finishes, check the current bearing.
+            //   - bearing <= gateRad (HEADING stop fired) → transition to PURSUE.
+            //   - bearing >  gateRad (TIME net fired)     → runaway; emit "EVT done G"
+            //     and go IDLE so the caller gets a clean terminal event.
+            if (_mode == DriveMode::GO_TO && _gPhase == GPhase::PRE_ROTATE) {
+                float x, y, h_rad;
+                getPoseFloat(x, y, h_rad);
+                float dxW   = _gTargetXWorld - x;
+                float dyW   = _gTargetYWorld - y;
+                float dx_rf =  dxW * cosf(h_rad) + dyW * sinf(h_rad);
+                float dy_rf = -dxW * sinf(h_rad) + dyW * cosf(h_rad);
+                float bearingNow = fabsf(atan2f(dy_rf, dx_rf));
+                float gateRad    = _cfg.turnInPlaceGate * (3.14159265f / 180.0f);
+
+                if (bearingNow <= gateRad) {
+                    // HEADING stop fired → start the PURSUE phase.
+                    // Compute distance for the PURSUE TIME net.
+                    float distanceMm     = sqrtf(dxW * dxW + dyW * dyW);
+                    float pursueSpd      = (_gSpeed > 1.0f) ? _gSpeed : 1.0f;
+                    float pursueTimeoutMs = 2.0f * (distanceMm / pursueSpd) * 1000.0f + 4000.0f;
+
+                    _bvc.reset();
+                    _activeCmd.configure(_gSpeed, 0.0f, &_bvc);
+                    _activeCmd.addStop(makePositionStop(_gTargetXWorld, _gTargetYWorld,
+                                                       _cfg.arriveTolMm));
+                    _activeCmd.addStop(makeTimeStop(pursueTimeoutMs));
+                    _activeCmd.setReplySink(target.replyFn, target.replyCtx, target.corrId);
+                    _activeCmd.setStopStyle(MotionCommand::StopStyle::SOFT);
+                    _activeCmd.setDoneEvt("EVT done G");
+                    const HardwareState& hw = _hwState ? *_hwState : inputs;
+                    _activeCmd.start(hw, now_ms);
+                    _gPhase = GPhase::PURSUE;
+                    // Do NOT go IDLE; PURSUE is now active.
+                    return;
+                } else {
+                    // TIME net fired (runaway spin): emit terminal EVT and go IDLE.
+                    // _activeCmd had no reply sink, so we emit directly here.
+                    emitEvt("EVT done G", target);
+                    _mc.stop();
+                    _bvc.reset();
+                    _mode = DriveMode::IDLE;
+                    target.mode = DriveMode::IDLE;
+                    _gPhase = GPhase::IDLE;
+                    return;
+                }
+            }
+
+            // Normal completion (non-PRE_ROTATE): stop motors, reset, go IDLE.
             // Without this the last BVC wheel target persists and the motor PID
             // keeps driving it forever (runaway), since IDLE mode no longer
             // advances the BVC to write fresh (zero) setpoints. _mc.stop() zeros
@@ -680,45 +870,24 @@ void MotionController::driveAdvance(HardwareState& inputs, MotorCommands& cmds,
     // sTimeoutMs of inbound command silence (Sprint 020, Ticket 005).
     (void)inputs;
 
-    // ── BVC tick for STREAMING and PRE_ROTATE modes ─────────────────────────
-    // These modes set BVC targets but do not have an active MotionCommand to
-    // call _bvc.advance(). Tick the BVC directly here so the profiler advances
-    // and wheel setpoints are written every control period.
-    if (_mode == DriveMode::STREAMING ||
-        (_mode == DriveMode::GO_TO && _gPhase == GPhase::PRE_ROTATE)) {
+    // ── BVC tick for STREAMING mode ─────────────────────────────────────────
+    // STREAMING mode sets BVC targets but does not have an active MotionCommand
+    // to call _bvc.advance(). Tick the BVC directly here so the profiler
+    // advances and wheel setpoints are written every control period.
+    //
+    // PRE_ROTATE is no longer ticked here (sprint 024-001): it now runs via
+    // _activeCmd (which calls _bvc.advance() internally in tick()), so the
+    // PRE_ROTATE branch was removed to prevent double-ticking the BVC.
+    if (_mode == DriveMode::STREAMING) {
         _bvc.advance(dt_s);
     }
 
-    // G-mode: advance go-to state machine.
-    if (_mode == DriveMode::GO_TO) {
-        if (_gPhase == GPhase::PRE_ROTATE) {
-            float x, y, h_rad;
-            getPoseFloat(x, y, h_rad);
-            float dxW  = _gTargetXWorld - x;
-            float dyW  = _gTargetYWorld - y;
-            float dx_rf =  dxW * cosf(h_rad) + dyW * sinf(h_rad);
-            float dy_rf = -dxW * sinf(h_rad) + dyW * cosf(h_rad);
-            float bearing = fabsf(atan2f(dy_rf, dx_rf));
-            float gateRad = _cfg.turnInPlaceGate * (3.14159265f / 180.0f);
-
-            if (bearing <= gateRad) {
-                // PRE_ROTATE → PURSUE transition: configure and start _activeCmd
-                // with a POSITION stop at the world target.  The per-tick hook
-                // above will update (v, ω) each tick before _activeCmd.tick().
-                _activeCmd.configure(_gSpeed, 0.0f, &_bvc);
-                _activeCmd.addStop(makePositionStop(_gTargetXWorld, _gTargetYWorld, _cfg.arriveTolMm));
-                _activeCmd.setReplySink(target.replyFn, target.replyCtx, target.corrId);
-                _activeCmd.setStopStyle(MotionCommand::StopStyle::SOFT);
-                _activeCmd.setDoneEvt("EVT done G");
-                const HardwareState& hw = _hwState ? *_hwState : inputs;
-                _activeCmd.start(hw, now_ms);
-                _gPhase = GPhase::PURSUE;
-            }
-        }
-
-        // PURSUE is now handled by the MotionCommand path at the top of
-        // driveAdvance — control never reaches here while PURSUE is active.
-    }
+    // G-mode: no additional state-machine branches needed here.
+    // PRE_ROTATE now runs via _activeCmd (handled in the block above).
+    // PURSUE runs via _activeCmd (handled in the block above).
+    // Both phases are driven entirely by the MotionCommand path at the top
+    // of driveAdvance — control never reaches here while GO_TO is active
+    // with a running _activeCmd.
 }
 
 // ---------------------------------------------------------------------------

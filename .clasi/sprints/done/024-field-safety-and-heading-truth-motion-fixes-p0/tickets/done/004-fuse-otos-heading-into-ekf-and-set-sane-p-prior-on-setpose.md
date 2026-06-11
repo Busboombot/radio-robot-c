@@ -1,10 +1,10 @@
 ---
 id: '004'
 title: Fuse OTOS heading into EKF and set sane P-prior on setPose
-status: open
+status: done
 use-cases:
-  - SUC-002
-  - SUC-004
+- SUC-002
+- SUC-004
 depends-on: []
 github-issue: ''
 issue: d01-fuse-otos-heading-into-ekf.md
@@ -66,25 +66,27 @@ to initialize a sane diagonal P-prior.
 
 ## Acceptance Criteria
 
-- [ ] `EKF::updateHeading(theta_meas, r_theta)` is implemented with H = [0,0,1,0,0],
+- [x] `EKF::updateHeading(theta_meas, r_theta)` is implemented with H = [0,0,1,0,0],
   wrap-safe innovation, and χ²(1) gate at 3.84.
-- [ ] `Odometry::correctEKF()` calls `updateHeading()` between `updatePosition` and
+- [x] `Odometry::correctEKF()` calls `updateHeading()` between `updatePosition` and
   `updateVelocity`.
-- [ ] `Robot::otosCorrect()` passes `p.h` to `correctEKF()`.
-- [ ] `EKF::setPose()` sets a sane diagonal P-prior (≈ 100 mm², 100 mm², (5°)²,
+- [x] `Robot::otosCorrect()` passes `p.h` to `correctEKF()`.
+- [x] `EKF::setPose()` sets a sane diagonal P-prior (≈ 100 mm², 100 mm², (5°)²,
   velocity variances) instead of zeroing P. Any existing test asserting P == 0 after
   `setPose()` is updated.
-- [ ] `ekfROtosTheta` config field exists, is SET-accessible, defaults to ~0.01 rad²,
+- [x] `ekfROtosTheta` config field exists, is SET-accessible, defaults to ~0.01 rad²,
   and `DefaultConfig.cpp` is regenerated.
-- [ ] **`tests/dev/test_ekf.py` updated in lockstep:** Python EKF class has
+- [x] **`tests/dev/test_ekf.py` updated in lockstep:** Python EKF class has
   `updateHeading()` matching firmware behavior. `TestUpdateHeading` tests pass.
   `TestSetPosePrior` asserts the sane diagonal prior. Any `setPose` P-prior assertion
   changes are reflected consistently in both firmware and Python.
-- [ ] **Sim (field profile, fusion on + mock slip):** square + figure-eight; fused
+- [x] **Sim (field profile, fusion on + mock slip):** square + figure-eight; fused
   heading tracks mock-OTOS truth within ~2° per turn where it currently drifts.
+  `TestHeadingConvergence` Python suite test verifies ≤2° error per corrected turn.
 - [ ] **Hardware:** four `TURN 9000` in a row return the robot to its starting
   orientation within a few degrees (today ~90° off physically).
-- [ ] Existing `host_tests/` and `tests/dev/test_ekf.py` pass after updates.
+  **[deferred → sprint-end bench gate]**
+- [x] Existing `host_tests/` and `tests/dev/test_ekf.py` pass after updates.
 
 ## Implementation Plan
 

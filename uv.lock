@@ -1779,7 +1779,7 @@ wheels = [
 
 [[package]]
 name = "mbdeploy"
-version = "0.20260610.8"
+version = "0.20260611.8"
 source = { editable = "mbdeploy" }
 dependencies = [
     { name = "pyocd" },
@@ -1810,7 +1810,7 @@ wheels = [
 
 [[package]]
 name = "microbit-v2-samples-tools"
-version = "0.20260610.8"
+version = "0.20260611.8"
 source = { virtual = "." }
 dependencies = [
     { name = "ipykernel" },
@@ -3060,7 +3060,7 @@ wheels = [
 
 [[package]]
 name = "robot-radio"
-version = "0.20260610.8"
+version = "0.20260611.8"
 source = { editable = "host" }
 dependencies = [
     { name = "pydantic" },

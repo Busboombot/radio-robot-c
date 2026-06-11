@@ -20,11 +20,21 @@
 //     Mahalanobis gating: chi-square 2-DOF threshold 5.99.
 //   updateVelocity(v_meas, omega_meas, r_v, r_omega): two sequential 1D
 //     scalar Kalman updates. Gate threshold: chi-square 1-DOF = 3.84.
+//   updateHeading(theta_meas, r_theta): scalar heading observation.
+//     H = [0,0,1,0,0]; wrap-safe innovation y = wrapPi(theta_meas - _x[2]);
+//     Mahalanobis gate: chi-square 1-DOF threshold 3.84.
 //
 // All matrix operations (5x5, 5x2, 5x1) are fully unrolled as plain float
 // arithmetic. No heap allocation, no STL, no Eigen.
 //
 // Sprint 023, Ticket 001.
+// Sprint 024, Ticket 004: added updateHeading(); sane P-prior in setPose().
+// Sprint 024, Ticket 005: _rejPos_streak + P-inflation re-baseline recovery;
+//   getRejectCount(). Architecture deviation: original design called for R×10
+//   inflation, but math shows d²=200²/(P+10·R)≫5.99 even at R×10 — still
+//   permanently rejected. P-inflation (P→1e6 mm² / r_theta×1e5) instead widens
+//   S so the standard gate passes (d²≈0) and K≈1, snapping state to OTOS in
+//   one update. This is the only mechanism that satisfies the 200mm/<2s AC.
 // ===========================================================================
 
 class EKF {
@@ -42,7 +52,10 @@ public:
     void init(float q_xy, float q_theta, float q_v, float q_omega,
               float r_otos_xy, float r_otos_v, float r_enc_v);
 
-    // Overwrite state with a known pose; zeroes v and omega; reset covariance.
+    // Overwrite state with a known pose; zeroes v and omega; sets sane diagonal
+    // P-prior (100 mm², 100 mm², (5°)², v-vars) instead of zeroing P.
+    // A zeroed P after setPose() would create falsely tight Mahalanobis gates
+    // and strangle re-acquisition after pose injection.
     void setPose(float x, float y, float theta);
 
     // Predict step: arc-segment motion model for position block; random-walk
@@ -67,6 +80,13 @@ public:
     //   r_omega   — measurement noise variance for omega (rad/s)^2
     void updateVelocity(float v_meas, float omega_meas, float r_v, float r_omega);
 
+    // Update step: fuse OTOS heading measurement (scalar 1-DOF update).
+    // H = [0,0,1,0,0]; innovation is wrap-safe: y = wrapPi(theta_meas - _x[2]).
+    // Mahalanobis gate: chi-square 1-DOF threshold 3.84.
+    //   theta_meas — measured heading (rad), e.g. OTOS p.h
+    //   r_theta    — heading measurement noise variance (rad^2)
+    void updateHeading(float theta_meas, float r_theta);
+
     // Accessors
     float    x()            const;
     float    y()            const;
@@ -74,6 +94,9 @@ public:
     float    v()            const;
     float    omega()        const;
     uint32_t rejectedCount() const;
+    int      getRejectCount() const;   // alias for TLM: same as rejectedCount()
+    int      rejHeadStreak() const;
+    int      rejPosStreak()  const;
 
 private:
     float    _x[5];       // state: [x_mm, y_mm, theta_rad, v_mmps, omega_rads]
@@ -82,8 +105,18 @@ private:
     float    _rOtosXy;    // OTOS position noise variance (same for x and y)
     float    _rOtosV;     // OTOS velocity noise variance
     float    _rEncV;      // encoder velocity noise variance
-    uint32_t _rejected;   // count of gated (rejected) observations
+    uint32_t _rejected;       // cumulative count of gated (rejected) observations
+    int      _rejHead_streak; // consecutive heading-update rejection streak (D3 gate recovery)
+    int      _rejPos_streak;  // consecutive position-update rejection streak (D3 gate recovery)
 
     // Wrap angle to (-pi, pi] using atan2f identity.
+    // Form: atan2f(sinf(theta), cosf(theta)) — exact match with Python mirror's
+    // math.atan2(math.sin, math.cos) and with Odometry::wrapPi().
     static float wrapPi(float theta);
+
+    // Sane P-prior diagonal values used by setPose() (sprint 024-004).
+    static constexpr float kPriorXY    = 100.0f;          // mm^2
+    static constexpr float kPriorTheta = 0.00762f;        // (5 deg in rad)^2 ≈ (5*pi/180)^2
+    static constexpr float kPriorV     = 100.0f;          // (mm/s)^2
+    static constexpr float kPriorOmega = 0.01f;           // (rad/s)^2
 };

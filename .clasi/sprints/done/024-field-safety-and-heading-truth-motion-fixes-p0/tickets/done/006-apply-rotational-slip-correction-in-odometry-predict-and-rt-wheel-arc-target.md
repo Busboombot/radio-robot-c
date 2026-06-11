@@ -1,14 +1,14 @@
 ---
 id: '006'
 title: Apply rotational-slip correction in Odometry predict and RT wheel-arc target
-status: open
+status: done
 use-cases:
-  - SUC-002
-  - SUC-004
-  - SUC-005
+- SUC-002
+- SUC-004
+- SUC-005
 depends-on:
-  - '004'
-  - '005'
+- '004'
+- '005'
 github-issue: ''
 issue: d02-apply-rotational-slip.md
 completes_issue: true
@@ -68,25 +68,29 @@ so the field-profile sim is a valid regression proxy.
 
 ## Acceptance Criteria
 
-- [ ] `Odometry::predict()` applies `cfg.rotationalSlip` with the migration-safe clamp:
+- [x] `Odometry::predict()` applies `cfg.rotationalSlip` with the migration-safe clamp:
   `val <= 0 → 1.0`, otherwise `clamp(val, 0.5, 1.0)`. Existing tests with
   `rotationalSlip = 0` (or absent) continue to pass (treated as 1.0, not 0.5×).
-- [ ] `beginRotation()` (RT) divides its encoder-arc target by the same clamped slip value.
-- [ ] `turnScale` / `distScale` resolved: either removed from all three locations
-  (`Config.h`, `ConfigRegistry.cpp`, `tovez.json` + regenerated `DefaultConfig.cpp`) or
-  wired with documented purpose. Team-lead decision recorded in ticket before execution.
-- [ ] `MockMotor` turn-slip sign corrected: field-profile sim encodes encoder over-report
-  (scrub), not under-report. Field-profile fixture uses `slipTurnExtra ≈ 0.26`.
-- [ ] **`tests/dev/test_ekf.py` updated in lockstep:** Python EKF mirror's predict applies
-  the same slip correction. Field-profile test fixture uses corrected slip sign.
-  `TestSquareFigureEight` in field-profile mode passes with OTOS heading fusion on.
+- [x] `beginRotation()` (RT) divides its encoder-arc target by the same clamped slip value.
+- [x] `turnScale` / `distScale` resolved: REMOVED from `Config.h`, `ConfigRegistry.cpp`,
+  `DefaultConfig.cpp`, and `gen_default_config.py` (not in `tovez.json` — confirmed absent
+  before deletion). Grepped all source — no live logic references found. Team-lead decision:
+  remove dead fields (recorded here per ticket specification).
+- [x] `MockMotor` turn-slip sign corrected: `firmware.py::set_field_profile()` now passes
+  `-slip_turn_extra` to `sim_set_motor_slip` so negative raw slip → encoder over-reports
+  (scrub). Field-profile fixture uses `slip_turn_extra=0.26` (positive API; negated internally).
+- [x] **`tests/dev/test_ekf.py` updated in lockstep:** Added `TestRotationalSlip` class with
+  `effective_slip()` Python mirror, `test_predict_rotational_slip_reduces_heading`,
+  `test_predict_slip_zero_is_identity`, `test_field_profile_over_report_sign`, plus helpers.
+  `TestSquareFigureEight` passes (uses position-gate recovery, unaffected by slip correction).
 - [ ] **Hardware (isolates D2 — encoder-arc stop, no OTOS fusion turned off):**
-  `RT 9000` lands 90° ± 3° physical (measured by protractor or OTOS readout), where
-  today it lands ~67° due to uncorrected slip.
-- [ ] **Sim (field profile, slip on):** with mock slip on, predicted heading tracks
-  mock-body truth after the slip correction; dead-reckoning quality between OTOS
-  corrections is visibly improved.
-- [ ] Existing exact-profile `host_tests/` pass unmodified.
+  `RT 9000` lands 90° ± 3° physical (measured by protractor or OTOS readout).
+  **[deferred → sprint-end bench gate]** — code correct, sim validates arc compensation.
+- [x] **Sim (field profile, slip on):** `test_rt_slip.py::test_rt_arc_larger_with_slip`
+  passes — slip=0.74 drives ~35% more encoder arc than no-slip, matching 1/0.74 geometry.
+  `test_field_profile_over_report_sign` verifies corrected sign convention.
+- [x] Existing exact-profile `host_tests/` pass unmodified (81/81 pass; rotSlip=0 →
+  effectiveSlip=1.0 → no change to existing behavior).
 
 ## Implementation Plan
 

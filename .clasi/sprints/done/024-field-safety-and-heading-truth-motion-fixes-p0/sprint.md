@@ -1,21 +1,21 @@
 ---
 id: '024'
 title: Field-safety and heading-truth motion fixes (P0)
-status: planning-docs
+status: done
 branch: sprint/024-field-safety-and-heading-truth-motion-fixes-p0
 use-cases:
-  - SUC-001
-  - SUC-002
-  - SUC-003
-  - SUC-004
-  - SUC-005
+- SUC-001
+- SUC-002
+- SUC-003
+- SUC-004
+- SUC-005
 issues:
-  - d05-bound-goto-pre-rotate-phase.md
-  - d07-motioncommand-ownership-in-pre-rotate.md
-  - d04-watchdog-role-and-safe-rearm.md
-  - d01-fuse-otos-heading-into-ekf.md
-  - d03-ekf-gate-recovery-path.md
-  - d02-apply-rotational-slip.md
+- d05-bound-goto-pre-rotate-phase.md
+- d07-motioncommand-ownership-in-pre-rotate.md
+- d04-watchdog-role-and-safe-rearm.md
+- d01-fuse-otos-heading-into-ekf.md
+- d03-ekf-gate-recovery-path.md
+- d02-apply-rotational-slip.md
 ---
 <!-- CLASI: Before changing code or making plans, review the SE process in CLAUDE.md -->
 

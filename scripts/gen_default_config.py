@@ -237,6 +237,9 @@ RobotConfig defaultRobotConfig() {{
     p.ekfROtosV      = 200.0f;
     p.ekfREncV       = 100.0f;
 
+    // EKF heading fusion (Sprint 024-004)
+    p.ekfROtosTheta  = {ov('ekfROtosTheta', '0.01f')};  // ~(5.7 deg)^2
+
     // OTOS calibration scalars — baked from robot config.
     // OtosSensor::begin() programs the hardware registers from these
     // values at firmware boot; no host-side OL/OA push required.
@@ -278,10 +281,6 @@ RobotConfig defaultRobotConfig() {{
     p.yawAccMax       = 720.0f;
     p.jMax            = 0.0f;
     p.yawJerkMax      = 0.0f;
-
-    // Command scaling
-    p.distScale       = 0.94f;
-    p.turnScale       = 1.07f;
 
     // Timing
     p.minSpeedMms     = 50;

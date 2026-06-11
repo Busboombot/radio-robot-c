@@ -1,10 +1,10 @@
 ---
 id: '001'
 title: Bound GOT_TO PRE_ROTATE with supervised MotionCommand and PURSUE TIME net
-status: open
+status: done
 use-cases:
-  - SUC-001
-  - SUC-002
+- SUC-001
+- SUC-002
 depends-on: []
 github-issue: ''
 issue: d05-bound-goto-pre-rotate-phase.md
@@ -51,25 +51,27 @@ phase. The instant 180 deg/s start is removed; the BVC ramps under
 
 ## Acceptance Criteria
 
-- [ ] PRE_ROTATE branch of `beginGoTo()` creates a `MotionCommand` with both
+- [x] PRE_ROTATE branch of `beginGoTo()` creates a `MotionCommand` with both
   a HEADING stop (`bearing_delta`, `gateRad`) and a TIME stop (`2 × nominal +
   2000 ms`). The raw `_bvc.seedCurrent` / `_bvc.setTarget` calls are removed.
-- [ ] BVC is ramped under `yawAccMax` — the instant 180 deg/s start is gone.
-- [ ] PURSUE phase has `makeTimeStop(2 × (distance / speed) × 1000 + 4000 ms)`.
-- [ ] **BVC double-tick guard:** the `_bvc.advance(dt_s)` call inside the
+- [x] BVC is ramped under `yawAccMax` — the instant 180 deg/s start is gone.
+- [x] PURSUE phase has `makeTimeStop(2 × (distance / speed) × 1000 + 4000 ms)`.
+- [x] **BVC double-tick guard:** the `_bvc.advance(dt_s)` call inside the
   PRE_ROTATE special-case block of `driveAdvance()` (lines ~683–689) is removed
   or guarded so that once PRE_ROTATE runs through `_activeCmd`, the BVC is not
   ticked twice per loop. Verify there is exactly one `_bvc.advance()` call on the
   PRE_ROTATE path through `driveAdvance()`.
-- [ ] **Sim (field profile, slip on, fusion on):** issue `G` to a 135° bearing
+- [x] **Sim (field profile, slip on, fusion on):** issue `G` to a 135° bearing
   target with heading frozen (mock); command ends via the PRE_ROTATE TIME net and
   emits `EVT done G`. Must NOT spin forever. Must NOT emit `EVT safety_stop`
   (keepalives flowing throughout so the watchdog cannot mask the result).
+  — Verified by `test_pre_rotate_time_net` in `host_tests/test_goto_bounds.py`.
 - [ ] **Hardware (keepalives flowing / daemon ON):** `G` to a behind-the-robot
   target with a frozen/wrong heading → robot stops via the PRE_ROTATE TIME stop
   and emits the timeout `EVT done G`, not `EVT safety_stop`. A tour run on the
   field produces no unbounded spin.
-- [ ] Existing exact-profile host_tests pass unmodified.
+  **[deferred → sprint-end bench gate]**
+- [x] Existing exact-profile host_tests pass unmodified.
 
 ## Implementation Plan
 

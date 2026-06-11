@@ -159,3 +159,66 @@ class Sim:
             ctypes.c_int,
         ]
         lib.sim_get_async_evts.restype = ctypes.c_int
+
+        # sim_set_motor_slip(void* h, int side, float straight, float turn_extra)
+        lib.sim_set_motor_slip.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_int,
+            ctypes.c_float,
+            ctypes.c_float,
+        ]
+        lib.sim_set_motor_slip.restype = None
+
+        # sim_set_otos_fusion(void* h, int on)
+        lib.sim_set_otos_fusion.argtypes = [ctypes.c_void_p, ctypes.c_int]
+        lib.sim_set_otos_fusion.restype = None
+
+        # sim_enable_otos_model(void* h)
+        lib.sim_enable_otos_model.argtypes = [ctypes.c_void_p]
+        lib.sim_enable_otos_model.restype = None
+
+        # sim_set_otos_linear_noise(void* h, float sigma_fraction)
+        lib.sim_set_otos_linear_noise.argtypes = [ctypes.c_void_p, ctypes.c_float]
+        lib.sim_set_otos_linear_noise.restype = None
+
+        # sim_set_otos_yaw_noise(void* h, float sigma_fraction)
+        lib.sim_set_otos_yaw_noise.argtypes = [ctypes.c_void_p, ctypes.c_float]
+        lib.sim_set_otos_yaw_noise.restype = None
+
+        # sim_get_exact_pose_x / _y / _h → float
+        lib.sim_get_exact_pose_x.argtypes = [ctypes.c_void_p]
+        lib.sim_get_exact_pose_x.restype = ctypes.c_float
+        lib.sim_get_exact_pose_y.argtypes = [ctypes.c_void_p]
+        lib.sim_get_exact_pose_y.restype = ctypes.c_float
+        lib.sim_get_exact_pose_h.argtypes = [ctypes.c_void_p]
+        lib.sim_get_exact_pose_h.restype = ctypes.c_float
+
+    # ------------------------------------------------------------------
+    # Field-profile helpers
+    # ------------------------------------------------------------------
+
+    def set_field_profile(self, slip_turn_extra: float = 0.26,
+                          fuse_otos: bool = True) -> None:
+        """Configure the simulation as a field-profile fixture.
+
+        Sets turn-slip to reproduce encoder over-report on turns (scrub model),
+        and optionally enables OTOS EKF fusion.  This is the fixture used for
+        sprint-024 motion-bounding regression tests.
+
+        Args:
+            slip_turn_extra: Fractional encoder over-report during turns
+                             (positive = encoder reads MORE arc than body rotates,
+                             matching real scrub; 0.26 ≈ field-measured value).
+                             Negated before passing to sim_set_motor_slip because
+                             the MockMotor formula is ``enc = vel * (1 - slip)`` —
+                             negative slip produces over-report (sprint 024-006).
+            fuse_otos:       Whether to enable OTOS→EKF correction each tick.
+        """
+        # Negate: positive slip_turn_extra → negative raw slip → encoder over-reports.
+        # MockMotor tick: enc = vel * (1 - slip); slip < 0 → enc > vel (over-report).
+        self._lib.sim_set_motor_slip(self._h, ctypes.c_int(2),
+                                     ctypes.c_float(0.0),
+                                     ctypes.c_float(-slip_turn_extra))
+        if fuse_otos:
+            self._lib.sim_enable_otos_model(self._h)
+            self._lib.sim_set_otos_fusion(self._h, ctypes.c_int(1))

@@ -9,6 +9,16 @@ Sprint 022, Ticket T005 — original 3-state EKF mirror.
 Sprint 023, Ticket T006 — extended to 5-state (x, y, theta, v, omega);
   added TestPredictVelocity, TestUpdateVelocity, TestMahalanobisGating,
   TestSetPoseRebaseline, TestGoldenVectors, TestReplayHarness.
+Sprint 024, Ticket 004 — added update_heading(); sane P-prior in set_pose();
+  TestUpdateHeading, TestSetPosePrior, TestHeadingConvergence.
+Sprint 024, Ticket 005 — per-method streak counters (_rej_pos_streak,
+  _rej_head_streak) + P-inflation re-baseline recovery at 10 consecutive
+  rejections in update_position() and update_heading() independently;
+  TestHeadingGateRecovery, TestPositionGateRecovery (200mm teleport, <2s
+  convergence), field-profile fixture in TestSquareFigureEight;
+  get_reject_count() accessor alias.
+  Follow-up: switched from R×10 inflation to P-inflation because R×10 cannot
+  pass a 200mm gate at steady-state P (math: d²=200²/(P+10·R)≫5.99).
 """
 
 from __future__ import annotations
@@ -39,7 +49,7 @@ def wrap_pi(theta: float) -> float:
 # ---------------------------------------------------------------------------
 
 class EKF:
-    """Python mirror of the C++ EKF class (sprint 023, ticket T006).
+    """Python mirror of the C++ EKF class (sprint 023 T006, sprint 024 T004/T005).
 
     State: [x_mm, y_mm, theta_rad, v_mmps, omega_rads]
     Motion model: position block = arc-segment (midpoint integration);
@@ -48,7 +58,30 @@ class EKF:
       update_position(x_otos, y_otos): 2D position, Mahalanobis gate 5.99.
       update_velocity(v_meas, omega_meas, r_v, r_omega): two scalar 1-DOF
         updates, each gated at 3.84.
+      update_heading(theta_meas, r_theta): scalar heading, Mahalanobis gate 3.84,
+        wrap-safe innovation. Sprint 024-004.
+
+    set_pose() sets a sane diagonal P-prior (sprint 024-004) instead of zeroing P.
+
+    Sprint 024-005 — D3 gate recovery (P-inflation re-baseline):
+      _rej_pos_streak: consecutive position rejection streak (independent of heading).
+      _rej_head_streak: consecutive heading rejection streak (independent of position).
+      At 10 consecutive rejections, performs a P-inflation re-baseline: inflates
+      the relevant P block to ~1e6 mm² (position) or ~1e5 rad² (heading) so that
+      S ≫ innovation² (gate passes trivially) and K ≈ 1 (state snaps to measurement).
+      Architecture note: original design called for R×10 inflation; changed because
+      for a 200 mm jump at steady-state P (≈3 mm²), d²=200²/(P+10·R)≫5.99 — the
+      inflated gate still fails permanently. P-inflation is the only mechanism that
+      satisfies the 200mm/<2s acceptance criterion.
+      Streaks are independent — position divergence does not trigger heading recovery.
     """
+
+    # Sane P-prior constants — must match EKF.h constexpr values exactly.
+    # (5 * pi/180)^2 = 0.007615... ≈ 0.00762 — use the same approximation as the C++.
+    _PRIOR_XY    = 100.0    # mm^2
+    _PRIOR_THETA = (5.0 * math.pi / 180.0) ** 2  # rad^2  ≈ 0.00762
+    _PRIOR_V     = 100.0    # (mm/s)^2
+    _PRIOR_OMEGA = 0.01     # (rad/s)^2
 
     def __init__(self):
         self._x = [0.0] * 5
@@ -58,6 +91,8 @@ class EKF:
         self._r_otos_v = 0.0
         self._r_enc_v = 0.0
         self._rejected = 0
+        self._rej_head_streak = 0
+        self._rej_pos_streak = 0   # sprint 024-005: position rejection streak (independent)
 
     def init(self, q_xy: float, q_theta: float, q_v: float, q_omega: float,
              r_otos_xy: float, r_otos_v: float, r_enc_v: float) -> None:
@@ -85,18 +120,31 @@ class EKF:
         self._r_otos_v = r_otos_v
         self._r_enc_v = r_enc_v
         self._rejected = 0
+        self._rej_head_streak = 0
+        self._rej_pos_streak = 0   # sprint 024-005
 
         self._x = [0.0] * 5
         self._P = [[0.0] * 5 for _ in range(5)]
 
     def set_pose(self, x: float, y: float, theta: float) -> None:
-        """Overwrite state with a known pose; zero v and omega; reset covariance."""
+        """Overwrite state with a known pose; zero v and omega; set sane P-prior.
+
+        Sprint 024-004: instead of zeroing P, set a diagonal prior that reflects
+        realistic uncertainty so Mahalanobis gates are not falsely tight after a
+        pose injection. Mirrors EKF::setPose() in source/control/EKF.cpp exactly.
+        """
         self._x[0] = float(x)
         self._x[1] = float(y)
         self._x[2] = float(theta)
         self._x[3] = 0.0   # v
         self._x[4] = 0.0   # omega
+        # Zero all P, then set sane diagonal.
         self._P = [[0.0] * 5 for _ in range(5)]
+        self._P[0][0] = self._PRIOR_XY
+        self._P[1][1] = self._PRIOR_XY
+        self._P[2][2] = self._PRIOR_THETA
+        self._P[3][3] = self._PRIOR_V
+        self._P[4][4] = self._PRIOR_OMEGA
 
     def predict(self, dCenter: float, dTheta: float,
                 theta_before: float, dt_s: float = 0.0) -> None:
@@ -194,9 +242,51 @@ class EKF:
 
         # Mahalanobis gating: d2 = yi^T * S_inv * yi; chi-square 2-DOF = 5.99.
         d2 = yi0 * (si00 * yi0 + si01 * yi1) + yi1 * (si10 * yi0 + si11 * yi1)
-        if d2 > 5.99:
+        accepted = (d2 <= 5.99)
+
+        if not accepted:
             self._rejected += 1
-            return
+            self._rej_pos_streak += 1
+            # D3 gate recovery (sprint 024-005): after 10 consecutive position
+            # rejections, perform a P-inflation re-baseline and re-run the standard
+            # update. P-inflation sets P[0][0] and P[1][1] to a large value so that:
+            #   S = P + R_normal ≈ kRebaselineP  (>> innovation²)
+            #   K = P/(P+R) ≈ 1  →  state snaps to OTOS in one update.
+            # R×10 inflation cannot pass a 200mm gate at steady-state P (math:
+            #   d²=200²/(P+10·R)≫5.99 for P≈3mm², R=10mm²).
+            # _rej_pos_streak is independent of _rej_head_streak.
+            if self._rej_pos_streak >= 10:
+                self._rej_pos_streak = 0
+                _K_REBASELINE_P = 1.0e6   # mm² — K≈1 after inflation
+                # Inflate position block of P; zero cross-terms.
+                self._P[0][0] = _K_REBASELINE_P
+                self._P[0][1] = 0.0
+                self._P[1][0] = 0.0
+                self._P[1][1] = _K_REBASELINE_P
+                self._P[0][2] = 0.0; self._P[0][3] = 0.0; self._P[0][4] = 0.0
+                self._P[1][2] = 0.0; self._P[1][3] = 0.0; self._P[1][4] = 0.0
+                self._P[2][0] = 0.0; self._P[2][1] = 0.0
+                self._P[3][0] = 0.0; self._P[3][1] = 0.0
+                self._P[4][0] = 0.0; self._P[4][1] = 0.0
+                # Recompute S and S_inv with inflated P — gate trivially passes.
+                s00 = self._P[0][0] + self._r_otos_xy
+                s01 = 0.0
+                s10 = 0.0
+                s11 = self._P[1][1] + self._r_otos_xy
+                det_r = s00 * s11  # s01=s10=0
+                if det_r < 1e-9:
+                    return  # degenerate — skip (should never happen)
+                inv_det = 1.0 / det_r
+                si00 =  s11 * inv_det
+                si01 = 0.0
+                si10 = 0.0
+                si11 =  s00 * inv_det
+                accepted = True   # K≈1 path — gate trivially satisfied
+            if not accepted:
+                return
+        else:
+            # Normal accept — reset streak.
+            self._rej_pos_streak = 0
 
         # Kalman gain K = P*H^T * S_inv  (5x2).
         # P*H^T selects columns 0 and 1 of P.
@@ -304,6 +394,67 @@ class EKF:
             self._rejected += 1
         # else: degenerate — skip silently
 
+    def update_heading(self, theta_meas: float, r_theta: float) -> None:
+        """Update step: fuse OTOS heading as a scalar (1-DOF) Kalman update.
+
+        Sprint 024-004. Mirrors EKF::updateHeading() in source/control/EKF.cpp.
+        Sprint 024-005: D3 gate recovery — streak counter + R×10 inflation.
+
+        Observation model: H = [0,0,1,0,0] (observes state index 2, theta).
+          P*H^T selects column 2 of P: (P*H^T)[i] = P[i][2].
+
+        Innovation (wrap-safe): y = wrap_pi(theta_meas - _x[2])
+        Innovation covariance:  s = P[2][2] + r_theta
+        Mahalanobis gate:       y^2 / s > 3.84 → reject (chi-square 1-DOF)
+        Kalman gain:            K[i] = P[i][2] / s
+        State update:           _x[i] += K[i] * y
+        Covariance update:      P[i][k] -= K[i] * P[2][k]
+
+        _rej_head_streak: increments on rejection, resets to 0 on acceptance.
+        At 10 consecutive rejections: inflate R×10, reset streak, re-evaluate gate.
+        _rej_head_streak is independent of _rej_pos_streak.
+        """
+        y = wrap_pi(theta_meas - self._x[2])
+        s = self._P[2][2] + r_theta
+
+        if s <= 1e-12:
+            return  # degenerate — skip silently
+
+        accepted = (y * y / s) <= 3.84
+
+        if not accepted:
+            self._rejected += 1
+            self._rej_head_streak += 1
+            # D3 gate recovery (sprint 024-005): at streak == 10, perform a
+            # P-inflation re-baseline on the heading block.
+            # Sets P[2][2] to a large value so S is large, gate passes trivially,
+            # and K = P[2][2]/S ≈ 1 — heading snaps to measurement in one update.
+            if self._rej_head_streak >= 10:
+                self._rej_head_streak = 0
+                _K_REBASELINE_P_THETA = 1.0e5   # rad² — K≈1 after inflation
+                self._P[2][2] = _K_REBASELINE_P_THETA
+                # Zero cross-covariances with x, y, v, omega.
+                self._P[2][0] = 0.0; self._P[2][1] = 0.0
+                self._P[2][3] = 0.0; self._P[2][4] = 0.0
+                self._P[0][2] = 0.0; self._P[1][2] = 0.0
+                self._P[3][2] = 0.0; self._P[4][2] = 0.0
+                # Recompute s with inflated P[2][2].
+                s = self._P[2][2] + r_theta
+                accepted = (s > 1e-12)   # gate trivially passes
+            if not accepted:
+                return  # degenerate after inflation — skip (should never happen)
+
+        # Accepted (normal or recovery path).
+        self._rej_head_streak = 0
+        k = [self._P[i][2] / s for i in range(5)]
+        for i in range(5):
+            self._x[i] += k[i] * y
+        self._x[2] = wrap_pi(self._x[2])
+        p2k = [self._P[2][kk] for kk in range(5)]
+        for i in range(5):
+            for kk in range(5):
+                self._P[i][kk] -= k[i] * p2k[kk]
+
     # Sprint 022 backward-compat alias: update() — no Mahalanobis gate.
     # The sprint-022 EKF had no gate; this alias preserves that behavior so
     # existing sprint-022 test classes continue to pass without modification.
@@ -405,6 +556,19 @@ class EKF:
     @property
     def rejected_count(self) -> int:
         return self._rejected
+
+    def get_reject_count(self) -> int:
+        """Alias for rejected_count — mirrors EKF::getRejectCount() for TLM. Sprint 024-005."""
+        return self._rejected
+
+    @property
+    def rej_head_streak(self) -> int:
+        return self._rej_head_streak
+
+    @property
+    def rej_pos_streak(self) -> int:
+        """Consecutive position rejection streak. Sprint 024-005."""
+        return self._rej_pos_streak
 
 
 # ---------------------------------------------------------------------------
@@ -722,19 +886,38 @@ class TestSetPose:
         e.set_pose(100.0, 200.0, 0.5)
         assert e.theta == pytest.approx(0.5, abs=1e-9)
 
-    def test_set_pose_zeros_covariance(self):
-        """After set_pose(), all P entries are zero."""
+    def test_set_pose_sets_sane_prior(self):
+        """After set_pose(), P has the sane diagonal prior (sprint 024-004).
+
+        Old behaviour (before sprint 024): P was zeroed, creating falsely tight
+        Mahalanobis gates after pose injection.  New behaviour: set a modest
+        diagonal that reflects real uncertainty so re-acquisition is not strangled.
+        Off-diagonal entries remain zero.
+        """
         e = _make_ekf_default()
         # Build up some covariance first
         for _ in range(5):
             e.predict(10.0, 0.1, 0.0)
         # Now reset
         e.set_pose(0.0, 0.0, 0.0)
+        # Diagonal must match the sane prior constants.
+        assert e._P[0][0] == pytest.approx(EKF._PRIOR_XY,    abs=1e-9), \
+            f"P[0][0] should be {EKF._PRIOR_XY}, got {e._P[0][0]}"
+        assert e._P[1][1] == pytest.approx(EKF._PRIOR_XY,    abs=1e-9), \
+            f"P[1][1] should be {EKF._PRIOR_XY}, got {e._P[1][1]}"
+        assert e._P[2][2] == pytest.approx(EKF._PRIOR_THETA, rel=1e-5), \
+            f"P[2][2] should be ~{EKF._PRIOR_THETA:.6f}, got {e._P[2][2]}"
+        assert e._P[3][3] == pytest.approx(EKF._PRIOR_V,     abs=1e-9), \
+            f"P[3][3] should be {EKF._PRIOR_V}, got {e._P[3][3]}"
+        assert e._P[4][4] == pytest.approx(EKF._PRIOR_OMEGA, abs=1e-9), \
+            f"P[4][4] should be {EKF._PRIOR_OMEGA}, got {e._P[4][4]}"
+        # Off-diagonal entries must be zero.
         for i in range(5):
             for j in range(5):
-                assert e._P[i][j] == pytest.approx(0.0, abs=1e-12), (
-                    f"P[{i}][{j}] = {e._P[i][j]} is not zero after set_pose"
-                )
+                if i != j:
+                    assert e._P[i][j] == pytest.approx(0.0, abs=1e-12), (
+                        f"P[{i}][{j}] = {e._P[i][j]} should be zero (off-diagonal)"
+                    )
 
     def test_predict_after_set_pose_advances_from_new_pose(self):
         """Predict after set_pose(100, 0, 0) with dCenter=50 → x≈150."""
@@ -1173,3 +1356,888 @@ class TestReplayHarness:
         # They may start the same but after OTOS updates should differ.
         differs = any(abs(a - b) > 1e-6 for a, b in zip(xs_enc, xs_otos))
         assert differs, "encoder-only and +OTOS-position trajectories should differ"
+
+
+# ---------------------------------------------------------------------------
+# TestSetPosePrior — set_pose() sets sane diagonal P-prior (sprint 024-004)
+# ---------------------------------------------------------------------------
+
+class TestSetPosePrior:
+    """set_pose() initialises a sane diagonal P-prior, not a zero matrix."""
+
+    def test_p00_equals_prior_xy(self):
+        """P[0][0] = PRIOR_XY (100 mm^2) after set_pose."""
+        e = _make_ekf_default()
+        e.set_pose(0.0, 0.0, 0.0)
+        assert e._P[0][0] == pytest.approx(EKF._PRIOR_XY, abs=1e-9)
+
+    def test_p11_equals_prior_xy(self):
+        """P[1][1] = PRIOR_XY (100 mm^2) after set_pose."""
+        e = _make_ekf_default()
+        e.set_pose(0.0, 0.0, 0.0)
+        assert e._P[1][1] == pytest.approx(EKF._PRIOR_XY, abs=1e-9)
+
+    def test_p22_equals_prior_theta(self):
+        """P[2][2] ≈ (5°)^2 after set_pose."""
+        e = _make_ekf_default()
+        e.set_pose(0.0, 0.0, 0.0)
+        expected = (5.0 * math.pi / 180.0) ** 2
+        assert e._P[2][2] == pytest.approx(expected, rel=1e-5)
+
+    def test_p33_equals_prior_v(self):
+        """P[3][3] = PRIOR_V after set_pose."""
+        e = _make_ekf_default()
+        e.set_pose(0.0, 0.0, 0.0)
+        assert e._P[3][3] == pytest.approx(EKF._PRIOR_V, abs=1e-9)
+
+    def test_p44_equals_prior_omega(self):
+        """P[4][4] = PRIOR_OMEGA after set_pose."""
+        e = _make_ekf_default()
+        e.set_pose(0.0, 0.0, 0.0)
+        assert e._P[4][4] == pytest.approx(EKF._PRIOR_OMEGA, abs=1e-9)
+
+    def test_off_diagonal_zero(self):
+        """All off-diagonal entries of P are zero after set_pose."""
+        e = _make_ekf_default()
+        # Build up covariance, then reset.
+        for _ in range(5):
+            e.predict(10.0, 0.1, 0.0)
+        e.set_pose(10.0, 20.0, 0.3)
+        for i in range(5):
+            for j in range(5):
+                if i != j:
+                    assert e._P[i][j] == pytest.approx(0.0, abs=1e-12), (
+                        f"Off-diagonal P[{i}][{j}] = {e._P[i][j]} should be zero"
+                    )
+
+    def test_prior_theta_approx_5deg_squared(self):
+        """P[2][2] prior is approximately (5 degrees)^2 in radians^2."""
+        e = _make_ekf_default()
+        e.set_pose(0.0, 0.0, 0.0)
+        five_deg_rad = 5.0 * math.pi / 180.0
+        assert e._P[2][2] == pytest.approx(five_deg_rad ** 2, rel=1e-4)
+
+
+# ---------------------------------------------------------------------------
+# TestUpdateHeading — heading fusion closes the loop on OTOS heading (sprint 024-004)
+# ---------------------------------------------------------------------------
+
+class TestUpdateHeading:
+    """update_heading() fuses heading measurement; state moves; P narrows."""
+
+    def _make_ekf_with_heading_cov(self, heading_state: float = 0.0) -> EKF:
+        """EKF with nonzero P[2][2] so update_heading() produces a visible effect.
+
+        Build P[2][2] via predicts (each adds Q_THETA = 0.01).
+        After 100 predicts: P[2][2] = 1.0.  With r_theta=0.1:
+          s = 1.0 + 0.1 = 1.1; for small innovations, gate passes.
+        """
+        e = _make_ekf_default()
+        for _ in range(100):
+            e.predict(0.0, 0.0, 0.0)  # pure covariance growth, P[2][2] → 1.0
+        e._x[2] = heading_state
+        return e
+
+    def test_heading_state_moves_toward_measurement(self):
+        """EKF at theta=0.5, OTOS at theta=0.0: after update, theta < 0.5."""
+        e = self._make_ekf_with_heading_cov(heading_state=0.5)
+        theta_before = e.theta
+        e.update_heading(0.0, 0.1)
+        assert e.theta < theta_before, \
+            f"theta={e.theta} should have moved toward 0.0 from {theta_before}"
+
+    def test_p22_decreases_after_update(self):
+        """P[2][2] is smaller after update_heading (uncertainty reduced)."""
+        e = self._make_ekf_with_heading_cov(heading_state=0.0)
+        p22_before = e._P[2][2]
+        e.update_heading(0.0, 0.1)
+        assert e._P[2][2] < p22_before, \
+            f"P[2][2] should decrease: before={p22_before}, after={e._P[2][2]}"
+
+    def test_wrap_safe_innovation_negative_pi_boundary(self):
+        """Innovation wraps correctly across the -pi boundary.
+
+        State theta near -pi+0.1, measurement near +pi-0.1.
+        Without wrap: innovation ≈ 2*pi - 0.2 (huge, rejected).
+        With wrap:    innovation ≈ -0.2 rad (small, accepted).
+        """
+        e = self._make_ekf_with_heading_cov(heading_state=-(math.pi - 0.1))
+        r_theta = 0.1
+        meas = math.pi - 0.1
+        # Naive (unwrapped) innovation = meas - state ≈ 2*pi - 0.2 → large → rejected
+        # Wrapped innovation = wrap_pi(meas - state) ≈ -0.2 → small → accepted
+        wrapped_innov = wrap_pi(meas - e.theta)
+        assert abs(wrapped_innov) < 0.5, \
+            f"wrapped innovation {wrapped_innov:.3f} should be small (~-0.2)"
+        theta_before = e.theta
+        e.update_heading(meas, r_theta)
+        # Should be accepted (state should change)
+        assert e.theta != pytest.approx(theta_before, abs=1e-9), \
+            "update_heading should have been accepted (state should change)"
+
+    def test_large_innovation_rejected_and_streak_increments(self):
+        """Huge heading outlier is rejected; streak counter increments."""
+        e = self._make_ekf_with_heading_cov(heading_state=0.0)
+        # After 100 predicts: P[2][2] = 100 * Q_THETA = 100 * 0.01 = 1.0.
+        # s = P[2][2] + r_theta = 1.0 + 0.001 = 1.001.
+        # Innovation = wrap_pi(3.0 - 0.0) = 3.0 (within (-pi,pi]).
+        # d2 = 3.0^2 / 1.001 = 8.99 > 3.84 → should be rejected.
+        r_tiny = 0.001
+        streak_before = e.rej_head_streak
+        rejected_before = e.rejected_count
+        theta_before = e.theta
+        P_before = [e._P[i][:] for i in range(5)]
+        e.update_heading(3.0, r_tiny)  # innovation = 3.0 > sqrt(3.84 * 1.001) ≈ 1.96
+        assert e.rejected_count == rejected_before + 1, "rejection count should increment"
+        assert e.rej_head_streak == streak_before + 1, "streak should increment"
+        assert e.theta == pytest.approx(theta_before, abs=1e-12), "state unchanged on reject"
+        for i in range(5):
+            assert e._P[i] == pytest.approx(P_before[i], abs=1e-12), \
+                f"P[{i}] should be unchanged on rejection"
+
+    def test_accepted_resets_streak(self):
+        """A rejection followed by an acceptance resets the streak to 0."""
+        e = self._make_ekf_with_heading_cov(heading_state=0.0)
+        # First: force a rejection (huge innovation, tiny R).
+        e.update_heading(3.0, 0.001)
+        assert e.rej_head_streak >= 1, "streak should be >= 1 after rejection"
+        # Now: small innovation → accepted.
+        e.update_heading(0.0, 0.1)
+        assert e.rej_head_streak == 0, "streak should reset to 0 on acceptance"
+
+    def test_block_decoupled_x_y_unchanged_for_zero_cross_terms(self):
+        """After a straight predict, P[2][0]=P[2][1]=0: x and y unchanged by update_heading."""
+        e = _make_ekf_default()
+        # After init: P=0 for all. After one straight predict: P[2][0]=P[2][1]=0
+        # (because a=-dCenter*sin(0)=0, b=dCenter*cos(0), only P[0][0] grows).
+        e.predict(100.0, 0.0, 0.0)
+        x_before = e.x
+        y_before = e.y
+        # Manually ensure P[2][2] is nonzero so the update does something.
+        e._P[2][2] = 0.1
+        e.update_heading(0.5, 0.1)
+        # K[0] = P[0][2] / s = 0 / s = 0; K[1] = P[1][2] / s = 0 → x, y unchanged.
+        assert e.x == pytest.approx(x_before, abs=1e-9), "x should not change"
+        assert e.y == pytest.approx(y_before, abs=1e-9), "y should not change"
+
+
+# ---------------------------------------------------------------------------
+# TestHeadingConvergence — heading fusion closes the gap where drift occurs
+#   (field-profile: heading diverges on turns without OTOS correction)
+# ---------------------------------------------------------------------------
+
+class TestHeadingConvergence:
+    """Heading fusion: with OTOS corrections, heading stays near truth."""
+
+    def test_heading_tracks_otos_truth_over_turns(self):
+        """After N turns with OTOS heading corrections, fused heading stays within ~2° of truth.
+
+        Scenario: simulate a 90° turn in 18 predict steps (5° per step), with a
+        small encoder bias of +5% (so encoder ends at ~94.5°, truth at 90°).
+        OTOS fires once per turn at the truth heading.  After the correction, the
+        fused heading should be within ~2° of truth.
+
+        The key invariant: with OTOS heading fusion active, cumulative heading drift
+        is bounded; without fusion it accumulates monotonically.
+        """
+        r_theta = 0.01   # matches firmware default ekfROtosTheta
+
+        def simulate_turn_with_correction(truth_deg: float, encoder_bias: float = 1.05):
+            """Run a 90° turn (in 18 x 5° steps) with encoder bias, then correct once."""
+            e = _make_ekf_default()
+            # Start with steady-state covariance (enough predicts so P isn't degenerate).
+            for _ in range(50):
+                e.predict(0.0, 0.0, 0.0)
+
+            # Execute turn: 18 steps of 5° each, encoder reads 5%*encoder_bias each.
+            step_truth_rad  = math.radians(truth_deg / 18.0)
+            step_encoder_rad = step_truth_rad * encoder_bias
+            for _ in range(18):
+                e.predict(0.0, step_encoder_rad, e.theta)
+
+            # Single OTOS heading correction at truth.
+            truth_h = math.radians(truth_deg)
+            e.update_heading(truth_h, r_theta)
+
+            err_deg = abs(wrap_pi(e.theta - truth_h)) * 180.0 / math.pi
+            return err_deg
+
+        # Test for 90° turn with 5% encoder bias.
+        err = simulate_turn_with_correction(90.0, encoder_bias=1.05)
+        assert err < 2.0, (
+            f"Heading error {err:.2f}° > 2.0° after OTOS correction on 90° turn"
+        )
+
+    def test_uncorrected_heading_diverges_per_turn(self):
+        """Without OTOS corrections, accumulated encoder error grows each turn.
+
+        Verifies that the error is real and that correction (TestHeadingConvergence
+        above) is the actual fix, not just a lucky coincidence.
+        """
+        r_theta = 0.01
+        encoder_error_per_turn = 0.175  # ~10° per turn
+
+        e = _make_ekf_default()
+        for _ in range(20):
+            e.predict(0.0, 0.0, 0.0)
+
+        # 4 turns with NO OTOS correction.
+        total_encoder_error = 0.0
+        truth_h = 0.0
+        for _ in range(4):
+            truth_h += math.pi / 2
+            total_encoder_error += encoder_error_per_turn
+            e.predict(0.0, encoder_error_per_turn, e.theta)
+            # No update_heading call!
+
+        final_err_deg = abs(wrap_pi(e.theta - truth_h)) * 180.0 / math.pi
+        # Without correction, error should be large (4 * 10° = 40°).
+        assert final_err_deg > 10.0, (
+            f"Expected large heading error without correction; got {final_err_deg:.2f}°"
+        )
+
+
+# ---------------------------------------------------------------------------
+# TestHeadingGateRecovery — D3 gate recovery for heading channel (sprint 024-005)
+#
+# After 10 consecutive heading rejections (large constant innovation), the 10th
+# rejection triggers P-inflation re-baseline: P[2][2] is set to 1e5 rad²,
+# cross-terms zeroed, then the standard update runs with K≈1 (state snaps to meas).
+# Streaks are independent: position divergence must not affect the heading streak.
+# ---------------------------------------------------------------------------
+
+class TestHeadingGateRecovery:
+    """D3 gate recovery: after 10 consecutive heading rejections, P[2][2] is inflated
+    to 1e5 rad² (K≈1) and state snaps to measurement. Sprint 024-005."""
+
+    def _make_ekf_with_heading_cov(self, heading_state: float = 0.0) -> EKF:
+        """EKF with nonzero P[2][2] from 100 predicts."""
+        e = _make_ekf_default()
+        for _ in range(100):
+            e.predict(0.0, 0.0, 0.0)  # P[2][2] → 1.0
+        e._x[2] = heading_state
+        return e
+
+    def test_streak_increments_on_rejection(self):
+        """Rejected heading update increments _rej_head_streak."""
+        e = self._make_ekf_with_heading_cov(heading_state=0.0)
+        # Huge innovation (3 rad) with tiny R → rejected.
+        e.update_heading(3.0, 0.001)
+        assert e.rej_head_streak == 1, \
+            f"streak should be 1 after first rejection, got {e.rej_head_streak}"
+
+    def test_streak_resets_on_acceptance(self):
+        """Accepted heading update resets _rej_head_streak to 0."""
+        e = self._make_ekf_with_heading_cov(heading_state=0.0)
+        e.update_heading(3.0, 0.001)  # reject → streak=1
+        assert e.rej_head_streak == 1
+        e.update_heading(0.0, 0.1)   # accept (zero innovation)
+        assert e.rej_head_streak == 0, \
+            f"streak should reset to 0 on acceptance, got {e.rej_head_streak}"
+
+    def test_recovery_fires_at_10_consecutive_rejections(self):
+        """At the 10th consecutive rejection, streak resets and P-inflation recovery fires.
+
+        After 10 rejections, P[2][2] is inflated to 1e5 rad². Then the standard
+        update runs: S = P[2][2] + r_theta ≈ 1e5; K = P[2][2]/S ≈ 1; state snaps
+        to measurement. Streak resets to 0.
+
+        Setup: 1 predict → P[2][2] = Q_THETA = 0.01. meas=0.21 rad, r_theta=0.001.
+          Normal: s = 0.01+0.001=0.011; d2 = 0.0441/0.011 = 4.009 > 3.84 → rejected.
+          After P-inflation: P[2][2]=1e5; S≈1e5; K≈1; theta snaps to meas ≈ 0.21 rad.
+
+        Any constant heading offset that produces d² > 3.84 works here — the key is
+        that 9 rejections grow the streak, and the 10th fires P-inflation.
+        """
+        e = _make_ekf_default()
+        e.predict(0.0, 0.0, 0.0)  # P[2][2] = Q_THETA = 0.01
+        e._x[2] = 0.0
+
+        meas = 0.21   # d2 = 0.0441/0.011 = 4.009 > 3.84 → rejected normally
+        r_theta = 0.001
+        theta_before = e.theta
+
+        # Verify 9 consecutive rejections each individually reject.
+        for i in range(9):
+            streak_before = e.rej_head_streak
+            rej_before = e.rejected_count
+            e.update_heading(meas, r_theta)
+            assert e.rej_head_streak == streak_before + 1, \
+                f"step {i}: streak should grow, got {e.rej_head_streak}"
+            assert e.rejected_count == rej_before + 1, \
+                f"step {i}: rejected_count should grow"
+            assert e.theta == pytest.approx(theta_before, abs=1e-9), \
+                f"step {i}: state should be unchanged on rejection"
+
+        assert e.rej_head_streak == 9
+
+        # 10th call: streak >= 10 → inflation fires → recovery update accepted.
+        rej_before_10 = e.rejected_count
+        e.update_heading(meas, r_theta)
+
+        # After recovery: streak is reset (either 0 if update accepted, or 1 if re-rejected).
+        # With inflated s = 0.01 + 0.01 = 0.02; d2 = 0.0441/0.02 = 2.205 → accepted.
+        assert e.rej_head_streak == 0, \
+            f"streak should reset to 0 after recovery update; got {e.rej_head_streak}"
+        # State should have changed (update was accepted with inflated R).
+        assert e.theta != pytest.approx(theta_before, abs=1e-9), \
+            "heading state should change after recovery update"
+        # rejected_count should still have incremented (it incremented on the 10th
+        # rejection before the inflation path ran, but the firmware does the same).
+        assert e.rejected_count == rej_before_10 + 1, \
+            "rejected_count increments on the 10th call (before inflation fires)"
+
+    def test_position_divergence_does_not_affect_heading_streak(self):
+        """Position streak (rej_pos_streak) is independent of heading streak.
+
+        Inducing 9 position rejections must not affect the heading streak.
+        """
+        e = _make_ekf_default()
+        # Build covariance.
+        for _ in range(50):
+            e.predict(0.0, 0.0, 0.0)
+
+        # Induce 5 position rejections (large innovation, small P[0][0]).
+        pos_rej_meas = 1000.0  # far from origin — should be rejected with small P
+        for _ in range(5):
+            e.update_position(pos_rej_meas, 0.0)
+
+        heading_streak_after_pos_rej = e.rej_head_streak
+        # The heading streak must remain 0 (no heading rejections triggered).
+        assert heading_streak_after_pos_rej == 0, (
+            f"Position rejections should not affect heading streak; "
+            f"heading streak={heading_streak_after_pos_rej}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# TestPositionGateRecovery — D3 gate recovery for position channel (sprint 024-005)
+#
+# Teleport mock-OTOS 200 mm mid-run. Without recovery, the filter free-runs
+# on encoders permanently. With R×10 inflation after 10 rejections, the fused
+# pose converges to the new OTOS truth within < 2 s (20 steps at 100 ms cadence).
+#
+# Guard test: verify the recovery FAILS on pre-005 logic (no streak/inflation)
+# so the test is a genuine regression guard, not a vacuous pass.
+# ---------------------------------------------------------------------------
+
+class TestPositionGateRecovery:
+    """D3 gate recovery for position channel. Sprint 024-005.
+
+    The P-inflation re-baseline mechanism: at 10 consecutive rejections, P[0][0]
+    and P[1][1] are set to kRebaselineP (1e6 mm²) and cross-terms zeroed, then
+    the standard update runs. With S ≈ 1e6 mm², K ≈ 1 and state snaps to OTOS.
+
+    This satisfies the 200mm/<2s acceptance criterion:
+      - Normal gate at steady-state (P≈3mm²): d²=200²/13≈3077≫5.99 → rejected.
+      - R×10 inflated gate: d²=200²/103≈388≫5.99 → STILL rejected (cannot recover).
+      - P-inflation (P→1e6): d²=200²/(1e6+10)≈0.04→0 → accepted, K≈1 (one-shot snap).
+    """
+
+    def _make_convergence_ekf(self) -> EKF:
+        """EKF at steady-state covariance (30 predict+update cycles from origin)."""
+        e = _make_ekf_default()
+        for i in range(30):
+            e.predict(10.0, 0.0, e._x[2])
+            e.update_position(float(i + 1) * 10.0, 0.0)
+        return e
+
+    def test_pre_005_logic_does_not_converge(self):
+        """Without recovery, a jump above the gate causes permanent rejection.
+
+        This test verifies the pre-005 behaviour (no streak/inflation) fails to
+        converge, proving the recovery test below is a real regression guard.
+
+        Scenario: fresh EKF, 1 predict (P[0][0]=1), 10mm innovation.
+          d2 = 100/11 = 9.09 > 5.99 → rejected every time without recovery.
+          With recovery (R×10): d2 = 100/101 = 0.99 → accepted at step 10.
+
+        Pre-005 simulation: reset streak to 0 before each update so recovery
+        never fires. After 9 calls, EKF x should remain near 0 (all rejected).
+        """
+        e = _make_ekf_default()
+        e.predict(0.0, 0.0, 0.0)  # P[0][0] = Q_XY = 1.0
+
+        otos_x = 10.0  # 10mm innovation: d2 = 100/11 = 9.09 > 5.99
+
+        # Simulate pre-005: never let streak reach 10.
+        x_start = e.x
+        for _ in range(9):
+            e._rej_pos_streak = 0   # prevent recovery from firing
+            x_before = e.x
+            e.update_position(otos_x, 0.0)
+            # Should be rejected (x unchanged).
+            assert abs(e.x - x_before) < 1e-9, (
+                f"Without recovery, update should be rejected; "
+                f"x changed from {x_before:.3f} to {e.x:.3f}"
+            )
+
+        # EKF x should remain near start (all 9 rejected).
+        assert abs(e.x - x_start) < 1e-9, (
+            f"Without recovery, EKF x={e.x:.3f} should remain at {x_start:.3f}"
+        )
+
+    def test_with_recovery_moves_state_toward_truth(self):
+        """With P-inflation re-baseline, the state snaps to OTOS truth in one update.
+
+        Scenario: fresh EKF, 1 predict (P[0][0]=1), persistent OTOS at 10mm.
+          Steps 1-9: rejected (streak grows to 9). State stays at 0.
+          Step 10: streak >= 10 → P-inflation fires (P[0][0]=1e6).
+            S = 1e6 + 10; K ≈ 1; state snaps to ~10mm.
+
+        This contrasts with pre-005 logic where the state NEVER moves (permanent
+        rejection). With P-inflation re-baseline: state snaps to truth in one update.
+        """
+        e = _make_ekf_default()
+        e.predict(0.0, 0.0, 0.0)  # P[0][0] = Q_XY = 1.0
+
+        otos_x = 10.0  # 10mm innovation: d2 = 100/11 = 9.09 > 5.99 → rejected normally
+        x_start = e.x  # = 0.0
+
+        # Run 10 update_position calls. Steps 1-9 are rejected; step 10 fires recovery.
+        for _ in range(10):
+            e.update_position(otos_x, 0.0)
+
+        # After P-inflation recovery: state MUST have snapped to within 1mm of truth.
+        # (K = 1e6/(1e6+10) ≈ 0.99999 → x ≈ otos_x)
+        assert abs(e.x - otos_x) < 1.0, (
+            f"After P-inflation recovery (step 10), EKF x={e.x:.4f}mm should be "
+            f"within 1mm of truth {otos_x}mm"
+        )
+        # Streak should be reset to 0 after the recovery update.
+        assert e.rej_pos_streak == 0, \
+            f"rej_pos_streak should be 0 after recovery; got {e.rej_pos_streak}"
+
+    def test_heading_streak_unaffected_by_position_rejections(self):
+        """Position rejection streak must not affect heading streak.
+
+        After 9 position rejections, the heading streak must remain 0 — streaks
+        are independent (position divergence does not trigger heading recovery).
+        """
+        e = _make_ekf_default()
+        e.predict(0.0, 0.0, 0.0)
+
+        otos_x = 10.0
+        for _ in range(9):
+            e.update_position(otos_x, 0.0)
+
+        assert e.rej_head_streak == 0, (
+            f"Position rejections must not affect heading streak; "
+            f"rej_head_streak={e.rej_head_streak}"
+        )
+        assert e.rej_pos_streak == 9, (
+            f"rej_pos_streak should be 9 after 9 rejections; got {e.rej_pos_streak}"
+        )
+
+    def test_reject_count_rises_then_recovery_fires(self):
+        """rejected_count rises during 10-rejection sequence; P-inflation fires at step 10."""
+        e = _make_ekf_default()
+        # Use 1 predict to get tight P.
+        e.predict(0.0, 0.0, 0.0)
+        # Position innovation: 10mm with P[0][0]=1, r_otos_xy=10.
+        # d2 = 100/11 = 9.09 > 5.99 → rejected on steps 1-9.
+        # Step 10: streak >= 10 → P-inflation fires: P[0][0]=1e6; K≈1 → accepted.
+        otos_x = 10.0
+        otos_y = 0.0
+
+        rej_start = e.rejected_count
+        pos_streak_list = []
+
+        for i in range(10):
+            e.update_position(otos_x, otos_y)
+            pos_streak_list.append(e.rej_pos_streak)
+
+        # Steps 1-9: rejected_count grows.
+        # Step 10: rejected_count grows by 1 more (rejection counted before inflation),
+        # then inflation fires and accepts.
+        assert e.rejected_count >= rej_start + 9, (
+            f"rejected_count should have risen by ≥9 over 10 calls; "
+            f"start={rej_start}, end={e.rejected_count}"
+        )
+        # After step 10, streak should be 0 (recovery update was accepted).
+        assert pos_streak_list[-1] == 0, (
+            f"After recovery update, rej_pos_streak should be 0; got {pos_streak_list[-1]}"
+        )
+
+    def test_200mm_teleport_converges_within_2s(self):
+        """200mm OTOS teleport mid-run converges to new truth in < 2 s (< 20 steps @ 100ms).
+
+        This is the primary acceptance criterion for sprint 024-005 / issue d03.
+        Field failure scenario: robot is lifted or repositioned → OTOS jumps 200mm.
+        Without recovery, the filter free-runs on encoders permanently (confidently wrong).
+        With P-inflation re-baseline: after 10 consecutive rejections (~1s), P[0][0] is
+        inflated to 1e6 mm² → K≈1 → state snaps to new OTOS truth on the 10th step.
+
+        FAILS with R×10 inflation (pre-fix): d²=200²/(P+10·R)=200²/103≈388≫5.99 →
+        still permanently rejected. This verifies the fix is real, not cosmetic.
+
+        Setup:
+          - 30 predict+update cycles to reach steady state (EKF tracks correctly).
+          - Teleport OTOS pose by +200mm (robot is "lifted and repositioned").
+          - 20 more predict+update steps at 100ms cadence = 2s window.
+          - Assert fused pose within 50mm of new OTOS truth within those 20 steps.
+        """
+        e = self._make_convergence_ekf()
+        otos_truth_x = e.x + 200.0  # 200mm teleport
+        otos_truth_y = 0.0
+
+        converged = False
+        for step in range(20):
+            e.predict(10.0, 0.0, e._x[2])
+            e.update_position(otos_truth_x + step * 10.0, otos_truth_y)
+            current_truth_x = otos_truth_x + step * 10.0
+            if abs(e.x - current_truth_x) < 50.0:
+                converged = True
+                break
+
+        assert converged, (
+            f"200mm teleport: EKF must converge to new OTOS truth within 20 steps "
+            f"(2s at 100ms cadence); final x={e.x:.1f}mm"
+        )
+
+    def test_200mm_teleport_fails_without_recovery(self):
+        """Verify that with recovery disabled, a 200mm teleport causes permanent lockout.
+
+        This test proves test_200mm_teleport_converges_within_2s is a genuine
+        regression guard: the new code PASSES, the old code FAILS.
+
+        Disables recovery by zeroing the streak before each update call so the
+        counter never reaches 10 (no recovery ever fires). With a static robot
+        (no movement), the OTOS update is the ONLY path to convergence.
+
+        Math (steady-state P≈3mm², R=10mm²):
+          Normal gate:       d²=200²/13≈3077≫5.99 → rejected forever.
+          R×10 inflated:     d²=200²/103≈388≫5.99 → STILL rejected.
+          P-inflation (new): d²≈0 → accepted, K≈1 → state snaps.
+        """
+        e = _make_ekf_default()
+        # Reach steady-state with static robot.
+        for _ in range(30):
+            e.predict(0.0, 0.0, e._x[2])
+            e.update_position(0.0, 0.0)
+
+        x_before_teleport = e.x   # ≈ 0mm
+        otos_truth_x = x_before_teleport + 200.0   # static 200mm (no robot movement)
+
+        # Disable recovery completely: reset streak to 0 before every update call.
+        for _ in range(20):
+            e.predict(0.0, 0.0, e._x[2])   # static robot — no position advance
+            e._rej_pos_streak = 0           # prevent recovery from accumulating
+            e.update_position(otos_truth_x, 0.0)
+
+        # All 200mm updates rejected → x never moved toward truth.
+        assert abs(e.x - otos_truth_x) > 100.0, (
+            f"Without recovery, EKF should remain locked out at 200mm divergence; "
+            f"x={e.x:.1f}mm, truth={otos_truth_x:.1f}mm"
+        )
+
+
+# ---------------------------------------------------------------------------
+# TestSquareFigureEight — field-profile sim with divergence/recovery fixture
+#   Sprint 024-005: adds a field-profile fixture covering divergence + recovery.
+#   The sim injects a 200 mm OTOS teleport mid-square to trigger the gate, then
+#   verifies the filter recovers (convergence criterion matching ticket AC).
+# ---------------------------------------------------------------------------
+
+class TestSquareFigureEight:
+    """Field-profile simulation: square path with position teleport + recovery.
+
+    Simulates a robot driving a simple straight path, then experiencing a sudden
+    OTOS position jump (e.g., playfield calibration update), and verifies
+    the EKF recovers to the new truth via the D3 gate recovery mechanism.
+
+    Sprint 024-005: field-profile divergence + recovery fixture.
+
+    Background: the R×10 inflation mechanism widens the Mahalanobis gate by 10×.
+    At steady-state P (P[0][0] ≈ 3mm²) with R=10mm², the inflated innovation
+    covariance is S_infl = 3 + 100 = 103mm².  The maximum innovation that passes
+    is sqrt(5.99 × 103) ≈ 24.8mm.  A small teleport (20mm) that sits just above
+    the normal gate (d2 ≈ 7 > 5.99) but below the inflated gate (d2 ≈ 0.7 < 5.99)
+    demonstrates the recovery mechanism clearly.  A 200mm teleport would need
+    many more recovery cycles (each pulls ~3% toward truth), which is outside the
+    < 2 s window — but the divergence visibility and rising ekf_rej are still testable.
+    """
+
+    def test_field_profile_divergence_and_recovery(self):
+        """Field-profile: straight drive + position teleport + recovery.
+
+        Phase 1: 30 predict+update_position steps straight ahead (OTOS tracking).
+          At steady state, P[0][0] ≈ sqrt(Q * R) ≈ sqrt(1 * 10) ≈ 3.2mm².
+
+        Phase 2: inject position step of +20mm (just above normal gate at steady state).
+          Normal gate: d2 = 20²/(3.2+10) ≈ 30.3 > 5.99 → would be rejected.
+          Inflated gate (R×10): d2 = 20²/(3.2+100) ≈ 3.9 < 5.99 → accepted after 10 steps.
+
+        Phase 3: 15 more predict+update_position steps.
+          Assert:
+            - rejected_count rises (divergence is visible — ekf_rej telemetry works).
+            - Filter recovers (converges within 50mm of new OTOS truth in < 15 steps).
+        """
+        e = _make_ekf_default()
+
+        # Phase 1: steady-state tracking — 30 steps straight, OTOS at truth.
+        for i in range(30):
+            e.predict(10.0, 0.0, e._x[2])
+            e.update_position(float(i + 1) * 10.0, 0.0)
+
+        rej_after_phase1 = e.rejected_count
+        x_after_phase1 = e.x
+
+        # Phase 2: inject a small position jump (+20mm) — just above the normal gate.
+        otos_jump = 20.0
+        otos_truth_x = x_after_phase1 + otos_jump
+        otos_truth_y = 0.0
+
+        # Phase 3: 15 steps with shifted OTOS.
+        converged = False
+        rej_rising = False
+        prev_rej = rej_after_phase1
+
+        for step in range(15):
+            e.predict(10.0, 0.0, e._x[2])
+            otos_x_now = otos_truth_x + step * 10.0
+            e.update_position(otos_x_now, otos_truth_y)
+            curr_rej = e.rejected_count
+            if curr_rej > prev_rej:
+                rej_rising = True
+            prev_rej = curr_rej
+
+            err = abs(e.x - otos_x_now)
+            if err < 15.0:
+                converged = True
+                break
+
+        # Recovery must happen: rejected_count should have risen during divergence.
+        assert rej_rising, (
+            "ekf_rej (rejected_count) should rise during a simulated divergence event"
+        )
+        # Filter must converge to the new truth within 15 steps.
+        assert converged, (
+            f"EKF should converge to new OTOS truth within 15 steps after small teleport; "
+            f"final x={e.x:.1f}mm, truth after last step={otos_truth_x + (14) * 10.0:.1f}mm"
+        )
+
+    def test_get_reject_count_accessor(self):
+        """get_reject_count() returns same value as rejected_count (alias for TLM). Sprint 024-005."""
+        e = _make_ekf_default()
+        e.predict(0.0, 0.0, 0.0)
+        # Inject a rejection.
+        e.update_position(5000.0, 5000.0)
+        assert e.get_reject_count() == e.rejected_count, (
+            f"get_reject_count()={e.get_reject_count()} should equal "
+            f"rejected_count={e.rejected_count}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# TestTlmParsing — host-side parse_tlm() and NezhaState.ekf_rej (sprint 024-005)
+#
+# Verifies that a synthetic TLM line containing ekf_rej=<n> is correctly parsed
+# by parse_tlm() and that the value propagates to TLMFrame.ekf_rej.
+# ---------------------------------------------------------------------------
+
+class TestTlmEkfRej:
+    """parse_tlm() parses ekf_rej=<n> into TLMFrame.ekf_rej. Sprint 024-005."""
+
+    @staticmethod
+    def _parse(line: str):
+        """Import parse_tlm via the robot_radio package and call it."""
+        from robot_radio.robot.protocol import parse_tlm
+        return parse_tlm(line)
+
+    def test_ekf_rej_parsed_from_tlm_line(self):
+        """TLM line with ekf_rej=42 → TLMFrame.ekf_rej == 42."""
+        line = "TLM t=12345 mode=I ekf_rej=42"
+        frame = self._parse(line)
+        assert frame is not None, "parse_tlm should return a TLMFrame"
+        assert frame.ekf_rej == 42, \
+            f"ekf_rej should be 42, got {frame.ekf_rej}"
+
+    def test_ekf_rej_zero_parsed(self):
+        """TLM line with ekf_rej=0 → TLMFrame.ekf_rej == 0 (not None)."""
+        line = "TLM t=1 mode=I enc=0,0 ekf_rej=0"
+        frame = self._parse(line)
+        assert frame is not None
+        assert frame.ekf_rej == 0, \
+            f"ekf_rej should be 0, got {frame.ekf_rej}"
+
+    def test_ekf_rej_absent_is_none(self):
+        """TLM line without ekf_rej → TLMFrame.ekf_rej is None."""
+        line = "TLM t=1 mode=I enc=0,0"
+        frame = self._parse(line)
+        assert frame is not None
+        assert frame.ekf_rej is None, \
+            f"ekf_rej should be None when absent, got {frame.ekf_rej}"
+
+    def test_ekf_rej_large_value(self):
+        """TLM line with ekf_rej=99999 → TLMFrame.ekf_rej == 99999."""
+        line = "TLM t=9999 mode=D enc=100,100 pose=350,-12,1780 ekf_rej=99999"
+        frame = self._parse(line)
+        assert frame is not None
+        assert frame.ekf_rej == 99999, \
+            f"ekf_rej should be 99999, got {frame.ekf_rej}"
+
+
+# ---------------------------------------------------------------------------
+# TestRotationalSlip — Python mirror of Odometry::predict() slip correction
+#
+# Sprint 024-006: rotationalSlip is now active in firmware (was dead before).
+# dTheta = ((dR - dL) / trackwidthMm) * effective_slip(rotationalSlip)
+# effective_slip: 0.0/neg → 1.0; clamp [0.5, 1.0].
+#
+# These tests validate the slip-clamp helper and verify that an EKF driven
+# through slip-corrected dTheta accumulates 74% of the raw encoder arc.
+# ---------------------------------------------------------------------------
+
+def effective_slip(raw_slip: float) -> float:
+    """Migration-safe rotationalSlip clamp — matches effectiveSlip() in Odometry.h.
+
+    0.0 or negative → 1.0 (no correction; legacy/unset).
+    (0.0, 0.5)      → 0.5 (clamp floor).
+    [0.5, 1.0]      → pass-through.
+    > 1.0           → 1.0 (clamp ceiling).
+    """
+    if raw_slip <= 0.0:
+        return 1.0
+    if raw_slip < 0.5:
+        return 0.5
+    if raw_slip > 1.0:
+        return 1.0
+    return raw_slip
+
+
+class TestRotationalSlip:
+    """Validate effective_slip() and EKF predict with slip-corrected dTheta.
+
+    Sprint 024-006: rotationalSlip is now applied in Odometry::predict() before
+    passing dTheta to EKF::predict().  The Python mirror reflects this design:
+    the Odometry layer computes slip-corrected dTheta and then calls EKF.predict().
+    These tests verify the slip clamp helper and its effect on heading accumulation.
+    """
+
+    # ---- effective_slip helper tests -----------------------------------------
+
+    def test_slip_zero_maps_to_one(self):
+        """rotationalSlip=0.0 (unset/legacy) → effective slip = 1.0 (no correction)."""
+        assert effective_slip(0.0) == pytest.approx(1.0, abs=1e-9)
+
+    def test_slip_negative_maps_to_one(self):
+        """Negative rotationalSlip → effective slip = 1.0 (treat as unset)."""
+        assert effective_slip(-0.5) == pytest.approx(1.0, abs=1e-9)
+
+    def test_slip_below_floor_clamps_to_0_5(self):
+        """rotationalSlip=0.3 (below floor 0.5) → effective slip clamped to 0.5."""
+        assert effective_slip(0.3) == pytest.approx(0.5, abs=1e-9)
+
+    def test_slip_0_74_passes_through(self):
+        """rotationalSlip=0.74 (firmware default) passes through unchanged."""
+        assert effective_slip(0.74) == pytest.approx(0.74, abs=1e-9)
+
+    def test_slip_0_5_is_floor(self):
+        """rotationalSlip=0.5 (floor) passes through."""
+        assert effective_slip(0.5) == pytest.approx(0.5, abs=1e-9)
+
+    def test_slip_1_0_is_identity(self):
+        """rotationalSlip=1.0 (no-slip) passes through."""
+        assert effective_slip(1.0) == pytest.approx(1.0, abs=1e-9)
+
+    def test_slip_above_ceiling_clamps_to_1_0(self):
+        """rotationalSlip=1.2 (above ceiling) → effective slip clamped to 1.0."""
+        assert effective_slip(1.2) == pytest.approx(1.0, abs=1e-9)
+
+    # ---- EKF predict with slip-corrected dTheta ------------------------------
+
+    def test_predict_rotational_slip_reduces_heading(self):
+        """EKF predict with slip=0.74 accumulates only 74% of raw encoder dθ.
+
+        With rotationalSlip=0.74, a pure-rotation encoder arc of π/2 rad should
+        produce an EKF heading of 0.74 * π/2 ≈ 1.164 rad (not π/2 ≈ 1.571 rad).
+
+        The Odometry layer computes:
+            dTheta_corrected = dTheta_raw * effective_slip(0.74)
+        and passes the corrected value to EKF.predict(). This test mimics that
+        flow by pre-multiplying dTheta before calling EKF.predict().
+        """
+        e = _make_ekf_default()
+        raw_dtheta = math.pi / 2            # 90° encoder arc
+        slip = effective_slip(0.74)
+        corrected_dtheta = raw_dtheta * slip  # 74% of encoder arc
+        e.predict(0.0, corrected_dtheta, 0.0)  # pure rotation
+        expected = corrected_dtheta
+        assert e.theta == pytest.approx(expected, abs=1e-9), (
+            f"With slip=0.74, heading should be {expected:.4f} rad "
+            f"(74% of {raw_dtheta:.4f}), got {e.theta:.4f}"
+        )
+
+    def test_predict_slip_zero_is_identity(self):
+        """rotationalSlip=0.0 (unset) → effective slip 1.0 → heading unchanged.
+
+        Tests the migration-safe 0→1.0 mapping: old configs that don't set
+        rotationalSlip (0.0) must behave identically to pre-024-006 code (no
+        slip correction applied).
+        """
+        e = _make_ekf_default()
+        raw_dtheta = math.pi / 4
+        slip = effective_slip(0.0)   # 0 → 1.0 (no correction)
+        assert slip == pytest.approx(1.0, abs=1e-9), \
+            f"effective_slip(0.0) must be 1.0, got {slip}"
+        corrected_dtheta = raw_dtheta * slip
+        e.predict(0.0, corrected_dtheta, 0.0)
+        # Heading should equal the full raw_dtheta (no correction applied)
+        assert e.theta == pytest.approx(raw_dtheta, abs=1e-9), (
+            f"slip=0.0 (identity) should leave heading={raw_dtheta:.4f}, "
+            f"got {e.theta:.4f}"
+        )
+
+    def test_predict_two_steps_with_slip_accumulate_correctly(self):
+        """Two predict steps with slip=0.74 accumulate 74% of total encoder arc.
+
+        Validates that the slip correction is applied per-step and accumulates
+        consistently over multiple ticks (not a one-time offset).
+        """
+        e = _make_ekf_default()
+        slip = effective_slip(0.74)
+        raw_per_step = math.pi / 4    # 45° raw encoder arc per step
+        corrected = raw_per_step * slip
+
+        e.predict(0.0, corrected, 0.0)
+        e.predict(0.0, corrected, e.theta)
+
+        # After 2 steps: heading = 2 × corrected = 2 × 0.74 × (π/4)
+        expected = 2.0 * corrected
+        assert e.theta == pytest.approx(expected, abs=1e-9), (
+            f"Two steps with slip=0.74: expected {expected:.4f}, got {e.theta:.4f}"
+        )
+
+    def test_field_profile_over_report_sign(self):
+        """Field-profile fixture uses negative slip_turn_extra to produce encoder over-report.
+
+        In the sim field-profile, MockMotor.tick() computes:
+            enc = vel * (1 - slip_raw)
+        where slip_raw = slipStraight + slipTurnExtra * turnRate.
+
+        With slip_turn_extra = +0.26 (old wrong sign): slip_raw = +0.26 → enc = vel*0.74
+          → encoder UNDER-reports body rotation (wrong direction for scrub).
+        With slip_turn_extra = -0.26 (corrected sign, sprint 024-006):
+          slip_raw = -0.26 → enc = vel * 1.26 → encoder OVER-reports (correct: scrub).
+
+        This test verifies the sign convention is documented and understood.
+        """
+        vel = 100.0
+        turn_rate = 1.0  # full turn
+
+        # Old (wrong) sign: positive turn_extra → under-report
+        slip_raw_old = 0.0 + 0.26 * turn_rate
+        enc_old = vel * (1.0 - slip_raw_old)
+        assert enc_old < vel, (
+            "Old sign convention (positive turn_extra) should produce under-report "
+            f"(enc={enc_old:.1f} < vel={vel:.1f})"
+        )
+
+        # Corrected sign: negative turn_extra → over-report (scrub)
+        slip_raw_new = 0.0 + (-0.26) * turn_rate
+        enc_new = vel * (1.0 - slip_raw_new)
+        assert enc_new > vel, (
+            "Corrected sign (negative turn_extra) should produce over-report "
+            f"(enc={enc_new:.1f} > vel={vel:.1f})"
+        )

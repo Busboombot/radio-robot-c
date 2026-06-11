@@ -175,6 +175,11 @@
           "type": ["number", "null"],
           "description": "Linear correction offset (deg) for CW (negative) turns. Falls back to rotation_offset_deg when null.",
           "firmware": { "field": "rotationOffsetDegNeg", "set_key": "rotOffNeg", "kind": "float" }
+        },
+        "ekf_r_otos_theta": {
+          "type": ["number", "null"],
+          "description": "EKF OTOS heading measurement noise variance (rad^2). Default ~0.01 ≈ (5.7°)². Tune up if OTOS heading is noisier on carpet.",
+          "firmware": { "field": "ekfROtosTheta", "set_key": "ekfRHead", "kind": "float" }
         }
       }
     },

@@ -56,6 +56,7 @@ class TLMFrame:
     otos: tuple[int, int, int] | None = None    # (x_mm, y_mm, heading_cdeg) — raw OTOS pose
     line: tuple[int, int, int, int] | None = None   # (g1, g2, g3, g4)
     color: tuple[int, int, int, int] | None = None  # (r, g, b, c)
+    ekf_rej: int | None = None                   # cumulative EKF gate rejection count
 
 
 @dataclass
@@ -198,6 +199,12 @@ def parse_tlm(line: str) -> TLMFrame | None:
             if len(parts) == 4:
                 frame.color = (int(parts[0]), int(parts[1]),
                                int(parts[2]), int(parts[3]))
+        except ValueError:
+            pass
+
+    if "ekf_rej" in kv:
+        try:
+            frame.ekf_rej = int(kv["ekf_rej"])
         except ValueError:
             pass
 

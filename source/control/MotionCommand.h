@@ -177,6 +177,19 @@ public:
      */
     bool isOpenEnded() const { return _nStops == 0; }
 
+    /**
+     * hasTimeStop — true when at least one stop condition has Kind::TIME.
+     *
+     * Self-terminating commands (T, D, G, TURN, RT) all carry a TIME stop
+     * as a runaway backstop; open-ended streaming (S / VW / R) do not.
+     *
+     * The system watchdog uses this to exempt time-bounded commands from the
+     * keepalive requirement: a command that already has a TIME net cannot spin
+     * forever if the host goes silent, so the watchdog skips its check for it.
+     * Open-ended commands (no TIME stop) remain keepalive-bound.
+     */
+    bool hasTimeStop() const;
+
 private:
     BodyVelocityController* _bvc            = nullptr;
     float       _vTgt                        = 0.0f;

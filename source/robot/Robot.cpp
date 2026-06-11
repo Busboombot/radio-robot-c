@@ -70,7 +70,8 @@ Robot::Robot(Hardware& h, const RobotConfig& cfg)
     odometry.setCtx(&otos, &state.inputs);
     odometry.initEKF(config.ekfQxy, config.ekfQtheta,
                      config.ekfQv, config.ekfQomega,
-                     config.ekfROtosXy, config.ekfROtosV, config.ekfREncV);
+                     config.ekfROtosXy, config.ekfROtosV, config.ekfREncV,
+                     config.ekfROtosTheta);
 }
 
 // ---------------------------------------------------------------------------
@@ -197,6 +198,7 @@ void Robot::otosCorrect(uint32_t now_ms)
     float enc_omega = odometry.lastEncOmega();
 
     odometry.correctEKF(state.inputs, p.x, p.y,
+                        p.h,
                         vel.v_mmps, vel.omega_rads,
                         enc_v, enc_omega);
 }
@@ -348,6 +350,13 @@ int Robot::buildTlmFrame(char* buf, int len)
                      (unsigned)state.inputs.colorB, (unsigned)state.inputs.colorC);
         if (n > 0 && n < rem) { pos += n; rem -= n; }
     }
+    if (config.tlmFields & TLM_FIELD_EKFREJ) {
+        // Cumulative EKF gate rejection count — all channels (pos, heading, velocity).
+        // Sprint 024-005: emitted as ekf_rej=<n> for divergence visibility.
+        n = snprintf(buf + pos, (size_t)rem, " ekf_rej=%d",
+                     odometry.ekfRejectCount());
+        if (n > 0 && n < rem) { pos += n; rem -= n; }
+    }
     buf[pos] = '\0';
     return pos;
 }
@@ -372,7 +381,7 @@ void Robot::telemetryEmit(uint32_t now_ms, ReplyFn fn, void* ctx)
 
     if (config.tlmPeriodMs < 20) config.tlmPeriodMs = 20;  // clamp to 50 Hz max
 
-    char tlmBuf[128];
+    char tlmBuf[160];
     buildTlmFrame(tlmBuf, sizeof(tlmBuf));
     fn(tlmBuf, ctx);
     _lastTlmMs = now_ms;
@@ -599,7 +608,7 @@ static void handleSnap(const ArgList& /*args*/, const char* /*corrId*/,
                         ReplyFn replyFn, void* replyCtx, void* handlerCtx)
 {
     Robot* robot = ctxFrom(handlerCtx).robot;
-    char tlmBuf[128];
+    char tlmBuf[160];
     robot->buildTlmFrame(tlmBuf, sizeof(tlmBuf));
     replyFn(tlmBuf, replyCtx);
 }
@@ -744,13 +753,14 @@ static void handleStream(const ArgList& args, const char* corrId,
                     fbuf[flen++] = *c;
                 if (end) {
                     fbuf[flen] = '\0';
-                    if (strcmp(fbuf, "enc")   == 0) mask |= TLM_FIELD_ENC;
-                    if (strcmp(fbuf, "pose")  == 0) mask |= TLM_FIELD_POSE;
-                    if (strcmp(fbuf, "vel")   == 0) mask |= TLM_FIELD_VEL;
-                    if (strcmp(fbuf, "line")  == 0) mask |= TLM_FIELD_LINE;
-                    if (strcmp(fbuf, "color") == 0) mask |= TLM_FIELD_COLOR;
-                    if (strcmp(fbuf, "twist") == 0) mask |= TLM_FIELD_TWIST;
-                    if (strcmp(fbuf, "otos")  == 0) mask |= TLM_FIELD_OTOS;
+                    if (strcmp(fbuf, "enc")     == 0) mask |= TLM_FIELD_ENC;
+                    if (strcmp(fbuf, "pose")    == 0) mask |= TLM_FIELD_POSE;
+                    if (strcmp(fbuf, "vel")     == 0) mask |= TLM_FIELD_VEL;
+                    if (strcmp(fbuf, "line")    == 0) mask |= TLM_FIELD_LINE;
+                    if (strcmp(fbuf, "color")   == 0) mask |= TLM_FIELD_COLOR;
+                    if (strcmp(fbuf, "twist")   == 0) mask |= TLM_FIELD_TWIST;
+                    if (strcmp(fbuf, "otos")    == 0) mask |= TLM_FIELD_OTOS;
+                    if (strcmp(fbuf, "ekf_rej") == 0) mask |= TLM_FIELD_EKFREJ;
                     flen = 0;
                     if (*c == '\0') break;
                 }
@@ -762,18 +772,19 @@ static void handleStream(const ArgList& args, const char* corrId,
             int bpos = 0;
             bool needComma = false;
             const struct { uint8_t bit; const char* name; } kFieldNames[] = {
-                { TLM_FIELD_ENC,   "enc"   },
-                { TLM_FIELD_POSE,  "pose"  },
-                { TLM_FIELD_VEL,   "vel"   },
-                { TLM_FIELD_LINE,  "line"  },
-                { TLM_FIELD_COLOR, "color" },
-                { TLM_FIELD_TWIST, "twist" },
-                { TLM_FIELD_OTOS,  "otos"  },
+                { TLM_FIELD_ENC,    "enc"     },
+                { TLM_FIELD_POSE,   "pose"    },
+                { TLM_FIELD_VEL,    "vel"     },
+                { TLM_FIELD_LINE,   "line"    },
+                { TLM_FIELD_COLOR,  "color"   },
+                { TLM_FIELD_TWIST,  "twist"   },
+                { TLM_FIELD_OTOS,   "otos"    },
+                { TLM_FIELD_EKFREJ, "ekf_rej" },
             };
             int brem = (int)sizeof(body);
             int bw = snprintf(body + bpos, (size_t)brem, "fields=");
             if (bw > 0 && bw < brem) { bpos += bw; brem -= bw; }
-            for (int fi = 0; fi < 7 && brem > 1; ++fi) {
+            for (int fi = 0; fi < 8 && brem > 1; ++fi) {
                 if (robot->config.tlmFields & kFieldNames[fi].bit) {
                     if (needComma) { body[bpos++] = ','; --brem; }
                     bw = snprintf(body + bpos, (size_t)brem, "%s", kFieldNames[fi].name);
@@ -959,9 +970,13 @@ static ParseResult parseKeepalive(const char* const* /*tokens*/, int /*ntokens*/
     ParseResult r; r.ok = true; r.args.count = 0; return r;
 }
 
-static void handleKeepalive(const ArgList& /*args*/, const char* corrId,
-                              ReplyFn replyFn, void* replyCtx, void* handlerCtx)
+static void handleKeepalive(const ArgList& /*args*/, const char* /*corrId*/,
+                              ReplyFn /*replyFn*/, void* /*replyCtx*/, void* handlerCtx)
 {
+    // Quiet keepalive (sprint 024-003): suppress the "OK keepalive" reply.
+    // At 6.7 Hz the acks competed with TLM frames for the 250-byte TX buffer;
+    // the host already filters them.  The watchdog reset (firmware side) and
+    // the sim watchdog arm (sim_api.cpp via sim_command) are the only effects.
 #ifndef HOST_BUILD
     LoopScheduler* sched = ctxFrom(handlerCtx).sched;
     Robot*         robot = ctxFrom(handlerCtx).robot;
@@ -971,9 +986,7 @@ static void handleKeepalive(const ArgList& /*args*/, const char* corrId,
 #else
     (void)handlerCtx;
 #endif
-    char rbuf[64];
-    CommandProcessor::replyOK(rbuf, sizeof(rbuf), "keepalive", nullptr,
-                               corrId, replyFn, replyCtx);
+    // No reply emitted (quiet keepalive).
 }
 
 // ---------------------------------------------------------------------------
@@ -1019,6 +1032,15 @@ static void handleSafe(const ArgList& args, const char* corrId,
     if (args.count >= 1) {
         const char* a0 = args.args[0].sval;
         if (strcmp(a0, "off") == 0) {
+            // One-shot disable: do NOT clear safetyEnabled directly.
+            // Instead arm the one-shot flag in MotionController so safety
+            // is automatically restored when the next motion command begins.
+            // This prevents SAFE off from becoming a permanent foot-gun.
+            robot->motionController.disableSafetyOneShot();
+            // Reflect the transient "off" state in the reply (safetyEnabled
+            // will be re-armed by MotionController on the next begin*() call,
+            // but for the duration of any current-or-next command the watchdog
+            // is suppressed via _safeOneShotDisable).
             cfg.safetyEnabled = false;
         } else if (strcmp(a0, "on") == 0) {
             cfg.safetyEnabled = true;
@@ -1030,6 +1052,8 @@ static void handleSafe(const ArgList& args, const char* corrId,
             // Numeric form: SAFE <ms>  (0 → off, >0 → on with that timeout).
             int ms = atoi(a0);
             if (ms <= 0) {
+                // Same one-shot treatment as "SAFE off".
+                robot->motionController.disableSafetyOneShot();
                 cfg.safetyEnabled = false;
             } else {
                 cfg.safetyEnabled = true;

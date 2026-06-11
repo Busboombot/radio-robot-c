@@ -73,9 +73,6 @@ const ConfigEntry kRegistry[] = {
     CFG_F("yawAccMax",   yawAccMax),          // yaw acceleration limit, deg/s^2
     CFG_F("jMax",        jMax),               // linear jerk limit, mm/s^3 (0=trapezoid)
     CFG_F("yawJerkMax",  yawJerkMax),         // yaw jerk limit, deg/s^3   (0=trapezoid)
-    // Command scaling
-    CFG_F("distScale",    distScale),
-    CFG_F("turnScale",    turnScale),
     // Timing and speed (int32_t fields)
     CFG_I("minSpeed",     minSpeedMms),
     CFG_I("sTimeout",     sTimeoutMs),
@@ -99,6 +96,8 @@ const ConfigEntry kRegistry[] = {
     CFG_F("odomOffX",     odomOffX),
     CFG_F("odomOffY",     odomOffY),
     CFG_F("odomYaw",      odomYawDeg),
+    // EKF heading fusion noise (sprint 024-004)
+    CFG_F("ekfRHead",     ekfROtosTheta),
 };
 
 #undef CFG_F

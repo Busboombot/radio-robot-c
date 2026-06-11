@@ -74,6 +74,20 @@ void MotionCommand::setStopStyle(StopStyle s)
 }
 
 // ---------------------------------------------------------------------------
+// Predicate: hasTimeStop
+// ---------------------------------------------------------------------------
+
+bool MotionCommand::hasTimeStop() const
+{
+    for (uint8_t i = 0; i < _nStops; ++i) {
+        if (_stops[i].kind == StopCondition::Kind::TIME) {
+            return true;
+        }
+    }
+    return false;
+}
+
+// ---------------------------------------------------------------------------
 // Execution phase
 // ---------------------------------------------------------------------------
 

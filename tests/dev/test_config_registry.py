@@ -4,12 +4,13 @@
 Covers sprint 009-004 (original 22 keys), sprint 010-004 (6 new
 velocity/saturation tunables: vel.kP, vel.kI, vel.kFF, minWheelMms,
 vWheelMax, steerHeadroom), sprint 011-001 (4 new pose-control tunables:
-aMax, aDecel, turnGate, arriveTol), and sprint 012-001 (10 new OTOS
+aMax, aDecel, turnGate, arriveTol), sprint 012-001 (10 new OTOS
 calibration and turn-asymmetry keys: otosLinSc, otosAngSc, rotGainPos,
-rotGainNeg, rotOffPos, rotOffNeg, rotSlip, odomOffX, odomOffY, odomYaw).
+rotGainNeg, rotOffPos, rotOffNeg, rotSlip, odomOffX, odomOffY, odomYaw),
+and sprint 024-006 (removed dead keys: distScale, turnScale).
 
 These tests validate:
-  - GET response format: CFG prefix, all 42 keys present, correct value format
+  - GET response format: CFG prefix, all 40 keys present, correct value format
   - GET subset: only requested keys returned
   - SET value parsing: float, integer, float-as-int
   - Error paths: badkey, missing key=value in SET
@@ -18,6 +19,7 @@ These tests validate:
   - Integer params formatted without decimal point
   - Float params formatted with 3 decimal places
   - lapsToMmScale is absent from the registry
+  - distScale and turnScale are absent (removed as dead in sprint 024-006)
 
 The tests simulate the wire protocol by parsing expected response strings,
 verifying format without requiring a connected robot.
@@ -88,8 +90,7 @@ REGISTRY = [
     # Remaining original keys (legacy, retained for backward compatibility)
     ("turnThr",       "float_as_int"),
     ("doneTol",       "float_as_int"),
-    ("distScale",     "float"),
-    ("turnScale",     "float"),
+    # distScale and turnScale removed in sprint 024-006 (were registered but dead)
     ("minSpeed",      "int"),
     ("sTimeout",      "int"),
     ("tick",          "int"),
@@ -117,13 +118,14 @@ REGISTRY_KEYS = [k for k, _ in REGISTRY]
 # Default RobotConfig values as written to the wire by GET.
 # These match defaultRobotConfig() in Config.h + expected %.3f / %d formatting.
 # Sprint 010-004 adds 6 new keys after pid.max; sprint 011-001 adds 4 more.
-# Total 32 keys.
+# Sprint 024-006: distScale and turnScale removed (were registered but dead).
+# Total 40 keys.
 DEFAULT_GET_LINE = (
     "CFG ml=0.487 mr=0.481 kff=0.150 klf=1.000 klb=1.000 krf=1.000 krb=1.000 "
     "adjThr=0.500 adjGain=0.050 tw=126 pid.kp=300.000 pid.ki=0.000 pid.kd=0.000 "
     "pid.max=30.000 vel.kP=0.300 vel.kI=0.050 vel.kFF=0.150 "
     "minWheelMms=20.000 vWheelMax=400.000 steerHeadroom=20.000 "
-    "turnThr=50 doneTol=5 distScale=0.940 turnScale=1.070 "
+    "turnThr=50 doneTol=5 "
     "minSpeed=50 sTimeout=500 tick=20 tlmPeriod=0 "
     "aMax=300.000 aDecel=250.000 turnGate=45 arriveTol=5 "
     "otosLinSc=1.050 otosAngSc=0.987 rotGainPos=1.000 rotGainNeg=1.170 "
@@ -139,8 +141,9 @@ DEFAULT_GET_LINE = (
 class TestRegistrySpec:
     """Validate the registry spec itself is consistent."""
 
-    def test_all_42_keys_present(self) -> None:
-        assert len(REGISTRY) == 42, f"Expected 42 registry entries, got {len(REGISTRY)}"
+    def test_all_40_keys_present(self) -> None:
+        """Sprint 024-006: distScale and turnScale removed, leaving 40 keys."""
+        assert len(REGISTRY) == 40, f"Expected 40 registry entries, got {len(REGISTRY)}"
 
     def test_key_names_unique(self) -> None:
         keys = [k for k, _ in REGISTRY]
@@ -225,14 +228,15 @@ class TestGetResponseFormat:
         )
 
     def test_response_length_reasonable(self) -> None:
-        """Confirm the response is in the expected range (~540-765 bytes).
+        """Confirm the response is in the expected range (~500-765 bytes).
         Sprint 010-004 added 6 keys raising the floor from ~238 to ~336 bytes.
         Sprint 011-001 added 4 more keys raising the floor to ~390 bytes.
         Sprint 012-001 added 10 more keys raising the floor to ~565 bytes.
+        Sprint 024-006 removed 2 dead keys (distScale, turnScale), floor ~533 bytes.
         """
         length = len(DEFAULT_GET_LINE)
-        assert 540 < length < 765, (
-            f"GET response length {length} is outside expected range 540-765"
+        assert 500 < length < 765, (
+            f"GET response length {length} is outside expected range 500-765"
         )
 
 
@@ -335,6 +339,20 @@ class TestVelocityTunables:
         # Also confirm it's not in the default GET dump.
         kv = parse_cfg(DEFAULT_GET_LINE)
         assert "lapsToMmScale" not in kv, "lapsToMmScale appears in GET dump"
+
+    def test_distScale_absent(self) -> None:
+        """distScale removed in sprint 024-006 (was registered but dead)."""
+        for key, _ in REGISTRY:
+            assert key != "distScale", "distScale should not be in the registry"
+        kv = parse_cfg(DEFAULT_GET_LINE)
+        assert "distScale" not in kv, "distScale should not appear in GET dump"
+
+    def test_turnScale_absent(self) -> None:
+        """turnScale removed in sprint 024-006 (was registered but dead)."""
+        for key, _ in REGISTRY:
+            assert key != "turnScale", "turnScale should not be in the registry"
+        kv = parse_cfg(DEFAULT_GET_LINE)
+        assert "turnScale" not in kv, "turnScale should not appear in GET dump"
 
 
 class TestPoseControlTunables:
@@ -455,10 +473,10 @@ class TestPoseControlTunables:
         err_line = "ERR badkey badkey"
         assert err_line == "ERR badkey badkey"
 
-    def test_full_get_42_keys(self) -> None:
-        """Full GET dump has exactly 42 keys (32 existing + 10 new Sprint 012-001)."""
+    def test_full_get_40_keys(self) -> None:
+        """Full GET dump has exactly 40 keys (42 from Sprint 012-001, minus 2 removed in sprint 024-006)."""
         kv = parse_cfg(DEFAULT_GET_LINE)
-        assert len(kv) == 42, f"Expected 42 keys in full GET, got {len(kv)}"
+        assert len(kv) == 40, f"Expected 40 keys in full GET, got {len(kv)}"
 
     def test_get_dump_under_768_bytes_with_new_keys(self) -> None:
         """Confirm the 42-key GET dump fits in the 768-byte firmware buffer (expanded Sprint 012-001)."""
@@ -611,11 +629,14 @@ class TestOtosAndTurnAsymmetryKeys:
             assert key in kv, f"Sprint 012-001 key {key!r} missing from full GET dump"
 
     def test_get_dump_length_reported(self) -> None:
-        """Report and validate the new full GET dump byte count (565 bytes, fits in 768-byte buffer)."""
+        """Report and validate the new full GET dump byte count (fits in 768-byte buffer).
+
+        Sprint 024-006: distScale and turnScale removed → dump shrinks from ~565 to ~533 bytes.
+        """
         length = len(DEFAULT_GET_LINE.encode("utf-8"))
-        # The full 42-key GET dump is ~565 bytes; firmware buffer is now 768 bytes.
-        assert 550 <= length <= 600, (
-            f"GET dump is {length} bytes — outside expected 550-600 byte range for 42 keys"
+        # The 40-key GET dump is ~533 bytes; firmware buffer is 768 bytes.
+        assert 510 <= length <= 600, (
+            f"GET dump is {length} bytes — outside expected 510-600 byte range for 40 keys"
         )
         assert length < 768, (
             f"GET dump is {length} bytes — exceeds 768-byte firmware buffer"
