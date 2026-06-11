@@ -27,6 +27,42 @@ an offline replay harness (`replay_tlm_log()`). Create the demonstration noteboo
 This is the validation layer for the entire sprint — it confirms the firmware EKF
 math (via Python mirror parity) and demonstrates the improvement visually.
 
+## Correction (post-review, stakeholder-directed)
+
+The demonstration notebook originally replayed a **hand-authored synthetic TLM
+fixture** through the Python EKF mirror. The stakeholder (correctly) rejected
+this: a characterization artifact must run real code on data derived from an
+independent ground truth, not invented numbers. The notebook was rebuilt to
+drive the **actual firmware in the host simulator** (`libfirmware_host` via
+MockHAL), and two real sim-fidelity gaps were fixed along the way:
+
+1. **`MockOtosSensor` now emits velocity + acceleration**
+   (`source/hal/mock/MockOtosSensor.{h,cpp}`) — previously
+   `readVelocityTransformed`/`readAccelTransformed` returned `{0,0}`, so the
+   sim could not exercise the sprint's velocity-fusion path. They now return the
+   noisy body-frame v/omega derived from the same arc segment as the position
+   model.
+2. **The sim loop now runs the firmware OTOS correction** — `sim_tick()` only
+   called `odometry.predict()` (encoder dead reckoning); the firmware EKF
+   *update* never ran. Added opt-in `sim_set_otos_fusion()` (sim_api.cpp) +
+   `SimConnection.enable_otos_fusion()` so the sim runs the real
+   `Robot::otosCorrect()` → `correctEKF()` path. Default stays off (existing
+   tests unaffected; full suite green at 1390).
+
+New artifacts:
+- `tests/dev/ekf_sim_demo.py` — drives an S-curve+circle via `VW`, runs the
+  firmware twice (fusion off/on) on one noise realization, returns
+  ground-truth / encoder-only / raw-OTOS / fused trajectories + error stats.
+- `host_tests/demo_ekf_velocity_fusion.ipynb` — rebuilt to call the above and
+  plot truth vs encoder vs OTOS vs firmware-fused (executes clean via nbconvert).
+
+Result on the S-curve+circle: encoder-only drifts to ~61 mm (mean ~31 mm); the
+firmware EKF fused estimate tracks ground truth at ~6 mm mean. The Python EKF
+mirror, golden-vector parity, gating, and setPose regression tests (below) all
+remain and pass. The `replay_tlm_log()` harness + synthetic fixture are retained
+as a replay-*mechanism* unit test (for replaying real captured logs later), not
+as the characterization demo.
+
 ## Acceptance Criteria
 
 **Python EKF mirror (5-state):**

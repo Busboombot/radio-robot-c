@@ -27,11 +27,11 @@ OtosPose MockOtosSensor::readTransformed(const RobotConfig& /*cfg*/) const {
 }
 
 OtosVelocity MockOtosSensor::readVelocityTransformed(const RobotConfig& /*cfg*/) const {
-    return {0.0f, 0.0f};
+    return {_velV, _velOmega};
 }
 
 OtosAccel MockOtosSensor::readAccelTransformed(const RobotConfig& /*cfg*/) const {
-    return {0.0f, 0.0f};
+    return {_accAx, _accAy};
 }
 
 void MockOtosSensor::getPositionRaw(int16_t& x, int16_t& y, int16_t& h) const {
@@ -71,6 +71,18 @@ void MockOtosSensor::tick(float velL, float velR, float tw, uint32_t dt_ms) {
     // Wrap heading to [-pi, pi]
     while (_odomH >  static_cast<float>(M_PI)) _odomH -= 2.0f * static_cast<float>(M_PI);
     while (_odomH < -static_cast<float>(M_PI)) _odomH += 2.0f * static_cast<float>(M_PI);
+
+    // Body-frame velocity/accel from the same noisy arc segment (consistent
+    // with the position channel). v = arc-distance / dt, omega = dTheta / dt.
+    if (dt_s > 0.0f) {
+        float newV     = noisyDC  / dt_s;
+        float newOmega = noisyDTh / dt_s;
+        _accAx    = (newV - _prevVelV) / dt_s;
+        _accAy    = 0.0f;
+        _prevVelV = newV;
+        _velV     = newV;
+        _velOmega = newOmega;
+    }
 #else
     (void)velL; (void)velR; (void)tw; (void)dt_ms;
 #endif

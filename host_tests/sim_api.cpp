@@ -86,6 +86,12 @@ struct SimHandle {
     // 0 = not yet armed (no command received).
     uint32_t         watchdogMs = 0;
 
+    // OTOS EKF fusion toggle (sprint 023). When true, sim_tick() runs the
+    // firmware's Robot::otosCorrect() so the pose is the fused EKF estimate;
+    // when false (default) the pose is encoder-only dead reckoning, preserving
+    // the historical sim behaviour relied on by existing tests.
+    bool             fuseOtos = false;
+
     SimHandle()
         : hal()
         , cfg(defaultRobotConfig())
@@ -168,6 +174,15 @@ void sim_tick(void* h, uint32_t now_ms)
     // Odometry: dead-reckon pose from encoder deltas (mirrors run_blocks()).
     s->robot.odometry.predict(s->robot.state.inputs,
                               s->robot.config.trackwidthMm, now_ms);
+
+    // OTOS EKF correction (sprint 023) — opt-in via sim_set_otos_fusion().
+    // The real firmware runs otosCorrect() on the enOtos loop phase; the sim
+    // historically omitted it, so by default the firmware pose is encoder-only.
+    // When fusion is enabled this runs the actual Robot::otosCorrect() ->
+    // EKF updatePosition()/updateVelocity() path on the simulated OTOS reading.
+    if (s->fuseOtos) {
+        s->robot.otosCorrect(now_ms);
+    }
 
     // HaltController — evaluate user-registered named stop conditions.
     // Mirrors LoopScheduler run_blocks() halt block.
@@ -378,6 +393,14 @@ void sim_set_encoder_noise(void* h, int side, float sigma_mm) {
 // ---- OTOS sim model ----
 void sim_enable_otos_model(void* h) {
     static_cast<SimHandle*>(h)->hal.otosMock().enableSimModel(true);
+}
+// Enable/disable the firmware OTOS EKF correction inside sim_tick().
+// Also marks the mock OTOS initialised so Robot::otosCorrect() does not
+// early-return on its is_initialized() guard.
+void sim_set_otos_fusion(void* h, int on) {
+    SimHandle* s = static_cast<SimHandle*>(h);
+    s->fuseOtos = (on != 0);
+    if (s->fuseOtos) s->hal.otosMock().begin();
 }
 void sim_set_otos_linear_noise(void* h, float sigma_fraction) {
     static_cast<SimHandle*>(h)->hal.otosMock().setLinearNoise(sigma_fraction);

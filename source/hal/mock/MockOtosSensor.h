@@ -83,6 +83,15 @@ private:
     float _odomY            = 0.0f;
     float _odomH            = 0.0f;
 
+    // Sim model velocity/accel output (body frame), refreshed each tick().
+    // Derived from the SAME noisy arc segment as the position model so the
+    // velocity channel is consistent with the position channel.
+    float _velV             = 0.0f;   // forward speed, mm/s
+    float _velOmega         = 0.0f;   // yaw rate, rad/s
+    float _accAx            = 0.0f;   // forward accel, mm/s^2 (finite diff of v)
+    float _accAy            = 0.0f;   // lateral accel, mm/s^2 (≈0, diff drive)
+    float _prevVelV         = 0.0f;
+
 #ifdef HOST_BUILD
     std::mt19937 _rng{43u};
 #endif
