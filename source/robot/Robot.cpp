@@ -326,6 +326,16 @@ int Robot::buildTlmFrame(char* buf, int len)
                      (int)(state.inputs.fusedOmega * 1000.0f));
         if (n > 0 && n < rem) { pos += n; rem -= n; }
     }
+    if (config.tlmFields & TLM_FIELD_OTOS) {
+        // Raw OTOS pose (pre-fusion): x,y mm and heading in centidegrees,
+        // matching the pose= field encoding. Lets the host plot the raw OTOS
+        // sensor track alongside enc-derived and fused pose. 18000/pi cdeg/rad.
+        n = snprintf(buf + pos, (size_t)rem, " otos=%d,%d,%d",
+                     (int)state.inputs.otosX,
+                     (int)state.inputs.otosY,
+                     (int)(state.inputs.otosH * 5729.5779513f));
+        if (n > 0 && n < rem) { pos += n; rem -= n; }
+    }
     if (haveLine) {
         n = snprintf(buf + pos, (size_t)rem, " line=%u,%u,%u,%u",
                      (unsigned)state.inputs.line[0], (unsigned)state.inputs.line[1],
@@ -740,6 +750,7 @@ static void handleStream(const ArgList& args, const char* corrId,
                     if (strcmp(fbuf, "line")  == 0) mask |= TLM_FIELD_LINE;
                     if (strcmp(fbuf, "color") == 0) mask |= TLM_FIELD_COLOR;
                     if (strcmp(fbuf, "twist") == 0) mask |= TLM_FIELD_TWIST;
+                    if (strcmp(fbuf, "otos")  == 0) mask |= TLM_FIELD_OTOS;
                     flen = 0;
                     if (*c == '\0') break;
                 }
@@ -757,11 +768,12 @@ static void handleStream(const ArgList& args, const char* corrId,
                 { TLM_FIELD_LINE,  "line"  },
                 { TLM_FIELD_COLOR, "color" },
                 { TLM_FIELD_TWIST, "twist" },
+                { TLM_FIELD_OTOS,  "otos"  },
             };
             int brem = (int)sizeof(body);
             int bw = snprintf(body + bpos, (size_t)brem, "fields=");
             if (bw > 0 && bw < brem) { bpos += bw; brem -= bw; }
-            for (int fi = 0; fi < 6 && brem > 1; ++fi) {
+            for (int fi = 0; fi < 7 && brem > 1; ++fi) {
                 if (robot->config.tlmFields & kFieldNames[fi].bit) {
                     if (needComma) { body[bpos++] = ','; --brem; }
                     bw = snprintf(body + bpos, (size_t)brem, "%s", kFieldNames[fi].name);

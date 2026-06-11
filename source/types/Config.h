@@ -10,6 +10,7 @@ constexpr uint8_t TLM_FIELD_VEL   = (1u << 2);  // vel=vL,vR  (per-wheel mm/s, a
 constexpr uint8_t TLM_FIELD_LINE  = (1u << 3);  // line=4ch
 constexpr uint8_t TLM_FIELD_COLOR = (1u << 4);  // color=4ch
 constexpr uint8_t TLM_FIELD_TWIST = (1u << 5);  // twist=v,omega  (fused body velocity, Sprint 023)
+constexpr uint8_t TLM_FIELD_OTOS  = (1u << 6);  // otos=x,y,h  (raw OTOS pose mm/mm/cdeg, Sprint 023 bench)
 constexpr uint8_t TLM_FIELD_ALL   = 0xFFu;      // all fields (default)
 
 struct RobotConfig {
