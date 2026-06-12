@@ -15,6 +15,7 @@ from robot_radio.robot import QBotPro, Nezha, NezhaProtocol, Cutebot
 from robot_radio.robot.protocol import parse_tlm
 from robot_radio.sensors.color import nezha_classifier
 from robot_radio.config.robot_config import get_robot_config, match_robot_by_id
+from robot_radio.calibration.helpers import scale_to_int8 as _scale_to_int8
 
 _verbose = False
 
@@ -95,26 +96,6 @@ CRAWL_DELAY_MS_MIN = 20
 CRAWL_MM_PER_PULSE = 6.53
 CRAWL_MAX_EFF_SPEED = (CRAWL_MM_PER_PULSE * 1000.0
                        / (CRAWL_PULSE_MS + CRAWL_DELAY_MS_MIN))  # ≈ 65 mm/s
-
-
-def _scale_to_int8(scale: float) -> int:
-    """Convert an OTOS scale factor to the firmware int8 encoding.
-
-    Firmware stores OL/OA as a signed offset from 1.0 in units of 0.001
-    (0.1% per step), clamped to int8 range.  So ``otos_linear_scale=1.027``
-    encodes as ``round((1.027 - 1.0) / 0.001) = 27``.
-
-    Edge case: if the config has ``otos_linear_scale == 1.0`` exactly, the
-    result is 0 — which collides with the firmware factory default (also 0).
-    In that case the freshness check in ``_make_robot()`` cannot distinguish
-    "never calibrated" from "calibrated to exactly 1.0".  For the current
-    ``nezha-1`` config this is not an issue (scale is not 1.0).  If you edit
-    the config to 1.0, the fast-path fires on fresh boot; the values pushed
-    would be the correct defaults anyway, so this is safe but means the warmup
-    skip still works correctly — no push is needed because the firmware default
-    IS the right value.
-    """
-    return max(-128, min(127, round((scale - 1.0) / 0.001)))
 
 
 def _calibration_path() -> str:

@@ -46,77 +46,32 @@ import time
 from pathlib import Path
 from typing import Optional
 
+from robot_radio.calibration.helpers import (
+    mean_stdev as _mean_stdev_fn,
+    resolve_save_path as _resolve_save_path_fn,
+    save_config as _save_config_fn,
+)
+
 _PROJECT_ROOT = Path(__file__).parent.parent.parent
 
-# ---------------------------------------------------------------------------
-# Stats helpers
-# ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# Thin wrappers — delegate to robot_radio.calibration.helpers
+# ---------------------------------------------------------------------------
 
 def _mean_stdev(xs: list[float]) -> tuple[float, float]:
-    """Sample mean and standard deviation (Bessel-corrected).
-
-    Returns (mean, 0.0) for a single-element list; (0.0, 0.0) for empty.
-    """
-    if not xs:
-        return (0.0, 0.0)
-    n = len(xs)
-    m = sum(xs) / n
-    if n < 2:
-        return (m, 0.0)
-    var = sum((x - m) ** 2 for x in xs) / (n - 1)
-    return (m, math.sqrt(var))
-
-
-# ---------------------------------------------------------------------------
-# Config save helpers
-# ---------------------------------------------------------------------------
-
-
-def _deep_merge(dst: dict, src: dict) -> None:
-    """Recursively update dst with values from src in-place."""
-    for k, v in src.items():
-        if k in dst and isinstance(dst[k], dict) and isinstance(v, dict):
-            _deep_merge(dst[k], v)
-        else:
-            dst[k] = v
+    """Delegate to robot_radio.calibration.helpers.mean_stdev."""
+    return _mean_stdev_fn(xs)
 
 
 def _save_config(path: Path, updates: dict) -> None:
-    """Read existing JSON, deep-merge updates, write back with indent=2."""
-    data = json.loads(path.read_text())
-    _deep_merge(data, updates)
-    path.write_text(json.dumps(data, indent=2) + "\n")
+    """Delegate to robot_radio.calibration.helpers.save_config."""
+    _save_config_fn(path, updates)
 
 
 def _resolve_save_path() -> Optional[Path]:
-    """Resolve the path to the active robot config for saving.
-
-    Follows the same resolution logic as get_robot_config():
-      1. ROBOT_CONFIG env var — full path.
-      2. data/robots/active_robot.json — pointer or full config.
-    Returns the resolved Path, or None if not found.
-    """
-    import os
-
-    env_path = os.environ.get("ROBOT_CONFIG")
-    if env_path:
-        p = Path(env_path)
-        if not p.is_absolute():
-            p = _PROJECT_ROOT / p
-        return p if p.exists() else None
-
-    active = _PROJECT_ROOT / "data" / "robots" / "active_robot.json"
-    if not active.exists():
-        return None
-    try:
-        pointer = json.loads(active.read_text())
-    except Exception:
-        return None
-    if "path" in pointer:
-        return _PROJECT_ROOT / pointer["path"]
-    # active_robot.json is itself the full config
-    return active
+    """Delegate to robot_radio.calibration.helpers.resolve_save_path."""
+    return _resolve_save_path_fn(project_root=_PROJECT_ROOT)
 
 
 def _prompt_save(updates: dict, label: str) -> None:
@@ -346,7 +301,7 @@ def cmd_calibrate_distance(args) -> None:
     --distance  Target distance in cm (default 40).
     """
     from robot_radio.io import cli as _cli
-    from robot_radio.io.cli import _scale_to_int8
+    from robot_radio.calibration.helpers import scale_to_int8 as _scale_to_int8
 
     verbose = bool(getattr(_cli, "_verbose", False) or getattr(args, "verbose", False))
 
@@ -682,7 +637,7 @@ def cmd_calibrate_turns(args) -> None:
     --auto   Run auto mode (default prompts to press Enter per trial).
     --trials Number of trials (default 6).
     """
-    from robot_radio.io.cli import _scale_to_int8
+    from robot_radio.calibration.helpers import scale_to_int8 as _scale_to_int8
 
     auto_mode  = bool(getattr(args, "auto", False))
     auto_trials = int(getattr(args, "trials", 6))
