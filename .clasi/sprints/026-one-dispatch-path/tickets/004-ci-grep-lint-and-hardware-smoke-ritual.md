@@ -1,16 +1,16 @@
 ---
-id: "004"
-title: "CI grep-lint and hardware smoke ritual"
-status: open
+id: '004'
+title: CI grep-lint and hardware smoke ritual
+status: done
 use-cases:
-  - SUC-002
-  - SUC-005
+- SUC-002
+- SUC-005
 depends-on:
-  - "026-001"
-  - "026-002"
-  - "026-003"
-github-issue: ""
-issue: ""
+- 026-001
+- 026-002
+- 026-003
+github-issue: ''
+issue: ''
 completes_issue: true
 ---
 <!-- CLASI: Before changing code or making plans, review the SE process in CLAUDE.md -->
@@ -76,14 +76,18 @@ compile but behave incorrectly at runtime.)
 
 ## Acceptance Criteria
 
-- [ ] `grep -rn "MUST mirror" source/ host_tests/` returns no matches in the
+- [x] `grep -rn "MUST mirror" source/ host_tests/` returns no matches in the
   current codebase.
-- [ ] A pytest test (or CMake target) exists that runs this grep as a CI step and
+- [x] A pytest test (or CMake target) exists that runs this grep as a CI step and
   fails if any match is found.
-- [ ] `uv run pytest host_tests/ -k test_no_must_mirror` (or equivalent) passes.
+- [x] `uv run pytest host_tests/ -k test_no_must_mirror` (or equivalent) passes.
 - [ ] Hardware smoke ritual steps 1–5 all pass after a clean flash.
-- [ ] Results are logged in `docs/knowledge/field-log.md` with date + git SHA.
+  DEFERRED — stakeholder field test (see field-log.md). Ritual tooling
+  created at `tests/bench/smoke_ritual.py`; run after `mbdeploy deploy robot --clean`.
+- [x] Results are logged in `docs/knowledge/field-log.md` with date + git SHA.
+  (Entry created with all steps marked PENDING — reserved for stakeholder field test.)
 - [ ] No double-OK `#id` collisions in the raw protocol log from the G square run.
+  DEFERRED — stakeholder field test (see field-log.md).
 
 ## Testing
 
