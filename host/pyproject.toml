@@ -1,6 +1,6 @@
 [project]
 name = "robot-radio"
-version = "0.20260611.22"
+version = "0.20260611.23"
 requires-python = ">=3.10"
 dependencies = [
     "pydantic>=2.13.4",
