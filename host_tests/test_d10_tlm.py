@@ -277,6 +277,80 @@ def test_clamp_stream_0_not_clamped(sim):
 
 
 # ---------------------------------------------------------------------------
+# 5. N3 regression (030-003): null-guard and fn/ctx binding correctness
+# ---------------------------------------------------------------------------
+
+def test_n3_set_tlm_period_without_stream_no_crash_no_tlm(sim):
+    """SET tlmPeriod=100 with no prior STREAM must not crash and must emit no TLM.
+
+    Scenario (N3, finding 1):
+      _tlmBoundFn stays nullptr until STREAM binds the channel.
+      SET tlmPeriod=100 arms the TLM period without binding a fn.
+      On the next TLM tick, telemetryEmit must silently suppress (null guard),
+      NOT call a null fn-pointer (HardFault on micro:bit).
+
+    Verification:
+      We tick for 500 ms (5x the period).  If the null guard is missing, the
+      simulation crashes or raises.  With the guard, exactly 0 TLM frames are
+      emitted because _tlmBoundFn is nullptr.
+    """
+    r = sim.send_command("SET tlmPeriod=100")
+    assert "OK" in r.upper(), f"SET tlmPeriod=100 failed: {repr(r)}"
+
+    # Collect TLM for 500 ms — if the null guard is absent this crashes.
+    frames = sim.tick_collect_tlm(total_ms=500, step_ms=20)
+    assert len(frames) == 0, (
+        f"Expected 0 TLM frames (no STREAM issued, _tlmBoundFn is nullptr); "
+        f"got {len(frames)}: {frames}"
+    )
+
+
+def test_n3_stream_then_non_stream_command_tlm_stays_on_bound_channel(sim):
+    """STREAM on one channel; a subsequent non-STREAM command does not redirect TLM.
+
+    Scenario (N3, finding 2 — fn/ctx mismatch):
+      Pre-fix: loopTickOnce passed ts.activeCtx (the last *command* channel) to
+      telemetryEmit, not the STREAM-bound ctx.  On mixed serial+radio setups this
+      caused serialReplyTlm to receive a Radio* cast to SerialPort* — UB.
+
+      In the sim all commands share the same storeReply/replyStore sink, so we
+      cannot model two distinct channels.  Instead we verify the structural
+      invariant: after STREAM, the bound fn is set (_tlmBoundFn != nullptr via
+      get_tlm_bound()), and TLM is emitted on the bound channel even after a
+      subsequent non-STREAM command.
+
+    Steps:
+      1. Issue STREAM 50 — binds fn+ctx.
+      2. Issue PING — a non-STREAM command that would change ts.activeCtx but
+         must NOT change the TLM binding.
+      3. Collect TLM for 300 ms.  Expect >= 2 frames (period=50 ms).
+      4. Confirm binding flag is still set after PING.
+    """
+    r = sim.send_command("STREAM 50")
+    assert "period=50" in r, f"STREAM 50 rejected: {repr(r)}"
+    assert sim.get_tlm_bound(), "Expected TLM binding after STREAM"
+
+    # Non-STREAM command — must not redirect TLM.
+    r2 = sim.send_command("PING")
+    assert "pong" in r2.lower(), f"PING failed: {repr(r2)}"
+
+    # Binding must still be set (N3 invariant: _tlmBoundFn/_tlmBoundCtx unaffected
+    # by non-STREAM commands).
+    assert sim.get_tlm_bound(), (
+        "TLM binding was lost after PING — non-STREAM commands must not clear "
+        "_tlmBoundFn/_tlmBoundCtx (N3 fn/ctx mismatch fix)"
+    )
+
+    # TLM must be emitted on the bound channel.
+    frames = sim.tick_collect_tlm(total_ms=300, step_ms=20)
+    assert len(frames) >= 2, (
+        f"Expected >= 2 TLM frames in 300 ms with period=50 ms after PING; "
+        f"got {len(frames)}.  telemetryEmit must use _tlmBoundFn/_tlmBoundCtx, "
+        f"not ts.activeTlmFn/ts.activeCtx (N3 fix)."
+    )
+
+
+# ---------------------------------------------------------------------------
 # DEFERRED (stakeholder field test):
 # - Drop rate < 2% over a 60 s drive with STREAM 50 over relay.
 # - square_run.py bench test: tlm_drop_rate(frames) < 0.02.

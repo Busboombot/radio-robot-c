@@ -127,9 +127,16 @@ void loopTickOnce(Robot& robot, CommandProcessor& cmd, CommandQueue& queue,
     }
 
     // ===== TELEMETRY: timed TLM frame emit ====================================
+    // N3 fix (030-003): emit with the STREAM-bound fn+ctx pair, not ts.activeCtx
+    // (which is the last *command* channel, not the bound stream channel).
+    // Mixed serial+radio field setup: STREAM over serial then a radio command
+    // would have passed ts.activeCtx = &radio to serialReplyTlm, casting Radio*
+    // to SerialPort* — UB.  Using the bound pair keeps TLM on the channel that
+    // issued STREAM regardless of which channel subsequent commands arrive on.
+    // telemetryEmit guards fn == nullptr, so SET tlmPeriod without STREAM is safe.
     if (cfg.tlmPeriodMs > 0 &&
         (int32_t)(now - ts.lastTlm) >= (int32_t)cfg.tlmPeriodMs) {
-        robot.telemetryEmit(now, ts.activeTlmFn, ts.activeCtx);
+        robot.telemetryEmit(now, robot._tlmBoundFn, robot._tlmBoundCtx);
         ts.lastTlm = now;
     }
 }

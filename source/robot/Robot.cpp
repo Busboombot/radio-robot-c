@@ -453,6 +453,12 @@ void Robot::telemetryEmit(uint32_t now_ms, ReplyFn fn, void* ctx)
 {
     if (config.tlmPeriodMs <= 0) return;
 
+    // N3 null guard (030-003): _tlmBoundFn stays nullptr until STREAM binds the
+    // channel.  SET tlmPeriod without a prior STREAM must not reach fn(…) — a
+    // null fn-pointer call is a HardFault on the micro:bit.  Silent suppression
+    // matches the Robot.h:164-169 comment ("nullptr means TLM is suppressed").
+    if (fn == nullptr) return;
+
     // Idle-rate: when stopped, slow down to max(period, 500 ms) so the stream
     // stays alive but doesn't flood the link with idle noise.
     static constexpr uint32_t kIdleMinMs = 500;
@@ -918,9 +924,14 @@ static void handleStream(const ArgList& args, const char* corrId,
     // the channel and derive the TLM-appropriate reply fn (serialReplyTlm
     // for serial, radioReply for radio).  Commands on other channels do not
     // redirect the stream.
-    // _tlmBoundFn is set by runCommsIn once the channel is identified;
-    // it stays nullptr here so the sim path (which sets activeTlmFn directly)
-    // is unaffected until runCommsIn updates it on the next live iteration.
+    //
+    // N3 fix (030-003): also store the caller's replyFn as _tlmBoundFn so that
+    // telemetryEmit (now using _tlmBoundFn/_tlmBoundCtx directly) has a valid fn
+    // in both the sim path (replyFn = storeReply) and firmware path.  In firmware,
+    // runCommsIn overwrites _tlmBoundFn on the next iteration with the correct
+    // channel fn (serialReplyTlm or radioReply derived from _tlmBoundCtx), so
+    // _tlmBoundFn is always the pair that matches _tlmBoundCtx.
+    robot->_tlmBoundFn  = replyFn;
     robot->_tlmBoundCtx = replyCtx;
 
     char body[32];

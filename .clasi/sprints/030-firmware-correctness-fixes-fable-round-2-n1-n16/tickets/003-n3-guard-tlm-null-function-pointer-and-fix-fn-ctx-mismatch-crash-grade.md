@@ -1,9 +1,9 @@
 ---
 id: '003'
 title: 'N3: Guard TLM null function pointer and fix fn/ctx mismatch (crash-grade)'
-status: open
+status: done
 use-cases:
-  - SUC-003
+- SUC-003
 depends-on: []
 github-issue: ''
 issue: fr2-n3-tlm-null-ctx.md
@@ -33,15 +33,15 @@ Mixed serial+radio is the normal field setup.
 
 ## Acceptance Criteria
 
-- [ ] `telemetryEmit()` guards `fn == nullptr` and suppresses TLM emission (no crash,
+- [x] `telemetryEmit()` guards `fn == nullptr` and suppresses TLM emission (no crash,
       no ERR response — silent suppression matches the header comment).
-- [ ] TLM is emitted using `_tlmBoundCtx` (the bound channel ctx), not `ts.activeCtx`.
-- [ ] New sim test: `SET tlmPeriod=100` with no prior STREAM does not crash; no TLM
+- [x] TLM is emitted using `_tlmBoundCtx` (the bound channel ctx), not `ts.activeCtx`.
+- [x] New sim test: `SET tlmPeriod=100` with no prior STREAM does not crash; no TLM
       is emitted.
-- [ ] New sim test: STREAM over serial followed by a radio command keeps TLM on the
+- [x] New sim test: STREAM over serial followed by a radio command keeps TLM on the
       serial channel (fn and ctx are the serial-bound pair).
-- [ ] `python3 build.py` clean build passes.
-- [ ] `uv run --with pytest python -m pytest host_tests/ host/tests/` passes.
+- [x] `python3 build.py` clean build passes.
+- [x] `uv run --with pytest python -m pytest host_tests/ host/tests/` passes.
 
 ## Implementation Plan
 
