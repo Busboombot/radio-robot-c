@@ -1,12 +1,12 @@
 ---
 id: '004'
 title: Write pose-authority statement in docs/architecture.md and consolidate architecture
-status: open
+status: done
 use-cases:
-  - SUC-004
+- SUC-004
 depends-on:
-  - '001'
-  - '003'
+- '001'
+- '003'
 github-issue: ''
 issue: a1-navigation-and-pose-ownership.md
 completes_issue: true

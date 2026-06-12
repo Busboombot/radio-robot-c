@@ -1,17 +1,16 @@
 ---
 id: '001'
 title: Pose-authority design document and stakeholder sign-off gate
-status: open
+status: done
 use-cases:
-  - SUC-001
+- SUC-001
 depends-on: []
 github-issue: ''
 issue: a1-navigation-and-pose-ownership.md
 completes_issue: false
-prerequisite: >
-  SPRINT GATE: Sprints 026–027 must have proven the firmware G path trustworthy
-  on the field before this ticket executes. Confirm with the stakeholder before
-  starting.
+prerequisite: "SPRINT GATE: Sprints 026\u2013027 must have proven the firmware G path\
+  \ trustworthy on the field before this ticket executes. Confirm with the stakeholder\
+  \ before starting.\n"
 ---
 <!-- CLASI: Before changing code or making plans, review the SE process in CLAUDE.md -->
 
@@ -41,10 +40,10 @@ Tickets 002–004 are explicitly blocked on this ticket.
 
 ## Acceptance Criteria
 
-- [ ] `docs/decisions/029-pose-authority.md` is written and committed.
-- [ ] Document answers all six open questions from `architecture-update.md §Step 7`.
-- [ ] Document names every module to be deleted/demoted with exact file paths.
-- [ ] Document calls out the MCP API change and lists all known callers of
+- [x] `docs/decisions/029-pose-authority.md` is written and committed.
+- [x] Document answers all six open questions from `architecture-update.md §Step 7`.
+- [x] Document names every module to be deleted/demoted with exact file paths.
+- [x] Document calls out the MCP API change and lists all known callers of
       `navigate` / `follow_path` in `robot_mcp.py`.
 - [ ] **STAKEHOLDER HAS APPROVED THE DOCUMENT** (this checkbox is the gate;
       mark it only after receiving explicit sign-off).

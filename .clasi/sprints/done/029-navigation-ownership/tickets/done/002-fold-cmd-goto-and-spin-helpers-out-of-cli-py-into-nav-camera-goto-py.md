@@ -1,11 +1,11 @@
 ---
 id: '002'
 title: Fold cmd_goto and spin helpers out of cli.py into nav/camera_goto.py
-status: open
+status: done
 use-cases:
-  - SUC-002
+- SUC-002
 depends-on:
-  - '001'
+- '001'
 github-issue: ''
 issue: a1-navigation-and-pose-ownership.md
 completes_issue: false
