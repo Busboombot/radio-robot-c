@@ -1,0 +1,3 @@
+/Volumes/Proj/proj/RobotProjects/radio-robot-c/host_tests/build_test/CMakeFiles/firmware_host.dir
+/Volumes/Proj/proj/RobotProjects/radio-robot-c/host_tests/build_test/CMakeFiles/edit_cache.dir
+/Volumes/Proj/proj/RobotProjects/radio-robot-c/host_tests/build_test/CMakeFiles/rebuild_cache.dir

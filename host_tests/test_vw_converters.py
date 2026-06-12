@@ -1,14 +1,14 @@
 """
 test_vw_converters.py — tests for S/T/D/G/R/TURN VW converters and OP cached state.
 
-Sprint 020, Ticket 011.
+Sprint 020, Ticket 011.  Updated sprint 026, Ticket 001.
 
-The sim does not wire a CommandQueue into MotionController, so all converter
-handlers take the fallback path (direct begin*() calls).  These tests verify
-the fallback paths still produce the correct observable behaviour — identical
-to pre-converter behaviour.  The queue path is exercised on the real firmware.
+The sim now wires a CommandQueue into both CommandProcessor and MotionController
+(matching LoopScheduler's constructor wiring), so converter commands (S, T, D,
+G, R, TURN, RT) travel the queue path on the next sim_tick() — the same path as
+hardware.  These tests verify the observable behaviour is correct on the queue path.
 
-OP cached-state tests verify the new handleOP implementation reads from
+OP cached-state tests verify the handleOP implementation reads from
 HardwareState (hwState->otosX/Y/H) rather than calling the device.
 """
 import pytest
@@ -50,7 +50,7 @@ def test_op_returns_zeros_at_boot(sim):
 
 
 # ---------------------------------------------------------------------------
-# S — stream command (fallback path: direct beginStream)
+# S — stream command (queue path: S → pushVW → dequeueOne → beginStream)
 # ---------------------------------------------------------------------------
 
 def test_s_command_replies_ok(sim):
@@ -72,7 +72,7 @@ def test_s_command_drives_motors(sim):
 
 
 # ---------------------------------------------------------------------------
-# T — timed command (fallback path: direct beginTimed)
+# T — timed command (queue path: T → pushVW → dequeueOne → beginTimed)
 # ---------------------------------------------------------------------------
 
 def test_t_command_replies_ok(sim):
@@ -101,7 +101,7 @@ def test_t_command_motors_stop_after_timeout(sim):
 
 
 # ---------------------------------------------------------------------------
-# D — distance command (fallback path: direct distanceDrive)
+# D — distance command (queue path: D → pushVW → dequeueOne → distanceDrive)
 # ---------------------------------------------------------------------------
 
 def test_d_command_replies_ok(sim):
@@ -122,7 +122,7 @@ def test_d_command_emits_done_evt_unchanged(sim):
 
 
 # ---------------------------------------------------------------------------
-# R — arc command (fallback path: direct beginArc)
+# R — arc command (queue path: R → pushVW → dequeueOne → beginArc)
 # ---------------------------------------------------------------------------
 
 def test_r_command_replies_ok(sim):
@@ -144,7 +144,7 @@ def test_r_command_drives_motors(sim):
 
 
 # ---------------------------------------------------------------------------
-# TURN — heading rotation (fallback path: direct beginTurn)
+# TURN — heading rotation (queue path: TURN → pushVW → dequeueOne → beginTurn)
 # ---------------------------------------------------------------------------
 
 def test_turn_command_replies_ok(sim):
@@ -165,7 +165,7 @@ def test_turn_command_emits_done_evt(sim):
 
 
 # ---------------------------------------------------------------------------
-# G — go-to command (fallback path: direct beginGoTo)
+# G — go-to command (queue path: G → pushVW → dequeueOne → beginGoTo)
 # ---------------------------------------------------------------------------
 
 def test_g_command_replies_ok(sim):

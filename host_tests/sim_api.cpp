@@ -8,6 +8,7 @@
 
 #include "robot/Robot.h"
 #include "app/CommandProcessor.h"
+#include "app/CommandQueue.h"
 #include "hal/mock/MockHAL.h"
 #include "hal/mock/MockMotor.h"
 #include "hal/mock/MockOtosSensor.h"
@@ -16,6 +17,7 @@
 #include "control/MotionController.h"
 #include "control/MotionCommand.h"
 #include "control/HaltController.h"
+#include "control/LoopTickOnce.h"
 #include "types/CommandTypes.h"
 
 #include <cstring>
@@ -68,7 +70,15 @@ static void storeReply(const char* msg, void* ctx)
 //   1. hal        — MockHAL (owns all mock devices)
 //   2. cfg        — RobotConfig value from defaultRobotConfig()
 //   3. robot      — Robot(hal, cfg), wires motorController/odometry/etc.
-//   4. cmd        — CommandProcessor with the full command table
+//   4. _queue     — CommandQueue (wired into cmd + robot._motionCtx)
+//   5. cmd        — CommandProcessor with the full command table
+//
+// Queue wiring: sim_api mirrors LoopScheduler's constructor wiring exactly —
+//   cmd.setQueue(&_queue) and robot.setMotionQueue(&_queue) — so
+//   converter commands (S, T, D, G, R, TURN) travel through the queue path,
+//   not the direct begin*() fallback, matching firmware behaviour.
+//   (sprint 026-002: replaced robot.motionController.setQueue() with
+//   robot.setMotionQueue() since MotionCtx now lives in Robot.)
 //
 // replyStore: heap-allocated persistent reply buffer.  All sim_command calls
 //   and async EVTs fired during sim_tick() accumulate here.  sim_command()
@@ -78,28 +88,39 @@ struct SimHandle {
     MockHAL          hal;
     RobotConfig      cfg;
     Robot            robot;
+    CommandQueue     _queue;
     CommandProcessor cmd;
     ReplyStore       replyStore;
 
-    // System keepalive watchdog (mirrors LoopScheduler._watchdogMs).
-    // Reset to now_ms in sim_command(); checked each sim_tick().
-    // 0 = not yet armed (no command received).
-    uint32_t         watchdogMs = 0;
-
-    // OTOS EKF fusion toggle (sprint 023). When true, sim_tick() runs the
-    // firmware's Robot::otosCorrect() so the pose is the fused EKF estimate;
-    // when false (default) the pose is encoder-only dead reckoning, preserving
-    // the historical sim behaviour relied on by existing tests.
-    bool             fuseOtos = false;
+    // Per-tick state: watchdog, last-run timestamps, active reply sink,
+    // fuseOtos flag.  Replaces the former standalone watchdogMs field and
+    // the hand-mirrored watchdog block in sim_tick().
+    LoopTickState    _ts;
 
     SimHandle()
         : hal()
         , cfg(defaultRobotConfig())
         , robot(hal, cfg)
+        , _queue()
         , cmd(robot.buildCommandTable(nullptr, nullptr))
     {
         // Wire robot geometry into MockHAL so ExactPoseTracker integrates correctly.
         hal.setTrackwidth(cfg.trackwidthMm);
+
+        // Wire the queue into both cmd and Robot's MotionCtx — mirrors LoopScheduler's
+        // constructor wiring so converter commands (S, T, D, G, R, TURN, RT) travel
+        // the queue path on the next sim_tick(), not the direct begin*() fallback.
+        // Sprint 026-002: replaced robot.motionController.setQueue() with
+        // robot.setMotionQueue() since MotionCtx now lives in Robot.
+        cmd.setQueue(&_queue);
+        robot.setMotionQueue(&_queue);
+
+        // Set default reply sink in _ts so the watchdog and halt blocks have a
+        // valid sink from the first command.  sim_command() will also set this
+        // to storeReply / &replyStore on each command call.
+        _ts.activeFn    = storeReply;
+        _ts.activeTlmFn = storeReply;
+        _ts.activeCtx   = &replyStore;
     }
 };
 
@@ -130,12 +151,13 @@ void sim_destroy(void* h)
 // Advance simulation by one control tick.
 // hal.tick() drives MockMotor physics (integrates encoder mm from speed).
 // controlCollectSplitPhase() reads encoders and runs the velocity PID.
-// motionController.driveAdvance() ticks the MotionCommand state machine (D, VW,
-// R, G modes), which sets per-wheel speed targets that the PID then acts on.
+// loopTickOnce() runs the single shared firmware loop body: dequeueOne,
+// watchdog, halt, driveAdvance, odometry, OTOS fusion (when enabled),
+// line/colour/ports/TLM timed blocks.
 //
-// EVTs fired by driveAdvance() (e.g. EVT done D, EVT safety_stop) are written
-// into SimHandle::replyStore via storeReply, which remains valid for the life
-// of the SimHandle.
+// EVTs fired during loopTickOnce() (e.g. EVT done D, EVT safety_stop) are
+// written into SimHandle::replyStore via storeReply, which remains valid for
+// the life of the SimHandle.
 void sim_tick(void* h, uint32_t now_ms)
 {
     SimHandle* s = static_cast<SimHandle*>(h);
@@ -143,67 +165,16 @@ void sim_tick(void* h, uint32_t now_ms)
     g_sim_now_ms = now_ms;
     s->hal.tick(now_ms);
     s->robot.controlCollectSplitPhase(now_ms, 0);
-    s->robot.motionController.driveAdvance(
-        s->robot.state.inputs, s->robot.state.commands,
-        s->robot.state.target, now_ms);
 
-    // System keepalive watchdog — MUST mirror LoopScheduler.cpp exactly.
-    // Fires EVT safety_stop + X when sTimeoutMs passes without any command.
-    //
-    // TIME-stop exemption (sprint 024-003): commands that carry a TIME stop
-    // are exempt from the keepalive requirement — their TIME net fires
-    // regardless of host silence.  Open-ended streaming (S / VW / R) has no
-    // TIME stop and remains keepalive-bound.
-    // Signed delta avoids uint32 underflow (same pattern as firmware).
-    if (s->watchdogMs != 0) {
-        MotionController& mc = s->robot.motionController;
-        bool needsWatchdog =
-            (mc.mode() != DriveMode::IDLE) || mc.hasActiveCommand();
+    // Ensure _ts has the current reply sink before each tick so that watchdog
+    // and halt events go to replyStore.
+    s->_ts.activeFn    = storeReply;
+    s->_ts.activeTlmFn = storeReply;
+    s->_ts.activeCtx   = &s->replyStore;
 
-        // Exempt commands that carry their own TIME backstop — mirrors firmware.
-        if (mc.hasActiveCommand() && mc.activeCmd().hasTimeStop()) {
-            needsWatchdog = false;
-        }
-
-        if (s->robot.config.safetyEnabled && needsWatchdog) {
-            int32_t wdDelta = (int32_t)(now_ms - s->watchdogMs);
-            if (wdDelta > (int32_t)s->robot.config.sTimeoutMs) {
-                s->watchdogMs = now_ms;  // re-arm to avoid firing every tick
-                char wdBuf[64];
-                CommandProcessor::replyEvt(wdBuf, sizeof(wdBuf),
-                                           "safety_stop", "",
-                                           storeReply, &s->replyStore);
-                s->cmd.process("X", storeReply, &s->replyStore);
-            }
-        }
-    }
-
-    // Odometry: dead-reckon pose from encoder deltas (mirrors run_blocks()).
-    // Pass rotationalSlip so the sim uses the same slip-corrected dTheta as firmware.
-    s->robot.odometry.predict(s->robot.state.inputs,
-                              s->robot.config.trackwidthMm,
-                              s->robot.config.rotationalSlip, now_ms);
-
-    // OTOS EKF correction (sprint 023) — opt-in via sim_set_otos_fusion().
-    // The real firmware runs otosCorrect() on the enOtos loop phase; the sim
-    // historically omitted it, so by default the firmware pose is encoder-only.
-    // When fusion is enabled this runs the actual Robot::otosCorrect() ->
-    // EKF updatePosition()/updateVelocity() path on the simulated OTOS reading.
-    if (s->fuseOtos) {
-        s->robot.otosCorrect(now_ms);
-    }
-
-    // HaltController — evaluate user-registered named stop conditions.
-    // Mirrors LoopScheduler run_blocks() halt block.
-    {
-        HaltAction ha = s->robot.haltController.evaluate(
-            s->robot.state.inputs, now_ms, storeReply, &s->replyStore);
-        if (ha == HaltAction::HARD) {
-            s->cmd.process("X", storeReply, &s->replyStore);
-        } else if (ha == HaltAction::SOFT) {
-            s->cmd.process("X soft", storeReply, &s->replyStore);
-        }
-    }
+    // Run the shared firmware tick body: dequeue, watchdog, halt, drive,
+    // odometry, OTOS/line/colour/ports/TLM blocks.
+    loopTickOnce(s->robot, s->cmd, s->_queue, s->_ts, now_ms);
 }
 
 // ---- Command dispatch ----
@@ -231,17 +202,34 @@ int sim_command(void* h, const char* line, char* out_buf, int out_len)
     // synchronous reply and not leftover async EVTs from prior ticks.
     s->replyStore.reset();
 
+    // Set the active reply sink for this command.
+    s->_ts.activeFn    = storeReply;
+    s->_ts.activeTlmFn = storeReply;
+    s->_ts.activeCtx   = &s->replyStore;
+
     // Process the command; all replies go into the persistent replyStore.
     // storeReply + &s->replyStore are passed as the reply sink to cmd.process()
     // and will also be captured by any MotionCommand that calls setReplySink().
+    //
+    // With the queue wired, cmd.process() enqueues the command rather than
+    // dispatching it immediately.  We drain the queue right here so that
+    // sim_command() remains synchronous — the caller receives the OK/ERR reply
+    // before returning, exactly as before the queue was wired.
+    //
+    // Drain twice: once for the command itself (e.g. T handler → pushes VW),
+    // once for any VW pushed by a converter handler (T/S/D/G/R/TURN/RT →
+    // handleVW → beginTimed/beginStream/…).  A non-converter command (PING,
+    // HALT, SET, …) will find the queue empty on the second call — no-op.
     s->cmd.process(line, storeReply, &s->replyStore);
+    s->cmd.dequeueOne(s->_queue);  // dispatch the command
+    s->cmd.dequeueOne(s->_queue);  // dispatch any VW pushed by a converter
 
     // Reset system watchdog on every inbound command — mirrors LoopScheduler's
     // resetWatchdog(now). Reset to the CURRENT sim time so keepalives actually
     // extend the window: the watchdog fires sTimeoutMs after the LAST command,
     // not the first. g_sim_now_ms==0 (a command before the first tick) maps to
     // the sentinel 1 so the timer stays armed (0 means "disarmed / none yet").
-    s->watchdogMs = (g_sim_now_ms == 0) ? 1u : g_sim_now_ms;
+    s->_ts.watchdogMs = (g_sim_now_ms == 0) ? 1u : g_sim_now_ms;
 
     // Copy the synchronous reply into the caller's buffer.
     int n = s->replyStore.written;
@@ -408,8 +396,8 @@ void sim_enable_otos_model(void* h) {
 // early-return on its is_initialized() guard.
 void sim_set_otos_fusion(void* h, int on) {
     SimHandle* s = static_cast<SimHandle*>(h);
-    s->fuseOtos = (on != 0);
-    if (s->fuseOtos) s->hal.otosMock().begin();
+    s->_ts.fuseOtos = (on != 0);
+    if (s->_ts.fuseOtos) s->hal.otosMock().begin();
 }
 void sim_set_otos_linear_noise(void* h, float sigma_fraction) {
     static_cast<SimHandle*>(h)->hal.otosMock().setLinearNoise(sigma_fraction);

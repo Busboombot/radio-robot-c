@@ -1,4 +1,5 @@
 #include "LoopScheduler.h"
+#include "LoopTickOnce.h"
 #include "Robot.h"
 #include "CommandProcessor.h"
 #include "Communicator.h"
@@ -71,9 +72,9 @@ static void runCommsIn(LoopScheduler& sched, uint32_t now)
 
 LoopScheduler::LoopScheduler(Robot& robot, CommandProcessor& cmd,
                              Communicator& comm, MicroBit& uBit)
-    : activeFn(nullptr),
-      activeTlmFn(nullptr),
-      activeCtx(nullptr),
+    : activeFn(_ts.activeFn),
+      activeTlmFn(_ts.activeTlmFn),
+      activeCtx(_ts.activeCtx),
       _robot(robot),
       _cmd(cmd),
       _comm(comm),
@@ -84,9 +85,12 @@ LoopScheduler::LoopScheduler(Robot& robot, CommandProcessor& cmd,
     // transparent in run_blocks() mode (enqueue + dequeue in same tick).
     _cmd.setQueue(&_queue);
 
-    // Wire the same queue into MotionController so VW converter handlers
+    // Wire the same queue into Robot's MotionCtx so VW converter handlers
     // (S, T, D, G, R, TURN) can push_front a VW ParsedCommand.
-    _robot.motionController.setQueue(&_queue);
+    // Sprint 026-002: replaced robot.motionController.setQueue() with
+    // robot.setMotionQueue() since MotionCtx (and its queue pointer) now
+    // lives in Robot, not MotionController.
+    _robot.setMotionQueue(&_queue);
 }
 
 // ---------------------------------------------------------------------------
@@ -145,8 +149,10 @@ void LoopScheduler::run_test()
 //
 // Each iteration:
 //   1. CONTROL: read both encoders → velocity PID → write PWM (every tick).
-//   2. Timed blocks: comms, drive, odometry, OTOS, line, colour, ports, TLM.
-//   3. IDLE SLEEP until the control deadline.
+//   2. Comms drain: read serial + radio queues (runCommsIn).
+//   3. Tick body: loopTickOnce() — dequeue, watchdog, halt, drive, odometry,
+//      OTOS, line, colour, ports, TLM.
+//   4. IDLE SLEEP until the control deadline.
 //
 // Time checks use signed deltas — (int32_t)(now - last) — to survive uint32
 // millisecond wrap without the underflow that caused the watchdog notch bug.
@@ -160,29 +166,24 @@ void LoopScheduler::run_blocks()
     // ---- ENABLE FLAGS -------------------------------------------------------
     bool enControl = true;   // read encoders + run PID + write motors (metronome)
     bool enComms   = true;   // drain serial + radio command queues
-    bool enDrive   = true;   // advance S/T/D/G drive state machine
-    bool enOdom    = true;   // dead-reckon pose from the encoders
-    bool enOtos    = true;   // OTOS pose read + complementary fusion (timed)
-    bool enLine    = true;   // line sensor read (timed)
-    bool enColor   = true;   // colour sensor read (timed)
-    bool enPorts   = true;   // port-IO / GPIO read (timed)
-    bool enTlm     = true;   // assemble + send the TLM telemetry frame (timed)
+    // Note: drive, odometry, and sensor blocks are enabled unconditionally inside
+    // loopTickOnce().  The former enDrive/enOdom/enOtos/etc. local booleans are
+    // no longer needed here.
 
     // ---- Per-block last-run timestamps for timed blocks ---------------------
     // Seeded to NOW (not 0) so each block waits a full period before first run,
     // preventing a burst of I2C activity on tick 1. Small descending offsets
     // phase-spread the blocks so they don't keep firing together.
     uint32_t t0 = _uBit.systemTime();
-    uint32_t lastOtos  = t0;
-    uint32_t lastLine  = t0 - 10;
-    uint32_t lastColor = t0 - 20;
-    uint32_t lastPorts = t0 - 30;
-    uint32_t lastTlm   = t0 - 40;
+    _ts.lastOtos  = t0;
+    _ts.lastLine  = t0 - 10;
+    _ts.lastColor = t0 - 20;
+    _ts.lastPorts = t0 - 30;
+    _ts.lastTlm   = t0 - 40;
 
     uint32_t controlDeadline = 0;
 
     while (true) {
-        const RobotConfig& cfg = _robot.config;
         uint32_t now = _uBit.systemTime();
 
         // ===== CONTROL: read both encoders (M1 first) → PID → setSpeed =====
@@ -190,7 +191,7 @@ void LoopScheduler::run_blocks()
             _robot.controlCollectSplitPhase(now, 0);
         }
         now = _uBit.systemTime();
-        controlDeadline = now + (uint32_t)cfg.controlPeriodMs;
+        controlDeadline = now + (uint32_t)_robot.config.controlPeriodMs;
 
         // ===== COMMS: drain serial + radio (every iteration) ================
         if (enComms) {
@@ -198,128 +199,9 @@ void LoopScheduler::run_blocks()
             runCommsIn(*this, now);
         }
 
-        // ===== QUEUE: dispatch one enqueued command per tick =================
-        // runCommsIn() enqueues commands via cmd.process() → _queue.push_back().
-        // dequeueOne() dispatches the front command, keeping behaviour identical
-        // to the former immediate-dispatch path (enqueue + dequeue in same tick).
-        _cmd.dequeueOne(_queue);
-
-        // ===== SYSTEM WATCHDOG: fire safety_stop + X after sTimeoutMs of silence =====
-        // _watchdogMs == 0 means no command has been received yet this session;
-        // the watchdog stays disarmed until the first command arrives.
-        // Signed delta avoids uint32 underflow (see memory note: watchdog-uint32-underflow).
-        //
-        // TIME-stop exemption (sprint 024-003): self-terminating commands that
-        // carry a TIME stop condition (T, D, G, TURN, RT, G PRE_ROTATE) are
-        // exempt from the keepalive requirement — they cannot spin forever because
-        // the TIME net will fire regardless of host silence.  Open-ended streaming
-        // commands (S / VW open-ended / R) have no TIME stop and remain
-        // keepalive-bound.  If the active MotionCommand has any TIME stop, skip
-        // the watchdog check entirely.
-        {
-            now = _uBit.systemTime();
-            MotionController& mc = _robot.motionController;
-            bool needsWatchdog =
-                (mc.mode() != DriveMode::IDLE) || mc.hasActiveCommand();
-
-            // Exempt commands that carry their own TIME backstop.
-            if (mc.hasActiveCommand() && mc.activeCmd().hasTimeStop()) {
-                needsWatchdog = false;
-            }
-
-            if (_robot.config.safetyEnabled && _watchdogMs != 0 &&
-                activeFn != nullptr && needsWatchdog) {
-                int32_t wdDelta = (int32_t)(now - _watchdogMs);
-                if (wdDelta > (int32_t)_robot.config.sTimeoutMs) {
-                    _watchdogMs = now;  // reset to avoid repeated firing every tick
-                    char wdBuf[64];
-                    CommandProcessor::replyEvt(wdBuf, sizeof(wdBuf),
-                                               "safety_stop", "",
-                                               activeFn, activeCtx);
-                    // Bypass the queue for internal emergency stop: set queue to
-                    // null so process() dispatches X immediately, then restore.
-                    _cmd.setQueue(nullptr);
-                    _cmd.process("X", activeFn, activeCtx);
-                    _cmd.setQueue(&_queue);
-                }
-            }
-        }
-
-        // ===== HALT CONDITIONS: evaluate user-registered stop conditions =====
-        // Runs after the watchdog check, before the motion tick.
-        // When a condition fires: emit EVT halt id=<n>, dispatch X or X soft.
-        {
-            now = _uBit.systemTime();
-            if (activeFn != nullptr) {
-                HaltAction ha = _robot.haltController.evaluate(
-                    _robot.state.inputs, now, activeFn, activeCtx);
-                // Bypass the queue for halt-triggered emergency stops: detach
-                // queue so process() dispatches immediately, then restore.
-                if (ha == HaltAction::HARD) {
-                    _cmd.setQueue(nullptr);
-                    _cmd.process("X", activeFn, activeCtx);
-                    _cmd.setQueue(&_queue);
-                } else if (ha == HaltAction::SOFT) {
-                    _cmd.setQueue(nullptr);
-                    _cmd.process("X soft", activeFn, activeCtx);
-                    _cmd.setQueue(&_queue);
-                }
-            }
-        }
-
-        // ===== DRIVE: advance drive state machine ==========================
-        if (enDrive) {
-            now = _uBit.systemTime();
-            _robot.motionController.driveAdvance(
-                _robot.state.inputs, _robot.state.commands, _robot.state.target, now);
-        }
-
-        // ===== ODOMETRY: dead-reckon pose from encoder deltas ===============
-        if (enOdom) {
-            now = _uBit.systemTime();
-            _robot.odometry.predict(_robot.state.inputs, _robot.config.trackwidthMm,
-                                    _robot.config.rotationalSlip, now);
-        }
-
-        // ===== OTOS: timed I2C pose read + fusion ===========================
+        // ===== TICK BODY: dequeue, watchdog, halt, drive, odometry, sensors =
         now = _uBit.systemTime();
-        if (enOtos && cfg.lagOtosMs > 0 &&
-            (int32_t)(now - lastOtos) >= (int32_t)cfg.lagOtosMs) {
-            _robot.otosCorrect(now);
-            lastOtos = now;
-        }
-
-        // ===== LINE: timed I2C read ==========================================
-        now = _uBit.systemTime();
-        if (enLine && cfg.lagLineMs > 0 &&
-            (int32_t)(now - lastLine) >= (int32_t)cfg.lagLineMs) {
-            _robot.lineRead();
-            lastLine = now;
-        }
-
-        // ===== COLOUR: timed read ============================================
-        now = _uBit.systemTime();
-        if (enColor && cfg.lagColorMs > 0 &&
-            (int32_t)(now - lastColor) >= (int32_t)cfg.lagColorMs) {
-            _robot.colorRead();
-            lastColor = now;
-        }
-
-        // ===== PORTS: timed GPIO read =========================================
-        now = _uBit.systemTime();
-        if (enPorts && cfg.lagPortsMs > 0 &&
-            (int32_t)(now - lastPorts) >= (int32_t)cfg.lagPortsMs) {
-            _robot.portsRead();
-            lastPorts = now;
-        }
-
-        // ===== TELEMETRY: timed TLM frame emit ================================
-        now = _uBit.systemTime();
-        if (enTlm && cfg.tlmPeriodMs > 0 &&
-            (int32_t)(now - lastTlm) >= (int32_t)cfg.tlmPeriodMs) {
-            _robot.telemetryEmit(now, activeTlmFn, activeCtx);
-            lastTlm = now;
-        }
+        loopTickOnce(_robot, _cmd, _queue, _ts, now);
 
         // ===== IDLE SLEEP until the control deadline ==========================
         now = _uBit.systemTime();

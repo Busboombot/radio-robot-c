@@ -2,6 +2,7 @@
 #include <stdint.h>
 #include "Config.h"
 #include "Protocol.h"
+#include "MotionEventSink.h"
 
 // ---------------------------------------------------------------------------
 // ValueSet — freshness / validity envelope for a sensor group.
@@ -93,6 +94,7 @@ struct TargetState {
     ReplyFn   replyFn;          // callback to send drive-complete reply
     void*     replyCtx;         // opaque context for replyFn
     char      corrId[16];       // correlation ID for the pending command
+    MotionEventSink sink;       // narrow event sink for async EVT completions (sprint 026-002)
 };
 
 // ---------------------------------------------------------------------------

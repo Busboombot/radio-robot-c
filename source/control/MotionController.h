@@ -26,8 +26,8 @@ struct Robot;
  *   - driveAdvance() is the single task entry point.  It advances all
  *     S/T/D/G state machines and emits completions (EVT done T/D/G,
  *     EVT safety_stop) inline via the captured per-drive reply sink
- *     (target.replyFn / target.replyCtx / target.corrId).  No ring
- *     buffer; no fiber boundary — I/O is safe inline.
+ *     stored in TargetState::sink (MotionEventSink).  No ring buffer;
+ *     no fiber boundary — I/O is safe inline.
  *
  * Per-drive sink capture: each begin*() writes the originating reply
  * sink into TargetState so that async completions (EVT done, EVT
@@ -37,24 +37,16 @@ struct Robot;
  * OTOS complementary correction is handled entirely by Robot::otosCorrect()
  * (ticket 004 / 005).  MotionController no longer holds the OtosSensor
  * pointer or the slow-cadence timer.
+ *
+ * Sprint 026-002: MotionController no longer includes the protocol headers
+ * (CommandProcessor, CommandQueue).  All protocol reply formatting lives in
+ * source/app/MotionCommandHandlers.cpp.  Motion events are reported
+ * through the MotionEventSink stored in TargetState.
  */
 
-// Forward-declare CommandQueue so MotionCtx can hold a pointer to it.
-class CommandQueue;
-
-// Context bundle used by Commandable-registered handlers.
-struct MotionCtx {
-    MotionController*  mc;
-    struct Robot*      robot;
-    CommandQueue*      queue;    // command queue for VW converter push_front; may be null in sim
-    CommandDescriptor  vwDesc;   // stable VW descriptor used by converters to build ParsedCommand
-};
-
-class MotionController : public Commandable {
+class MotionController {
 public:
     MotionController(MotorController& mc, Odometry& odo, const RobotConfig& cfg);
-
-    virtual std::vector<CommandDescriptor> getCommands() const override;
 
     // Bind the authoritative HardwareState (called by Robot after state init,
     // before the first tick).  Required so getPoseFloat() can read pose fields.
@@ -140,15 +132,11 @@ public:
     // The system watchdog owns keepalive enforcement; no MotionCommand created.
     void beginRawVelocity(float v_mms, float omega_rads);
 
-    // setCtx — bind the Robot* for Commandable handlers.
+    // setRobotCtx — bind the Robot* for use by begin*() entry points.
     // Called by Robot's constructor after motionController is fully constructed.
-    // Also initialises vwDesc so converter handlers can build a VW ParsedCommand.
-    void setCtx(struct Robot* r);
-
-    // setQueue — bind the CommandQueue for VW converter push_front.
-    // Called by LoopScheduler (or test harness) after the queue is created.
-    // Null (default) causes converter handlers to fall back to direct begin*() calls.
-    void setQueue(CommandQueue* q) { _ctx.queue = q; }
+    // (replaces setCtx which also initialised vwDesc; vwDesc now lives in MotionCtx
+    // in Robot / MotionCommandHandlers — sprint 026-002)
+    void setRobotCtx(struct Robot* r) { _robot = r; }
 
     // Query whether a MotionCommand is currently active (running or soft-stopping).
     // Used by CommandProcessor to distinguish new VW vs keepalive VW.
@@ -161,7 +149,7 @@ public:
     // Cooperative-loop task entry point (014-005).
     //
     // Advances all S/T/D/G state machines.  Emits EVT completions (done T/D/G,
-    // safety_stop) inline via target.replyFn(msg, target.replyCtx).
+    // safety_stop) inline via target.sink.emitFn.
     // Safe to call I/O inline — there is no fiber boundary in the single
     // cooperative main loop.
     void driveAdvance(HardwareState& inputs, MotorCommands& cmds,
@@ -175,9 +163,9 @@ private:
     const RobotConfig& _cfg;
     HardwareState*     _hwState;  // authoritative state; set by setHardwareState()
 
-    // Context bundle for Commandable-registered handlers.
-    // Populated by setCtx() (called from Robot constructor).
-    mutable MotionCtx  _ctx;
+    // Robot pointer for _checkSafeOneShot (re-arming config.safetyEnabled).
+    // Set by setRobotCtx() from Robot constructor.
+    struct Robot*      _robot;
 
     // MotionCommand subsystem (Sprint 017).
     // _bvc MUST be declared before _activeCmd: MotionController's constructor
@@ -226,8 +214,9 @@ private:
     // before configure).
     void _checkSafeOneShot(ReplyFn fn, void* ctx);
 
-    // Emit an EVT message inline via the captured reply sink.
+    // Emit an EVT message inline via the MotionEventSink stored in target.
     // Builds "<base> #<corrId>" if corrId is non-empty, else just <base>.
     // Clears target.corrId after emitting (marks this completion consumed).
+    // Sprint 026-002: calls target.sink.emitFn; no CommandProcessor dependency.
     static void emitEvt(const char* base, TargetState& target);
 };

@@ -1,7 +1,6 @@
 #pragma once
 #include "MicroBit.h"
-#include "Protocol.h"
-#include "CommandQueue.h"
+#include "LoopTickOnce.h"  // LoopTickState + loopTickOnce
 
 // Forward declarations to avoid pulling in the full header graph.
 struct Robot;
@@ -45,13 +44,18 @@ public:
 
     // Active reply sink — updated each time a command is dispatched so that
     // telemetry and event completions go back over the originating channel.
-    ReplyFn  activeFn;       // command replies + EVT (reliable send)
-    ReplyFn  activeTlmFn;    // telemetry stream (ASYNC, drop-tolerant)
-    void*    activeCtx;
+    //
+    // These are reference members that alias _ts.activeFn / _ts.activeTlmFn /
+    // _ts.activeCtx, so callers (main.cpp, MotorController) that store
+    // &sched.activeFn / &sched.activeCtx still point at the live field.
+    ReplyFn& activeFn;       // command replies + EVT (reliable send)
+    ReplyFn& activeTlmFn;    // telemetry stream (ASYNC, drop-tolerant)
+    void*&   activeCtx;
 
     // Reset the system keepalive watchdog timestamp.
-    // Called by runCommsIn() after each inbound command is dispatched.
-    void resetWatchdog(uint32_t now_ms) { _watchdogMs = now_ms; }
+    // Called by runCommsIn() after each inbound command is dispatched,
+    // and by Robot.cpp's DBG watchdog-reset handler.
+    void resetWatchdog(uint32_t now_ms) { _ts.watchdogMs = now_ms; }
 
 private:
     Robot&            _robot;
@@ -59,14 +63,13 @@ private:
     Communicator&     _comm;
     MicroBit&         _uBit;
 
-    // System keepalive watchdog (Sprint 020, Ticket 005).
-    // Reset in runCommsIn() on every inbound command.
-    // Fires EVT safety_stop + X if sTimeoutMs passes without any inbound command.
-    // 0 = not yet armed (no command received yet this session).
-    uint32_t _watchdogMs = 0;
+    // Per-tick mutable state: watchdog, last-run timestamps, active reply sink.
+    // run_blocks() initialises the last* timestamps to the current time before
+    // entering the loop so that each timed block waits a full period on first run.
+    // loopTickOnce() reads and updates these fields each tick.
+    LoopTickState     _ts;
 
-    // Command queue — owned by LoopScheduler, set on CommandProcessor at boot.
-    // Commands arriving via runCommsIn() are enqueued; the tick body drains one
-    // per iteration via cmd.dequeueOne(_queue), keeping behaviour transparent.
-    CommandQueue _queue;
+    // Command queue — owned by LoopScheduler, wired to both cmd and
+    // motionController at construction so converter handlers can push_front VW.
+    CommandQueue      _queue;
 };
