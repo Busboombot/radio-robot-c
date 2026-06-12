@@ -1,11 +1,12 @@
 ---
-id: '009'
-title: "N11+N14+N15+N16: Correctness cleanup A — spurious events, corrId width, EKF Q scaling, sensor-stop validation"
-status: open
+id: 009
+title: "N11+N14+N15+N16: Correctness cleanup A \u2014 spurious events, corrId width,\
+  \ EKF Q scaling, sensor-stop validation"
+status: done
 use-cases:
-  - SUC-009
+- SUC-009
 depends-on:
-  - '002'
+- '002'
 github-issue: ''
 issue: fr2-n11-16-cleanup.md
 completes_issue: false
@@ -46,15 +47,15 @@ exercised on the queue path.
 
 ## Acceptance Criteria
 
-- [ ] N11: PURSUE re-gate does not emit `EVT cancelled` for the G's corrId (sim test).
-- [ ] N14: A 16-char corrId round-trips intact on the queue path (sim test verifying
+- [x] N11: PURSUE re-gate does not emit `EVT cancelled` for the G's corrId (sim test).
+- [x] N14: A 16-char corrId round-trips intact on the queue path (sim test verifying
       no truncation in queued reply and EVT).
-- [ ] N15: EKF Q effect is invariant to loop rate — sim test with two different loop
+- [x] N15: EKF Q effect is invariant to loop rate — sim test with two different loop
       periods confirms equal Q accumulation per second.
-- [ ] N16: Invalid `sensor=` token on the queue path returns `ERR` before `OK` (sim
+- [x] N16: Invalid `sensor=` token on the queue path returns `ERR` before `OK` (sim
       test); command does not start.
-- [ ] `python3 build.py` clean build passes.
-- [ ] `uv run --with pytest python -m pytest host_tests/ host/tests/` passes.
+- [x] `python3 build.py` clean build passes.
+- [x] `uv run --with pytest python -m pytest host_tests/ host/tests/` passes.
 
 ## Implementation Plan
 

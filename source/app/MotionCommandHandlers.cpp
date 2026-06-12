@@ -311,6 +311,21 @@ static void handleT(const ArgList& args, const char* corrId,
     int ms = args.args[2].ival;
 
     if (ctx->queue != nullptr) {
+        // N16 fix (030-009): validate sensor= BEFORE replying OK on the queue
+        // path.  On the direct path, parse failure replies ERR and cancels.  The
+        // queue path previously packed the raw token and forwarded it to handleVW,
+        // which silently skipped the stop on parse failure after OK was already
+        // sent.  Validate here so both paths reply ERR consistently.
+        if (args.count >= 4) {
+            uint8_t ch; float thr; StopCondition::Cmp cmp;
+            if (!mc_parseSensorToken(args.args[3].sval, ch, thr, cmp)) {
+                char rbuf[80];
+                CommandProcessor::replyErr(rbuf, sizeof(rbuf), "badarg", "sensor",
+                                           corrId, replyFn, replyCtx);
+                return;
+            }
+        }
+
         float v_mms, omega_rads;
         BodyKinematics::forward((float)l, (float)r, ctx->robot->config.trackwidthMm,
                                 v_mms, omega_rads);
@@ -406,6 +421,17 @@ static void handleD(const ArgList& args, const char* corrId,
     int mm = args.args[2].ival;
 
     if (ctx->queue != nullptr) {
+        // N16 fix (030-009): validate sensor= BEFORE replying OK on the queue path.
+        if (args.count >= 4) {
+            uint8_t ch; float thr; StopCondition::Cmp cmp;
+            if (!mc_parseSensorToken(args.args[3].sval, ch, thr, cmp)) {
+                char rbuf[80];
+                CommandProcessor::replyErr(rbuf, sizeof(rbuf), "badarg", "sensor",
+                                           corrId, replyFn, replyCtx);
+                return;
+            }
+        }
+
         float v_mms, omega_rads;
         BodyKinematics::forward((float)l, (float)r, ctx->robot->config.trackwidthMm,
                                 v_mms, omega_rads);
@@ -644,6 +670,17 @@ static void handleTURN(const ArgList& args, const char* corrId,
     int eps_cdeg     = args.args[1].ival;
 
     if (ctx->queue != nullptr) {
+        // N16 fix (030-009): validate sensor= BEFORE replying OK on the queue path.
+        if (args.count >= 3) {
+            uint8_t ch; float thr; StopCondition::Cmp cmp;
+            if (!mc_parseSensorToken(args.args[2].sval, ch, thr, cmp)) {
+                char rbuf[80];
+                CommandProcessor::replyErr(rbuf, sizeof(rbuf), "badarg", "sensor",
+                                           corrId, replyFn, replyCtx);
+                return;
+            }
+        }
+
         ArgList vwArgs;
         vwArgs.count = 2;
         setIntArg(vwArgs.args[0], 0);   // v = 0 (spin-in-place; omega computed by VW handler)

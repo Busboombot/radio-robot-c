@@ -741,7 +741,13 @@ void MotionController::driveAdvance(HardwareState& inputs, MotorCommands& cmds,
             if (fabsf(bearing_rf) > 1.5707963f) {  // π/2
                 if (++_pursueBacktrackTicks >= 3) {
                     _pursueBacktrackTicks = 0;
-                    _activeCmd.cancel(MotionCommand::StopStyle::HARD);
+                    // N11 fix (030-009): use cancelQuiet() instead of cancel() to
+                    // suppress the spurious "EVT cancelled #<corrId>" that would
+                    // otherwise be emitted for the G command's correlation id.
+                    // The G command is still in progress (transitioning back to
+                    // PRE_ROTATE), so emitting "EVT cancelled" for the G's corrId
+                    // falsely signals to the host that the G has failed.
+                    _activeCmd.cancelQuiet();
                     _startPreRotate(bearing_rf, _gSpeed, now_ms, target);
                     return;
                 }

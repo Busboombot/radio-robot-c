@@ -625,4 +625,25 @@ float sim_get_fused_omega(void* h)
     return static_cast<SimHandle*>(h)->robot.state.inputs.fusedOmega;
 }
 
+// N11: inject a dead-reckoning pose into state.inputs directly.
+// Used by test_n11 to place the robot "past" a G target so the PURSUE
+// backtrack re-gate fires on the next few ticks.
+void sim_set_pose(void* h, float x, float y, float hrad)
+{
+    SimHandle* s = static_cast<SimHandle*>(h);
+    s->robot.state.inputs.poseX    = x;
+    s->robot.state.inputs.poseY    = y;
+    s->robot.state.inputs.poseHrad = hrad;
+}
+
+// N15: read one diagonal entry of the EKF covariance matrix P.
+// Returns P[idx][idx] where idx in [0..4]:
+//   0=x, 1=y, 2=theta, 3=v, 4=omega.
+// Used by N15 test to verify Q effect is invariant to loop rate.
+float sim_get_ekf_p_diag(void* h, int idx)
+{
+    if (idx < 0 || idx > 4) return -1.0f;
+    return static_cast<SimHandle*>(h)->robot.odometry.ekfPDiag(idx);
+}
+
 } // extern "C"

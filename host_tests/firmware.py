@@ -238,6 +238,21 @@ class Sim:
         lib.sim_get_fused_omega.argtypes = [ctypes.c_void_p]
         lib.sim_get_fused_omega.restype = ctypes.c_float
 
+        # N11 pose injection helper (030-009)
+        # sim_set_pose(void* h, float x, float y, float hrad)
+        lib.sim_set_pose.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_float,
+            ctypes.c_float,
+            ctypes.c_float,
+        ]
+        lib.sim_set_pose.restype = None
+
+        # N15 EKF P diagonal accessor (030-009)
+        # sim_get_ekf_p_diag(void* h, int idx) → float
+        lib.sim_get_ekf_p_diag.argtypes = [ctypes.c_void_p, ctypes.c_int]
+        lib.sim_get_ekf_p_diag.restype = ctypes.c_float
+
         # N2 queue-invariant helper (030-002)
         # sim_get_queue_wired(void* h) → int (1 if queue attached, 0 if not)
         lib.sim_get_queue_wired.argtypes = [ctypes.c_void_p]
@@ -379,6 +394,35 @@ class Sim:
     # ------------------------------------------------------------------
     # N9 same-tick OTOS failure helper (030-008)
     # ------------------------------------------------------------------
+
+    # ------------------------------------------------------------------
+    # N11 pose injection helper (030-009)
+    # ------------------------------------------------------------------
+
+    def set_pose(self, x: float, y: float, hrad: float) -> None:
+        """Directly inject a dead-reckoning pose into state.inputs.
+
+        Used by N11 test to place the robot past a G target so the PURSUE
+        backtrack re-gate fires without requiring the robot to physically drive.
+        """
+        self._lib.sim_set_pose(
+            self._h,
+            ctypes.c_float(x),
+            ctypes.c_float(y),
+            ctypes.c_float(hrad),
+        )
+
+    # ------------------------------------------------------------------
+    # N15 EKF P diagonal accessor (030-009)
+    # ------------------------------------------------------------------
+
+    def get_ekf_p_diag(self, idx: int) -> float:
+        """Return P[idx][idx] from the EKF covariance matrix.
+
+        Index mapping: 0=x, 1=y, 2=theta, 3=v, 4=omega.
+        Returns -1.0 for out-of-range idx.
+        """
+        return float(self._lib.sim_get_ekf_p_diag(self._h, ctypes.c_int(idx)))
 
     def set_otos_read_failure(self, fail: bool) -> None:
         """Inject or clear an OTOS read failure.

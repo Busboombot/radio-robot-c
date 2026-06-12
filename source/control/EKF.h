@@ -98,6 +98,10 @@ public:
     int      rejHeadStreak() const;
     int      rejPosStreak()  const;
 
+    // N15 test helper: return P[idx][idx] for idx in [0..4].
+    // Exposed for sim_get_ekf_p_diag() to verify Q scaling is loop-rate-invariant.
+    float    pDiag(int idx) const { return (idx >= 0 && idx < 5) ? _P[idx][idx] : -1.0f; }
+
 private:
     float    _x[5];       // state: [x_mm, y_mm, theta_rad, v_mmps, omega_rads]
     float    _P[5][5];    // covariance matrix (5x5)

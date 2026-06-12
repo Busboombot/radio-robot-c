@@ -227,13 +227,17 @@ RobotConfig defaultRobotConfig() {{
     p.otosGate        = 50.0f;
 
     // EKF sensor fusion
-    p.ekfQxy         = 2.0f;
-    p.ekfQtheta      = 0.005f;
+    // N15 fix (030-009): Q values are now per-second spectral densities.
+    // EKF::predict() multiplies Q by dt_s before adding to P.  At the default
+    // controlPeriodMs = 10 ms, Q*dt = Q/100 matches the previous per-call values.
+    // Q_per_second = Q_old / 0.010 s.
+    p.ekfQxy         = 200.0f;    // was 2.0 per-call; 2.0/0.010 = 200/s
+    p.ekfQtheta      = 0.5f;      // was 0.005 per-call; 0.005/0.010 = 0.5/s
     p.ekfROtosXy     = 50.0f;
 
     // EKF velocity fusion (Sprint 023)
-    p.ekfQv          = 50.0f;
-    p.ekfQomega      = 0.01f;
+    p.ekfQv          = 5000.0f;   // was 50.0 per-call; 50.0/0.010 = 5000/s
+    p.ekfQomega      = 1.0f;      // was 0.01 per-call; 0.01/0.010 = 1.0/s
     p.ekfROtosV      = 200.0f;
     p.ekfREncV       = 100.0f;
 

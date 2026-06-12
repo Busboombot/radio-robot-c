@@ -148,12 +148,18 @@ inline CommandDescriptor makeCmd(const char* prefix, ParseFn parseFn,
 //   args      — parsed argument list (from parseFn, or empty)
 //   replyFn   — reply callback to call for each response line
 //   replyCtx  — opaque context forwarded to replyFn
-//   corrId    — correlation id string (up to 7 chars + NUL)
+//   corrId    — correlation id string (up to 15 chars + NUL, N14 fix)
+//
+// N14: widened from char[8] to char[16] to match MotionCommand._corrId[16]
+//      and the tokenizer/TargetState corrId fields.  This prevents silent
+//      truncation of >7-char correlation ids (e.g. ms-timestamp strings)
+//      on the queue path.  ParsedCommand is stack-allocated per dispatch —
+//      +8 bytes per call, no heap impact.
 // ---------------------------------------------------------------------------
 struct ParsedCommand {
     const CommandDescriptor* desc;
     ArgList  args;
     ReplyFn  replyFn;
     void*    replyCtx;
-    char     corrId[8];
+    char     corrId[16];
 };

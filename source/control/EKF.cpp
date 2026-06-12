@@ -146,7 +146,15 @@ void EKF::setPose(float x, float y, float theta)
 
 void EKF::predict(float dCenter, float dTheta, float theta_before, float dt_s)
 {
-    (void)dt_s;  // reserved for future full-coupling extension
+    // N15 fix (030-009): scale Q by dt_s so process noise is per-second rather
+    // than per-call.  Without scaling, the effective Q grows proportionally to
+    // call rate: at 10 ms/tick Q is added 100×/s, at 25 ms/tick only 40×/s —
+    // a 2.5× variance swing with I2C load.  Multiplying by dt_s normalises to
+    // Q_per_second regardless of loop period.  Clamp dt_s to [0, 0.5] to avoid
+    // numerical blow-up on the very first tick (dt=0 → no noise added) or after
+    // a long pause.
+    if (dt_s < 0.0f) dt_s = 0.0f;
+    if (dt_s > 0.5f) dt_s = 0.5f;
 
     float theta_mid = theta_before + dTheta * 0.5f;
     float ct = cosf(theta_mid);
@@ -172,16 +180,16 @@ void EKF::predict(float dCenter, float dTheta, float theta_before, float dt_s)
     float t10 = p10 + b*p20;  float t11 = p11 + b*p21;  float t12 = p12 + b*p22;
     float t20 = p20;          float t21 = p21;           float t22 = p22;
 
-    // New position block: T * F^T + Q.
-    _P[0][0] = t00 + t02*a + _Q[0][0];
+    // New position block: T * F^T + Q*dt_s.
+    _P[0][0] = t00 + t02*a + _Q[0][0] * dt_s;
     _P[0][1] = t01 + t02*b;
     _P[0][2] = t02;
     _P[1][0] = t10 + t12*a;
-    _P[1][1] = t11 + t12*b + _Q[1][1];
+    _P[1][1] = t11 + t12*b + _Q[1][1] * dt_s;
     _P[1][2] = t12;
     _P[2][0] = t20 + t22*a;
     _P[2][1] = t21 + t22*b;
-    _P[2][2] = t22 + _Q[2][2];
+    _P[2][2] = t22 + _Q[2][2] * dt_s;
 
     // Cross-block entries (rows 0..2, cols 3..4 and rows 3..4, cols 0..2)
     // remain zero because F and Q have zero cross-block entries and these
@@ -193,11 +201,11 @@ void EKF::predict(float dCenter, float dTheta, float theta_before, float dt_s)
     _P[3][0] = 0.0f; _P[3][1] = 0.0f; _P[3][2] = 0.0f;
     _P[4][0] = 0.0f; _P[4][1] = 0.0f; _P[4][2] = 0.0f;
 
-    // Velocity block: random-walk — add process noise only.
-    _P[3][3] += _Q[3][3];
+    // Velocity block: random-walk — add process noise scaled by dt_s.
+    _P[3][3] += _Q[3][3] * dt_s;
     _P[3][4]  = 0.0f;
     _P[4][3]  = 0.0f;
-    _P[4][4] += _Q[4][4];
+    _P[4][4] += _Q[4][4] * dt_s;
 }
 
 // ---------------------------------------------------------------------------

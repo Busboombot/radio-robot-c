@@ -192,6 +192,23 @@ void MotionCommand::cancel(StopStyle s)
     (void)s;  // style argument reserved for future use
 }
 
+void MotionCommand::cancelQuiet()
+{
+    if (!_active) return;
+
+    // N11: suppress "EVT cancelled" by clearing the reply sink before teardown.
+    // Used for internal phase transitions (e.g. PURSUE backtrack re-gate) where
+    // the enclosing command (G) is still in progress and the cancel is an
+    // implementation detail, not a terminal event for the host-visible corrId.
+    _replyFn  = nullptr;
+    _replyCtx = nullptr;
+
+    if (_bvc) _bvc->reset();
+    _active   = false;
+    _stopping = false;
+    // emitEvt("EVT cancelled") is intentionally omitted — sink cleared above.
+}
+
 void MotionCommand::softStop(uint32_t now_ms)
 {
     // No-op if not active or already ramping down.

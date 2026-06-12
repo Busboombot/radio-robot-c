@@ -174,6 +174,24 @@ public:
     void cancel(StopStyle s = StopStyle::HARD);
 
     /**
+     * cancelQuiet — abort the command without emitting "EVT cancelled".
+     *
+     * Identical to cancel(HARD) except the reply sink is cleared before the
+     * BVC reset, suppressing the "EVT cancelled #<corrId>" emission.
+     *
+     * Use for internal phase transitions (e.g. PURSUE backtrack re-gate in
+     * MotionController::driveAdvance) where the top-level command (G) is
+     * still in progress and the cancel is an implementation detail.  Emitting
+     * "EVT cancelled" for the G's corrId in this case confuses hosts that
+     * treat "EVT cancelled" as a terminal event for that id.
+     *
+     * N11 fix (030-009).
+     *
+     * No-op if not active.
+     */
+    void cancelQuiet();
+
+    /**
      * softStop — arm SOFT ramp-down from outside (no stop condition needed).
      *
      * Sets BVC target to (0, 0) and enters the _stopping sub-phase so that

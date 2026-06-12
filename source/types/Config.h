@@ -87,13 +87,15 @@ struct RobotConfig {
     float otosGate;    // outlier rejection distance threshold, mm
 
     // EKF sensor fusion parameters (sprint 022)
-    float ekfQxy;       // process noise: position (mm^2) — default 2.0
-    float ekfQtheta;    // process noise: heading (rad^2) — default 0.005
+    // Q values are per-second spectral densities (N15 fix, 030-009).
+    // EKF::predict() multiplies Q by dt_s before adding to P.
+    float ekfQxy;       // process noise: position (mm^2/s) — default 200.0
+    float ekfQtheta;    // process noise: heading (rad^2/s) — default 0.5
     float ekfROtosXy;   // OTOS measurement noise: position (mm^2) — default 50.0
 
     // EKF velocity fusion parameters (sprint 023)
-    float ekfQv;          // process noise: body linear speed (mm^2/s^2) — default 50.0
-    float ekfQomega;      // process noise: yaw rate (rad^2/s^2) — default 0.01
+    float ekfQv;          // process noise: body linear speed (mm^2/s^3) — default 5000.0
+    float ekfQomega;      // process noise: yaw rate (rad^2/s^3) — default 1.0
     float ekfROtosV;      // OTOS velocity measurement noise: body speed (mm^2/s^2) — default 200.0
     float ekfREncV;       // encoder velocity measurement noise: body speed (mm^2/s^2) — default 100.0
 
