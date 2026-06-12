@@ -70,13 +70,15 @@ static void storeReply(const char* msg, void* ctx)
 //   1. hal        — MockHAL (owns all mock devices)
 //   2. cfg        — RobotConfig value from defaultRobotConfig()
 //   3. robot      — Robot(hal, cfg), wires motorController/odometry/etc.
-//   4. _queue     — CommandQueue (wired into cmd + robot.motionController)
+//   4. _queue     — CommandQueue (wired into cmd + robot._motionCtx)
 //   5. cmd        — CommandProcessor with the full command table
 //
 // Queue wiring: sim_api mirrors LoopScheduler's constructor wiring exactly —
-//   cmd.setQueue(&_queue) and robot.motionController.setQueue(&_queue) — so
+//   cmd.setQueue(&_queue) and robot.setMotionQueue(&_queue) — so
 //   converter commands (S, T, D, G, R, TURN) travel through the queue path,
 //   not the direct begin*() fallback, matching firmware behaviour.
+//   (sprint 026-002: replaced robot.motionController.setQueue() with
+//   robot.setMotionQueue() since MotionCtx now lives in Robot.)
 //
 // replyStore: heap-allocated persistent reply buffer.  All sim_command calls
 //   and async EVTs fired during sim_tick() accumulate here.  sim_command()
@@ -105,11 +107,13 @@ struct SimHandle {
         // Wire robot geometry into MockHAL so ExactPoseTracker integrates correctly.
         hal.setTrackwidth(cfg.trackwidthMm);
 
-        // Wire the queue into both cmd and motionController — mirrors LoopScheduler's
+        // Wire the queue into both cmd and Robot's MotionCtx — mirrors LoopScheduler's
         // constructor wiring so converter commands (S, T, D, G, R, TURN, RT) travel
         // the queue path on the next sim_tick(), not the direct begin*() fallback.
+        // Sprint 026-002: replaced robot.motionController.setQueue() with
+        // robot.setMotionQueue() since MotionCtx now lives in Robot.
         cmd.setQueue(&_queue);
-        robot.motionController.setQueue(&_queue);
+        robot.setMotionQueue(&_queue);
 
         // Set default reply sink in _ts so the watchdog and halt blocks have a
         // valid sink from the first command.  sim_command() will also set this

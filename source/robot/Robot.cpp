@@ -66,7 +66,13 @@ Robot::Robot(Hardware& h, const RobotConfig& cfg)
 {
     motionController.setHardwareState(&state.inputs);
     motorController.setCommandsRef(&state.commands);
-    motionController.setCtx(this);
+    // setRobotCtx replaces setCtx (sprint 026-002): MotionCtx now lives in Robot.
+    motionController.setRobotCtx(this);
+    // Initialise _motionCtx (sprint 026-002): mc and robot pointers; queue wired
+    // later by setMotionQueue() from LoopScheduler or test harness.
+    _motionCtx.mc    = &motionController;
+    _motionCtx.robot = this;
+    _motionCtx.queue = nullptr;
     odometry.setCtx(&otos, &state.inputs);
     odometry.initEKF(config.ekfQxy, config.ekfQtheta,
                      config.ekfQv, config.ekfQomega,
@@ -1451,6 +1457,12 @@ std::vector<CommandDescriptor> Robot::buildCommandTable(
                       const_cast<MotorController*>(&motorController) };
     _sysCtx.robot = const_cast<Robot*>(this);
     _sysCtx.sched = sched;
+    // Initialise _motionCtx for this build (sprint 026-002).
+    // mc and robot pointers are already set in the constructor; vwDesc is
+    // initialised by getMotionCommands() below.
+    _motionCtx.mc    = const_cast<MotionController*>(&motionController);
+    _motionCtx.robot = const_cast<Robot*>(this);
+    // queue is set by setMotionQueue() from LoopScheduler; preserve it here.
 
     void* sysCtxPtr = &_sysCtx;
 
@@ -1460,7 +1472,8 @@ std::vector<CommandDescriptor> Robot::buildCommandTable(
     auto append = [&](std::vector<CommandDescriptor> v) {
         cmds.insert(cmds.end(), v.begin(), v.end());
     };
-    append(motionController.getCommands());
+    // Sprint 026-002: replaced motionController.getCommands() with getMotionCommands().
+    append(getMotionCommands(&_motionCtx));
     append(odometry.getCommands());
     append(portController.getCommands());
     append(servoController.getCommands());

@@ -17,6 +17,7 @@
 #include "../types/CommandTypes.h"
 #include "../robot/ConfigRegistry.h"
 #include "../control/HaltController.h"
+#include "MotionCommandHandlers.h"
 
 // Forward declarations — keeps the header-graph shallow.
 class DebugCommandable;
@@ -117,6 +118,12 @@ struct Robot {
     // systemTime — robot system time in ms since boot.
     uint32_t systemTime() const;
 
+    // setMotionQueue — bind the CommandQueue for VW converter push_front.
+    // Called by LoopScheduler (or test harness) after the queue is created.
+    // Null (default) causes converter handlers to fall back to direct begin*() calls.
+    // Replaces motionController.setQueue() which was removed in sprint 026-002.
+    void setMotionQueue(CommandQueue* q) { _motionCtx.queue = q; }
+
     // ---- Command-table building ----
     // Aggregate all command descriptors into a vector:
     //   Commandable members (motionController, odometry, portController,
@@ -137,6 +144,10 @@ struct Robot {
 private:
     // Stable storage for command contexts; pointers into these are placed in
     // CommandDescriptors, which must outlive the CommandProcessor.
-    mutable CfgCtx      _cfgCtx  = {};  // GET / SET
-    mutable RobotSysCtx _sysCtx  = {};  // HELLO, PING, ECHO, ID, VER, …, RF
+    mutable CfgCtx      _cfgCtx    = {};  // GET / SET
+    mutable RobotSysCtx _sysCtx    = {};  // HELLO, PING, ECHO, ID, VER, …, RF
+    mutable MotionCtx   _motionCtx = {};  // S/T/D/G/R/TURN/RT/VW/X/STOP handlers (sprint 026-002)
+
+    // CommandQueue forward declaration for setMotionQueue.
+    // (Included via MotionCommandHandlers.h → CommandQueue.h.)
 };

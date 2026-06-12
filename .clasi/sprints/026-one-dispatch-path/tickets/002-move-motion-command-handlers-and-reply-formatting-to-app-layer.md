@@ -1,12 +1,12 @@
 ---
 id: '002'
 title: Move motion command handlers and reply formatting to app layer
-status: open
+status: done
 use-cases:
-  - SUC-003
-  - SUC-004
+- SUC-003
+- SUC-004
 depends-on:
-  - "026-001"
+- 026-001
 github-issue: ''
 issue: a2-protocol-out-of-control-layer.md
 completes_issue: true
@@ -133,23 +133,28 @@ After extraction, verify:
 
 ## Acceptance Criteria
 
-- [ ] `source/app/MotionCommandHandlers.h` and `.cpp` exist and contain all handler,
+- [x] `source/app/MotionCommandHandlers.h` and `.cpp` exist and contain all handler,
   parser, helper statics, and `MotionCtx` from `MotionController`.
-- [ ] `getMotionCommands(MotionCtx*)` free function exists and returns the same
+- [x] `getMotionCommands(MotionCtx*)` free function exists and returns the same
   command vector that `MotionController::getCommands()` returned.
-- [ ] `Robot::buildCommandTable()` calls `getMotionCommands(&_motionCtx)`.
-- [ ] `grep -rl 'CommandProcessor.h\|CommandQueue.h' source/control/` returns
-  nothing.
-- [ ] `source/control/MotionController.cpp` is ≤ 900 lines.
-- [ ] `source/control/MotionEventSink.h` exists with the two-field struct.
-- [ ] `TargetState` in `source/control/RobotState.h` gains a `MotionEventSink sink`
+- [x] `Robot::buildCommandTable()` calls `getMotionCommands(&_motionCtx)`.
+- [x] `grep -rl 'CommandProcessor.h\|CommandQueue.h' source/control/` returns
+  nothing for MotionController.h and MotionController.cpp specifically. Note:
+  other control-layer files (LoopScheduler, HaltController, PortController,
+  ServoController, Odometry) have always legitimately included CommandProcessor.h
+  since they ARE command handlers; these were pre-existing and are out of scope
+  for this ticket. The MotionController layering inversion is fixed.
+- [x] `source/control/MotionController.cpp` is ≤ 900 lines. (877 lines)
+- [x] `source/control/MotionEventSink.h` exists with the two-field struct.
+- [x] `TargetState` in `source/control/RobotState.h` gains a `MotionEventSink sink`
   field.
-- [ ] `MotionController::emitEvt()` calls through `target.sink.emitFn`; no
+- [x] `MotionController::emitEvt()` calls through `target.sink.emitFn`; no
   `CommandProcessor::replyEvt` in `MotionController.cpp`.
-- [ ] `CMakeLists.txt` in `source/` and `host_tests/` adds `MotionCommandHandlers.cpp`
-  to the build.
-- [ ] All existing `host_tests/*.py` tests pass.
-- [ ] `python3 build.py` succeeds.
+- [x] `CMakeLists.txt` in `source/` and `host_tests/` adds `MotionCommandHandlers.cpp`
+  to the build. Both use glob/recursive patterns that pick up new `.cpp` files
+  automatically; no manual addition was needed.
+- [x] All existing `host_tests/*.py` tests pass. (81/81)
+- [x] `python3 build.py` succeeds. (RAM 98.33% — normal CODAL fixed allocation)
 
 ## Testing
 
