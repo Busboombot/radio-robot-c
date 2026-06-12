@@ -402,52 +402,12 @@ void MotionController::beginGoTo(float tx, float ty, float speedMms, uint32_t no
 
     if (bearing > gateRad) {
         // Target is beside or behind the robot — pre-rotate in place first.
-        // Per-direction feedforward gain (012-006): CCW uses rotationGainPos,
-        // CW uses rotationGainNeg.  FEEDFORWARD correction only; bearing gate
-        // provides closed-loop compensation (no oscillation risk).
-        float turnSign = (ty >= 0.0f) ? 1.0f : -1.0f;
-        float dirGain  = (turnSign > 0.0f) ? _cfg.rotationGainPos : _cfg.rotationGainNeg;
-        if (dirGain < 0.05f) dirGain = 0.05f;
-        // omega = 2*(gSpeed/dirGain) / trackwidth  (spin-in-place from inverse kinematics)
-        float wheelSpd = _gSpeed / dirGain;
-        float omega    = turnSign * 2.0f * wheelSpd / _cfg.trackwidthMm;
-        float omegaMax = 2.0f * _cfg.vWheelMax / _cfg.trackwidthMm;
-        if (omega >  omegaMax) omega =  omegaMax;
-        if (omega < -omegaMax) omega = -omegaMax;
-
-        // Supervised MotionCommand with HEADING + TIME stops (sprint 024-001).
-        // HEADING fires when bearing is within gateRad → transition to PURSUE.
-        // TIME net bounds the spin against frozen OTOS/encoder runaway.
-        float bearingSigned = atan2f(ty, tx);   // signed angle, robot frame, (-π, π]
-        float nominalMs = (fabsf(omega) > 1e-3f)
-                          ? (fabsf(bearingSigned) / fabsf(omega)) * 1000.0f
-                          : 0.0f;
-        float timeoutMs = 2.0f * nominalMs + 2000.0f;
-
         // Cancel any stale MotionCommand before configuring PRE_ROTATE.
-        // If a TURN (or prior G) is still active, cancel(HARD) emits its
-        // cancellation EVT via the stored reply sink, then goes IDLE.
-        // configure() below clears the stale reply sink — no use-after-free.
         if (_activeCmd.active()) {
             _activeCmd.cancel(MotionCommand::StopStyle::HARD);
         }
-
-        // Configure PRE_ROTATE as a supervised spin-in-place command.
-        // No reply sink: PRE_ROTATE does NOT emit "EVT done G" on HEADING success
-        // (the transition to PURSUE happens in driveAdvance without a wire event).
-        // On TIME net expiry (runaway), driveAdvance emits "EVT done G" directly
-        // via target.replyFn so the caller gets a clean terminal event.
-        _activeCmd.configure(0.0f, omega, &_bvc);
-        _activeCmd.setOrigin(MotionCommand::Origin::G);
-        _activeCmd.addStop(makeHeadingStop(bearingSigned, gateRad));
-        _activeCmd.addStop(makeTimeStop(timeoutMs));
-        // No setReplySink: EVT emission is handled by driveAdvance on termination.
-        _activeCmd.setStopStyle(MotionCommand::StopStyle::SOFT);
-        // BVC ramps under yawAccMax — no instant 180°/s seed (seedCurrent removed).
-        HardwareState emptyState{};
-        const HardwareState& hwInputs = _hwState ? *_hwState : emptyState;
-        _activeCmd.start(hwInputs, now_ms);
-        _gPhase = GPhase::PRE_ROTATE;
+        float bearingSigned = atan2f(ty, tx);   // signed angle, robot frame, (-π, π]
+        _startPreRotate(bearingSigned, _gSpeed, now_ms, target);
     } else {
         // Target is roughly ahead — enter pursuit directly.
         // Configure MotionCommand with a POSITION stop at the world target.
@@ -728,6 +688,21 @@ void MotionController::driveAdvance(HardwareState& inputs, MotorCommands& cmds,
             float d2          = dx * dx + dy * dy;
             float d_remaining = sqrtf(d2);
 
+            // Re-gate counter (D8 027-004): if the target is behind the robot
+            // for 3 consecutive ticks, cancel PURSUE and restart PRE_ROTATE.
+            // fabsf(bearing) > π/2 means dx < 0 (target behind robot-frame x axis).
+            float bearing_rf = atan2f(dy, dx);
+            if (fabsf(bearing_rf) > 1.5707963f) {  // π/2
+                if (++_pursueBacktrackTicks >= 3) {
+                    _pursueBacktrackTicks = 0;
+                    _activeCmd.cancel(MotionCommand::StopStyle::HARD);
+                    _startPreRotate(bearing_rf, _gSpeed, now_ms, target);
+                    return;
+                }
+            } else {
+                _pursueBacktrackTicks = 0;
+            }
+
             // Terminal decel cap: v_cap = sqrt(2 * aDecel * d_remaining).
             // Clamps the commanded speed to ensure the BVC has time to
             // decelerate to zero before the POSITION stop fires.
@@ -735,7 +710,15 @@ void MotionController::driveAdvance(HardwareState& inputs, MotorCommands& cmds,
             float v_cap = sqrtf(2.0f * _cfg.aDecel * d_remaining);
             if (v_cap < v) v = v_cap;
 
-            float kappa = (d2 > 0.1f) ? (2.0f * dy / d2) : 0.0f;
+            // Curvature clamp (D8 027-004): bound κ so passing abeam the target
+            // (small d, dy ≠ 0) cannot drive ω into a tight orbit.
+            // kappaMax = 2 / max(d_remaining, 2·arriveTolMm) limits the turning
+            // radius to at most 0.5·arriveTolMm at the tightest point.
+            float kappaMax = 2.0f / fmaxf(d_remaining,
+                                          2.0f * _cfg.arriveTolMm);
+            float kappa = (d2 > 0.1f)
+                ? fmaxf(-kappaMax, fminf(kappaMax, 2.0f * dy / d2))
+                : 0.0f;
             float omega = v * kappa;
 
             _activeCmd.setTarget(v, omega);
@@ -882,4 +865,63 @@ void MotionController::getPoseFloat(float& x, float& y, float& h_rad) const {
     x     = static_cast<float>(xi);
     y     = static_cast<float>(yi);
     h_rad = static_cast<float>(hi) * (3.14159265f / 18000.0f);  // cdeg → rad
+}
+
+// _startPreRotate — configure a supervised PRE_ROTATE MotionCommand.
+//
+// Extracted as a shared helper (D8 027-004) so both beginGoTo()'s PRE_ROTATE
+// branch and the PURSUE re-gate use identical setup logic without duplication.
+//
+// bearingRad: signed robot-frame bearing to the target, atan2f(dy, dx).
+//             Determines turn direction (CCW if > 0, CW if < 0).
+// speed:      commanded travel speed (mm/s) — used to derive omega via
+//             inverse kinematics (spin-in-place).
+// now_ms:     current timestamp; passed to MotionCommand.start().
+// target:     TargetState with replyFn/replyCtx/corrId already wired by
+//             beginGoTo().  The PRE_ROTATE command does NOT set a reply sink;
+//             driveAdvance handles the PRE_ROTATE → PURSUE transition and emits
+//             "EVT done G" on TIME-net expiry directly via target.replyFn.
+void MotionController::_startPreRotate(float bearingRad, float speed,
+                                        uint32_t now_ms, TargetState& target)
+{
+    float gateRad = _cfg.turnInPlaceGate * (3.14159265f / 180.0f);
+
+    // Per-direction feedforward gain (012-006): CCW uses rotationGainPos,
+    // CW uses rotationGainNeg.  FEEDFORWARD correction only; bearing gate
+    // provides closed-loop compensation (no oscillation risk).
+    float turnSign = (bearingRad >= 0.0f) ? 1.0f : -1.0f;
+    float dirGain  = (turnSign > 0.0f) ? _cfg.rotationGainPos : _cfg.rotationGainNeg;
+    if (dirGain < 0.05f) dirGain = 0.05f;
+
+    // omega = 2*(speed/dirGain) / trackwidth  (spin-in-place from inverse kinematics)
+    float wheelSpd = speed / dirGain;
+    float omega    = turnSign * 2.0f * wheelSpd / _cfg.trackwidthMm;
+    float omegaMax = 2.0f * _cfg.vWheelMax / _cfg.trackwidthMm;
+    if (omega >  omegaMax) omega =  omegaMax;
+    if (omega < -omegaMax) omega = -omegaMax;
+
+    // TIME net: 2× nominal spin time + 2000 ms guard (sprint 024-001).
+    float nominalMs = (fabsf(omega) > 1e-3f)
+                      ? (fabsf(bearingRad) / fabsf(omega)) * 1000.0f
+                      : 0.0f;
+    float timeoutMs = 2.0f * nominalMs + 2000.0f;
+
+    // Configure PRE_ROTATE as a supervised spin-in-place command.
+    // No reply sink: PRE_ROTATE does NOT emit "EVT done G" on HEADING success
+    // (the transition to PURSUE happens in driveAdvance without a wire event).
+    // On TIME net expiry (runaway), driveAdvance emits "EVT done G" directly
+    // via target.replyFn so the caller gets a clean terminal event.
+    _bvc.reset();
+    _activeCmd.configure(0.0f, omega, &_bvc);
+    _activeCmd.setOrigin(MotionCommand::Origin::G);
+    _activeCmd.addStop(makeHeadingStop(bearingRad, gateRad));
+    _activeCmd.addStop(makeTimeStop(timeoutMs));
+    // No setReplySink: EVT emission is handled by driveAdvance on termination.
+    _activeCmd.setStopStyle(MotionCommand::StopStyle::SOFT);
+    HardwareState emptyState{};
+    const HardwareState& hwInputs = _hwState ? *_hwState : emptyState;
+    _activeCmd.start(hwInputs, now_ms);
+    _gPhase = GPhase::PRE_ROTATE;
+
+    (void)target;  // target.replyFn used by driveAdvance, not by this helper directly
 }

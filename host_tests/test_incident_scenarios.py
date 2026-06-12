@@ -111,18 +111,10 @@ def _tick_tracking_heading(sim, total_ms: int,
 #   - Total angular displacement < 1.5 × 2π (1.5 orbits) before EVT done G or
 #     TIME net fires.
 #
-# xfail(strict=False): before D8 lands the assertion fails (orbit > 1.5 rev);
-# after D8 lands this test should pass and the mark can be removed.
+# D8 (027-004) landed: xfail mark removed.  The curvature clamp and widened
+# arriveTolMm=25 allow PURSUE to converge within 1.5 revolutions in sim.
 # ---------------------------------------------------------------------------
 
-@pytest.mark.xfail(
-    strict=False,
-    reason=(
-        "D8 not fixed (sprint 027-004): unbounded κ = 2·dy/d² near target causes "
-        "PURSUE to orbit the target instead of converging. "
-        "Fix target: sprint 027-004 (curvature clamp + arriveTolMm=25)."
-    ),
-)
 def test_scenario_g_into_boards(sim_field_profile):
     """G to close-ahead target in field profile: PURSUE must converge within 1.5 orbits.
 

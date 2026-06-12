@@ -194,10 +194,15 @@ private:
 
     // G go-to state machine
     enum class GPhase { IDLE, PRE_ROTATE, PURSUE };
-    GPhase _gPhase;
-    float  _gTargetXWorld;  // goal x in world frame (mm), set at beginGoTo()
-    float  _gTargetYWorld;  // goal y in world frame (mm), set at beginGoTo()
-    float  _gSpeed;
+    GPhase  _gPhase;
+    float   _gTargetXWorld;  // goal x in world frame (mm), set at beginGoTo()
+    float   _gTargetYWorld;  // goal y in world frame (mm), set at beginGoTo()
+    float   _gSpeed;
+
+    // PURSUE re-gate counter (D8 027-004): counts consecutive ticks where the
+    // target bearing exceeds π/2 (target is behind the robot).  When it reaches
+    // 3, PURSUE is cancelled and PRE_ROTATE is restarted via _startPreRotate().
+    uint8_t _pursueBacktrackTicks = 0;
 
     // Tick timing
     uint32_t _lastTickMs;
@@ -213,6 +218,15 @@ private:
     // Called at the start of every begin*() entry point (after cancel guard,
     // before configure).
     void _checkSafeOneShot(ReplyFn fn, void* ctx);
+
+    // Extract PRE_ROTATE setup into a reusable helper (D8 027-004).
+    // Called from both beginGoTo() (PRE_ROTATE branch) and the PURSUE re-gate.
+    // bearingRad: signed robot-frame bearing to the target (from atan2f(dy, dx)).
+    // speed:      commanded speed (mm/s), used to derive omega.
+    // now_ms:     current timestamp for MotionCommand.start().
+    // target:     TargetState with reply sink wired (beginGoTo set it up).
+    void _startPreRotate(float bearingRad, float speed,
+                         uint32_t now_ms, TargetState& target);
 
     // Emit an EVT message inline via the MotionEventSink stored in target.
     // Builds "<base> #<corrId>" if corrId is non-empty, else just <base>.

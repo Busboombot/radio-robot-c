@@ -197,6 +197,7 @@
         "sync":          { "type": ["number", "null"], "description": "Cross-wheel ratio coupling gain.", "firmware": { "field": "syncGain", "set_key": "sync", "kind": "float" } },
         "min_wheel_mms": { "type": ["number", "null"], "description": "Low-speed integrator deadband, mm/s.", "firmware": { "field": "minWheelMms", "set_key": "minWheelMms", "kind": "float" } },
         "turn_gate":     { "type": ["number", "null"], "description": "Turn-in-place gate (deg): G/go-to pre-rotates in place until the bearing to the target is within this angle, then arcs. Sim sweep optimum ~35 (host_tests/arc_gate_sweep.ipynb).", "firmware": { "field": "turnInPlaceGate", "set_key": "turnGate", "kind": "float_as_int" } },
+        "arrive_tol_mm": { "type": ["number", "null"], "description": "G arrival tolerance radius (mm): POSITION stop fires when the robot centre is within this disc of the target. Default 5; widened to 25 for carpet (D8 027-004).", "firmware": { "field": "arriveTolMm", "set_key": "arriveTol", "kind": "float" } },
         "max_rot_accel_dps2": { "type": ["number", "null"], "description": "Host-side turn ramp: max rotational acceleration, deg/s^2 (default 300). Host-side only — no firmware mapping." }
       }
     }

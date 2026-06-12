@@ -81,6 +81,7 @@
     "vel_filt": 0.15,
     "sync": 1.0,
     "turn_gate": 35,
-    "max_rot_accel_dps2": 300
+    "max_rot_accel_dps2": 300,
+    "arrive_tol_mm": 25
   }
 }
