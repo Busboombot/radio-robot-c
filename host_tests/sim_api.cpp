@@ -415,4 +415,72 @@ float sim_get_otos_h(void* h) {
     return static_cast<SimHandle*>(h)->hal.otosMock().odomH();
 }
 
+// ---- D10 telemetry test helpers (028-005) ----
+
+// Returns 1 if the robot's TLM channel is bound (_tlmBoundCtx != nullptr),
+// 0 otherwise.  Used by channel-binding tests to verify handleStream stored
+// the caller's reply ctx.  (In sim, _tlmBoundFn is not set since runCommsIn
+// is not called; binding is signalled via _tlmBoundCtx alone.)
+int sim_get_tlm_bound(void* h)
+{
+    return (static_cast<SimHandle*>(h)->robot._tlmBoundCtx != nullptr) ? 1 : 0;
+}
+
+// Advance simulation by total_ms in step_ms increments and collect all TLM
+// lines emitted by telemetryEmit into out_buf.  Returns the number of TLM
+// lines collected (not bytes).  out_buf receives concatenated lines separated
+// by '\n'; it is NUL-terminated.
+//
+// Note: sim_tick() resets _ts.activeTlmFn = storeReply each tick, so TLM
+// frames from telemetryEmit go into replyStore.  After each tick we drain
+// replyStore into out_buf, counting the TLM lines.
+int sim_tick_collect_tlm(void* h, uint32_t start_ms, uint32_t total_ms,
+                         uint32_t step_ms, char* out_buf, int out_len)
+{
+    SimHandle* s = static_cast<SimHandle*>(h);
+    char evtBuf[2048];
+    int  tlmCount = 0;
+    int  outPos   = 0;
+
+    uint32_t end_ms = start_ms + total_ms;
+    for (uint32_t t = start_ms; t < end_ms; t += step_ms) {
+        g_sim_now_ms = t;
+        s->hal.tick(t);
+        s->robot.controlCollectSplitPhase(t, 0);
+
+        s->_ts.activeFn    = storeReply;
+        s->_ts.activeTlmFn = storeReply;
+        s->_ts.activeCtx   = &s->replyStore;
+
+        loopTickOnce(s->robot, s->cmd, s->_queue, s->_ts, t);
+
+        // Drain replyStore: look for TLM lines.
+        int n = s->replyStore.written;
+        if (n > 0) {
+            char* p = s->replyStore.buf;
+            char* end = p + n;
+            while (p < end) {
+                char* nl = p;
+                while (nl < end && *nl != '\n') ++nl;
+                // p..nl is one line (without the '\n').
+                int lineLen = (int)(nl - p);
+                if (lineLen >= 3 && p[0] == 'T' && p[1] == 'L' && p[2] == 'M') {
+                    ++tlmCount;
+                    // Append to out_buf if room.
+                    if (out_buf && outPos + lineLen + 2 < out_len) {
+                        memcpy(out_buf + outPos, p, (size_t)lineLen);
+                        outPos += lineLen;
+                        out_buf[outPos++] = '\n';
+                    }
+                }
+                p = (nl < end) ? nl + 1 : end;
+            }
+            s->replyStore.reset();
+        }
+    }
+
+    if (out_buf && out_len > 0) out_buf[outPos] = '\0';
+    return tlmCount;
+}
+
 } // extern "C"

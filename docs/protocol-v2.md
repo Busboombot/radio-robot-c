@@ -317,15 +317,30 @@ In the second (motors stopped, chip read failed), both fall back to encoder-delt
 SET <key>=<value>… [#id]
 → OK set <applied-key>=<value>… [#id]
    [ERR badkey <key> [#id]]…
+   [ERR badval <key>=<value> [#id]]
 ```
 
-Applies each valid key immediately to the live config.  Unknown keys
-each produce a separate `ERR badkey` line; valid keys are applied and
-listed in the `OK set` response body.  If no valid keys are provided,
-only `ERR` lines are emitted (no `OK set`).
+Applies all valid keys atomically to the live config.  The entire SET is
+all-or-nothing: if any key is unknown, non-numeric, or out of range, no keys
+are applied and the live config is unchanged.
 
-Changing any of `pid.kp`, `pid.ki`, `pid.kd`, or `pid.max` calls
-`MotorController::updatePidGains()` immediately.
+- Unknown key → `ERR badkey <key>`
+- Non-numeric or empty value → `ERR badval <key>` (parse failure)
+- Out-of-range or invariant violation → `ERR badval <key>=<value>` (first
+  failing key shown with its candidate value)
+
+Validated invariants (sprint 028-004):
+
+| Invariant                        | Failure consequence                      |
+|----------------------------------|------------------------------------------|
+| `tw > 0`                         | Division by zero in odometry arc/heading |
+| `ctrlPeriod > 0`                 | Scheduler sleep wraps to huge uint32     |
+| `vWheelMax > steerHeadroom`      | Saturation ceiling goes negative         |
+| `rotSlip` in [0.5, 1.0]          | Nonsensical arc estimates break odometry |
+
+If all keys parse and validate, `cfg = candidate` is applied atomically and
+`OK set <applied>` is emitted.  Changing any of `pid.kp`, `pid.ki`, `pid.kd`,
+or `pid.max` calls `MotorController::updatePidGains()` after the commit.
 
 Examples:
 
@@ -333,9 +348,14 @@ Examples:
 SET ml=0.487 mr=0.481
 OK set ml=0.487 mr=0.481
 
-SET ml=0.487 bad=1
-OK set ml=0.487
-ERR badkey bad
+SET tw=0
+ERR badval tw=0
+
+SET tw=abc
+ERR badval tw
+
+SET pid.kp=1.5 tw=0
+ERR badval tw=0
 
 SET bad=1
 ERR badkey bad
@@ -383,8 +403,10 @@ Value conventions:
   multipliers.
 - Float keys use three decimal places on output (`%.3f`).
 - Integer and float-as-int keys use `%d` on output.
-- `SET` accepts float text for float keys (`atof`) and integer text for
-  int and float-as-int keys (`atoi`).
+- `SET` accepts float text for float keys (`strtof` with end-pointer
+  validation) and integer text for int and float-as-int keys (`strtol`
+  base-10 with end-pointer validation).  Trailing non-numeric characters or
+  empty values are rejected with `ERR badval <key>`.
 
 ---
 
@@ -402,18 +424,40 @@ STREAM fields=<field>,… [#id]
 
 `STREAM <ms>` sets the periodic telemetry interval in milliseconds.
 `ms=0` disables streaming.  The minimum enforced period is 20 ms;
-smaller positive values are clamped to 20.
+smaller positive values are clamped to 20.  The `OK` reply echoes the
+*clamped* period (e.g. `STREAM 10` → `OK stream period=20`).
 
 `STREAM fields=<csv>` sets the field subscription bitmask.  The value
 is a comma-separated list of field names (`enc`, `pose`, `vel`, `line`,
 `color`).  Any unrecognised name is silently ignored.  An empty or
 all-unrecognised list resets the mask to `TLM_FIELD_ALL` (all fields).
 
+**Channel binding (D10, firmware 028-005).** The TLM stream is bound to
+the communication channel (serial or radio) that issued the most recent
+`STREAM <ms>` command.  Subsequent commands arriving on a *different*
+channel do not redirect the stream.  This is intentional: a radio drive
+command during an active serial TLM session must not silently steal the
+serial stream.
+
+*Implication:* a session that issues drive commands via radio without
+first issuing `STREAM` on serial will *not* receive serial TLM output.
+Issue `STREAM <ms>` on the channel that should receive TLM before
+driving.
+
+**Idle-rate (D10, firmware 028-005).** The stream continues even when the
+robot is stopped (idle > 400 ms).  When idle, the effective emit period
+is `max(period_ms, 500 ms)` so the host can distinguish "robot idle"
+from "serial dropped."  A gap exceeding 600 ms (500 ms idle period plus
+one loop tick) indicates a true loss.
+
 Examples:
 
 ```
 STREAM 100
 OK stream period=100
+
+STREAM 10
+OK stream period=20
 
 STREAM 0
 OK stream period=0
@@ -429,31 +473,33 @@ OK stream fields=enc,pose,line
 
 ```
 SNAP [#id]
-→ OK snap [#id]
+→ TLM t=<ms> mode=<char> seq=<n> … (raw TLM frame)
 ```
 
-Sets a one-shot flag; the next `Robot::tick()` call emits one immediate
-TLM frame before clearing the flag.  The `OK snap` response is returned
-immediately (before the TLM frame arrives).
+Returns one TLM frame synchronously.  The frame is emitted directly as
+a `TLM` line (not wrapped in `OK`).  SNAP and STREAM share the same
+`_tlmSeq` counter, so the `seq=` field is consistent across both paths
+(see *TLM Frame Format* below).
 
 ### TLM Frame Format
 
 ```
-TLM t=<ms> mode=<char> [enc=<l>,<r>] [pose=<x>,<y>,<h>] [vel=<vl>,<vr>] [line=<g1>,<g2>,<g3>,<g4>] [color=<r>,<g>,<b>,<c>]
+TLM t=<ms> mode=<char> seq=<n> [enc=<l>,<r>] [pose=<x>,<y>,<h>] [vel=<vl>,<vr>] [line=<g1>,<g2>,<g3>,<g4>] [color=<r>,<g>,<b>,<c>]
 ```
 
 Fields are emitted in the order shown; fields whose subscription bit is
 clear, or whose hardware is absent, are omitted.
 
-| Field    | Format                      | Units / notes                                            |
-|----------|-----------------------------|----------------------------------------------------------|
-| `t`      | `%lu` (unsigned long)       | Robot clock in ms at sensor-sample time (see note below) |
-| `mode`   | single character            | `I`=idle, `S`=streaming (set by either `S` or `VW` command), `T`=timed, `D`=distance, `G`=go-to |
-| `enc`    | `%d,%d`                     | Left and right encoder accumulated distance in mm        |
-| `pose`   | `%d,%d,%d`                  | x mm, y mm, heading in centi-degrees                     |
-| `vel`    | `%d,%d`                     | Left and right actual velocity in mm/s (from `MotorController::getActualVelocity()`) |
-| `line`   | `%u,%u,%u,%u`               | Four greyscale channels (raw ADC counts)                 |
-| `color`  | `%u,%u,%u,%u`               | R, G, B, clear channels (raw ADC counts)                 |
+| Field    | Format                      | Units / notes                                                          |
+|----------|-----------------------------|------------------------------------------------------------------------|
+| `t`      | `%lu` (unsigned long)       | Robot clock in ms at sensor-sample time                                |
+| `mode`   | single character            | `I`=idle, `S`=streaming (`S`/`VW`), `T`=timed, `D`=distance, `G`=go-to |
+| `seq`    | `%u` (uint16, wraps at 65535) | D10 sequence counter — shared by STREAM and SNAP (firmware 028-005+). Absent on older firmware. Use `tlm_drop_rate(frames)` to detect loss. |
+| `enc`    | `%d,%d`                     | Left and right encoder accumulated distance in mm                      |
+| `pose`   | `%d,%d,%d`                  | x mm, y mm, heading in centi-degrees                                   |
+| `vel`    | `%d,%d`                     | Left and right actual velocity in mm/s                                 |
+| `line`   | `%u,%u,%u,%u`               | Four greyscale channels (raw ADC counts)                               |
+| `color`  | `%u,%u,%u,%u`               | R, G, B, clear channels (raw ADC counts)                               |
 
 **Timestamp discipline.** `t=` is captured at the start of sensor
 reading (before `snprintf`), not at line-send time.  This ensures the
@@ -469,11 +515,18 @@ field is populated from `MotorController::getActualVelocity()` (landed in
 Sprint 010).  Values reflect the last `tick()` measurement; see `GET VEL`
 for per-wheel source flags (`C` = chip, `E` = encoder-delta).
 
+**`seq=` field (D10, firmware 028-005+).** A monotonically increasing
+`uint16` counter shared by all TLM frames (STREAM and SNAP).  Wraps at
+65 535.  The host can compute the drop rate with
+`tlm_drop_rate(frames)` from `robot_radio.robot.protocol`.  Frames from
+pre-028-005 firmware omit this field; `TLMFrame.seq` is `None`.
+
 Example:
 
 ```
-TLM t=12345 mode=S enc=1024,1019 pose=350,-12,1780 vel=198,201 line=120,340,330,118 color=21,30,18,80
-TLM t=12400 mode=I enc=1024,1019 pose=350,-12,1780 vel=0,0
+TLM t=12345 mode=S seq=0 enc=1024,1019 pose=350,-12,1780 vel=198,201 line=120,340,330,118 color=21,30,18,80
+TLM t=12395 mode=S seq=1 enc=1068,1063 pose=352,-12,1780 vel=200,200
+TLM t=12895 mode=I seq=2 enc=1068,1063 pose=352,-12,1780 vel=0,0
 ```
 
 ---

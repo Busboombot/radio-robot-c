@@ -37,8 +37,14 @@ static void radioReply(const char* msg, void* ctx)
 // ---------------------------------------------------------------------------
 // runCommsIn — drain serial and radio command queues each iteration.
 //
-// Updates activeFn/activeTlmFn/activeCtx on the scheduler so that async
-// telemetry and EVT completions go back on the channel that sent the command.
+// activeFn / activeCtx are updated to the originating channel so that async
+// EVT completions go back on the channel that sent the command.
+//
+// D10 channel binding (028-005): activeTlmFn is NO LONGER updated per-command.
+// Instead it is read from robot._tlmBoundFn — the channel that last issued a
+// STREAM command.  This prevents a radio command from silently redirecting
+// the serial TLM stream.  If no STREAM has been issued, _tlmBoundFn is
+// nullptr and TLM is suppressed (same as tlmPeriodMs=0 on init).
 // ---------------------------------------------------------------------------
 
 static void runCommsIn(LoopScheduler& sched, uint32_t now)
@@ -50,20 +56,36 @@ static void runCommsIn(LoopScheduler& sched, uint32_t now)
     char buf[512];
 
     while (serial.readLine(buf, sizeof(buf))) {
-        sched.activeFn    = serialReply;
-        sched.activeTlmFn = serialReplyTlm;
-        sched.activeCtx   = &serial;
+        sched.activeFn  = serialReply;
+        sched.activeCtx = &serial;
         cmd.process(buf, serialReply, &serial);
         sched.resetWatchdog(now);
     }
 
     while (radio.poll(buf, sizeof(buf))) {
-        sched.activeFn    = radioReply;
-        sched.activeTlmFn = radioReply;
-        sched.activeCtx   = &radio;
+        sched.activeFn  = radioReply;
+        sched.activeCtx = &radio;
         cmd.process(buf, radioReply, &radio);
         sched.resetWatchdog(now);
     }
+
+    // D10 channel binding (028-005): derive the TLM fn from the bound ctx.
+    // handleStream stores robot._tlmBoundCtx = replyCtx (the channel's ctx ptr).
+    // By comparing against &serial and &radio we select the TLM-appropriate fn:
+    //   serial → serialReplyTlm  (async, drop-tolerant — never stalls the loop)
+    //   radio  → radioReply      (no async variant needed for radio)
+    //   other  → nullptr         (unbound; suppresses TLM until STREAM issued)
+    // This is the ONLY place activeTlmFn is updated, so commands on other
+    // channels do not redirect the TLM stream.
+    void* bCtx = sched.robot()._tlmBoundCtx;
+    if (bCtx == static_cast<void*>(&serial)) {
+        sched.robot()._tlmBoundFn = serialReplyTlm;
+    } else if (bCtx == static_cast<void*>(&radio)) {
+        sched.robot()._tlmBoundFn = radioReply;
+    }
+    // If bCtx is nullptr (never bound) or some other ctx (sim), leave
+    // _tlmBoundFn unchanged.
+    sched.activeTlmFn = sched.robot()._tlmBoundFn;
 }
 
 // ---------------------------------------------------------------------------

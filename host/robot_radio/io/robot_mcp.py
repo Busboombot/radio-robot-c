@@ -24,6 +24,8 @@ from robot_radio.io.serial_conn import (
     SerialConnection, list_serial_ports, probe_devices, DEFAULT_PORT,
 )
 from robot_radio.robot import Nezha, NezhaProtocol
+from robot_radio.robot.connection import make_robot as _make_robot
+from robot_radio.calibration.push import push_calibration
 from robot_radio.nav.navigator import Navigator, log_record
 from robot_radio.nav.nav_params import NavParams
 from robot_radio.sensors.otos import Otos
@@ -49,19 +51,49 @@ _config: RobotConfig | None = None
 def _default_robot_tag() -> int:
     return _config.robot_tag_id if _config is not None else 1
 
+def _mock_args(port: str, mode: str | None):
+    """Create a minimal args namespace for make_robot().
+
+    ``make_robot`` accepts a CLI-style args object for backward compatibility
+    with the argparse Namespace used by the CLI.  The MCP server does not have
+    argparse; this factory builds a minimal namespace with only the attributes
+    that make_robot needs (``port``).
+    """
+    import types
+    ns = types.SimpleNamespace()
+    ns.port = port  # Non-None forces cache bypass when an explicit port is given.
+    return ns
+
+
 def _connect(port: str, mode: str | None) -> dict[str, Any]:
+    """Open a serial connection to the robot.
+
+    Routes through ``robot_radio.robot.connection.make_robot`` so the MCP
+    server and the CLI share the same port-resolution, HELLO handshake, mode
+    detection, and session-cache logic.
+
+    Calibration push is delegated to
+    ``robot_radio.calibration.push.push_calibration``.
+    """
     global _conn, _robot, _navigator, _otos, _config
-    _conn = SerialConnection(port, mode=mode)
-    result = _conn.connect()
-    if "error" in result:
-        _conn = None
-        return result
-    _robot = Nezha(NezhaProtocol(_conn))
+    try:
+        robot, conn, result = _make_robot(
+            port=port if port != DEFAULT_PORT else None,
+            mode=mode,
+            verbose=False,
+            args=_mock_args(port if port != DEFAULT_PORT else None, mode),
+        )
+    except SystemExit as exc:
+        # make_robot calls sys.exit() on connection failure; convert to error
+        # dict so the MCP tool can return an error result instead of crashing.
+        return {"error": str(exc)}
+    _conn = conn
+    _robot = robot
     _otos = Otos(_conn)
     _navigator = Navigator(_robot, otos=_otos)
     _config = get_robot_config()
     if _config is not None:
-        result["calibration"] = _robot._proto.push_calibration(_config)
+        result["calibration"] = push_calibration(_robot._proto, _config)
     return result
 
 

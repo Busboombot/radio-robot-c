@@ -152,15 +152,19 @@ def _patches(conn: MagicMock, config=None):
     """Return a list of context manager patches to isolate the CLI.
 
     Patches:
-    - SerialConnection class in the cli module → returns mock conn.
-    - list_serial_ports → ["/dev/ttyUSB0"]
-    - get_robot_config → Nezha config mock (selects Nezha driver)
-    - match_robot_by_id → None (ID-based lookup unused in unit tests)
+    - SerialConnection class in connection module → returns mock conn.
+      (make_robot imports SerialConnection from robot_radio.robot.connection,
+       so we patch there rather than in the cli module.)
+    - list_serial_ports in the connection module → ["/dev/ttyUSB0"]
+    - get_robot_config in the connection module → Nezha config mock
+    - get_robot_config in the cli module → Nezha config mock (for _push_calibration)
+    - match_robot_by_id in cli → None (ID-based lookup unused in unit tests)
     """
     cfg = config if config is not None else _nezha_config()
     return [
-        patch("robot_radio.io.cli.SerialConnection", return_value=conn),
-        patch("robot_radio.io.cli.list_serial_ports", return_value=["/dev/ttyUSB0"]),
+        patch("robot_radio.robot.connection.SerialConnection", return_value=conn),
+        patch("robot_radio.robot.connection.list_serial_ports", return_value=["/dev/ttyUSB0"]),
+        patch("robot_radio.robot.connection.get_robot_config", return_value=cfg),
         patch("robot_radio.io.cli.get_robot_config", return_value=cfg),
         patch("robot_radio.io.cli.match_robot_by_id", return_value=None),
     ]

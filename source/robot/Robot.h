@@ -141,6 +141,16 @@ struct Robot {
     uint32_t _lastControlMs = 0;
     bool     _prevDriving   = false;
 
+    // ---- D10 telemetry: sequence counter + channel binding (028-005) ----
+    // _tlmSeq: monotonically incrementing uint16 emitted as seq=<n> in every
+    //   TLM frame (both STREAM and SNAP share the same counter).  Wraps at 65535.
+    // _tlmBoundFn / _tlmBoundCtx: the reply channel bound by the last STREAM
+    //   command.  Set in handleStream; nullptr means no STREAM has been issued
+    //   (TLM is suppressed, same behaviour as tlmPeriodMs=0 on init).
+    uint16_t _tlmSeq        = 0;
+    ReplyFn  _tlmBoundFn    = nullptr;
+    void*    _tlmBoundCtx   = nullptr;
+
     // ---- OTOS validity tracking (D9 — 027-005) ----
     // _otosInvalidStartMs: system time when OTOS first became invalid in the
     //   current invalidity window (0 = OTOS is currently valid / no window open).

@@ -217,15 +217,66 @@ void handleGet(const ArgList& args, const char* corrId,
 }
 
 // ---------------------------------------------------------------------------
+// validateConfig — check RobotConfig invariants before atomic commit.
+//
+// Returns true if the candidate config is valid.  On failure, sets *badKey to
+// a short description of the first failing invariant (key name or "key=value"
+// form) and returns false.  Only checks invariants whose violation causes a
+// known runtime failure:
+//
+//   tw > 0          — trackwidthMm divides in odometry arc/heading; zero →
+//                     division by zero.
+//   ctrlPeriod > 0  — controlPeriodMs is cast to uint32 sleep; zero or
+//                     negative wraps to a huge value, starving the control
+//                     fiber.
+//   vWheelMax > steerHeadroom  — effective ceiling = vWheelMax-steerHeadroom;
+//                     when ≤ 0 the saturation ceiling goes negative, clamping
+//                     output to a negative value and inverting the wheel.
+//   rotationalSlip in [0.5, 1.0] — values outside this range produce
+//                     nonsensical arc estimates that break odometry.
+// ---------------------------------------------------------------------------
+
+static bool validateConfig(const RobotConfig& c, const char** badKey)
+{
+    if (c.trackwidthMm <= 0.0f) {
+        *badKey = "tw";
+        return false;
+    }
+    if (c.controlPeriodMs <= 0) {
+        *badKey = "ctrlPeriod";
+        return false;
+    }
+    if (c.vWheelMax <= c.steerHeadroom) {
+        *badKey = "vWheelMax";
+        return false;
+    }
+    if (c.rotationalSlip < 0.5f || c.rotationalSlip > 1.0f) {
+        *badKey = "rotSlip";
+        return false;
+    }
+    return true;
+}
+
+// ---------------------------------------------------------------------------
 // handleSet — HandlerFn-compatible SET handler.
 //
 // args.args[0..args.count-1].sval carries "key=value" strings (one per pair).
 // handlerCtx is cast to CfgCtx*.
 //
-// Emits OK set <applied> once (if at least one key was applied).
+// Parse/validation strategy (028-004):
+//   1. Replace atof/atoi with strtof/strtol end-pointer checks.  A value is
+//      rejected (ERR badval <key>) if the end-pointer is not at the end of the
+//      string, or the string is empty.
+//   2. Build a candidate RobotConfig copy (candidate = cfg) and apply all valid
+//      keys to the candidate, NOT to cfg.
+//   3. After processing all keys, call validateConfig(candidate).  If it
+//      fails, emit ERR badval <key>=<value> and return — cfg is unchanged.
+//   4. Only if validateConfig passes: cfg = candidate; emit OK set <applied>.
+//
+// Emits ERR badval <key> per parse failure (non-numeric / empty value).
 // Emits ERR badkey <key> per unknown key.
 // Calls MotorController::updatePidGains / updateVelGains when relevant
-// params change.
+// params change (only after successful commit).
 // ---------------------------------------------------------------------------
 
 void handleSet(const ArgList& args, const char* corrId,
@@ -235,6 +286,9 @@ void handleSet(const ArgList& args, const char* corrId,
     RobotConfig& cfg = *ctx->cfg;
     MotorController& mc = *ctx->mc;
 
+    // Candidate config — all valid key writes go here; committed atomically.
+    RobotConfig candidate = cfg;
+
     // Build "OK set <applied keys>" body.
     char applied[480];
     int apos = 0;
@@ -242,6 +296,7 @@ void handleSet(const ArgList& args, const char* corrId,
 
     bool pidChanged = false;
     bool velChanged = false;
+    bool anyParseErr = false;   // set on strtof/strtol end-pointer failure
 
     // Each arg's sval holds "key=value"; split on '='.
     for (int i = 0; i < args.count; ++i) {
@@ -277,24 +332,73 @@ void handleSet(const ArgList& args, const char* corrId,
             char rbuf[128];
             CommandProcessor::replyErr(rbuf, (int)sizeof(rbuf),
                                        "badkey", k, corrId, replyFn, replyCtx);
+            anyParseErr = true;
             continue;
         }
 
-        // Write through to RobotConfig.
-        char* base = reinterpret_cast<char*>(&cfg);
+        // Typed parse with end-pointer validation.
+        // Reject empty string or any non-numeric suffix.
+        char* base = reinterpret_cast<char*>(&candidate);
         switch (entry->type) {
         case CFG_FLOAT: {
-            float fv = (float)atof(v);
+            if (v[0] == '\0') {
+                char rbuf[128];
+                CommandProcessor::replyErr(rbuf, (int)sizeof(rbuf),
+                                           "badval", k, corrId, replyFn, replyCtx);
+                anyParseErr = true;
+                continue;
+            }
+            char* endp = nullptr;
+            float fv = strtof(v, &endp);
+            if (endp == v || *endp != '\0') {
+                char rbuf[128];
+                CommandProcessor::replyErr(rbuf, (int)sizeof(rbuf),
+                                           "badval", k, corrId, replyFn, replyCtx);
+                anyParseErr = true;
+                continue;
+            }
             memcpy(base + entry->offset, &fv, sizeof(float));
             break;
         }
         case CFG_INT: {
-            int32_t iv = (int32_t)atoi(v);
+            if (v[0] == '\0') {
+                char rbuf[128];
+                CommandProcessor::replyErr(rbuf, (int)sizeof(rbuf),
+                                           "badval", k, corrId, replyFn, replyCtx);
+                anyParseErr = true;
+                continue;
+            }
+            char* endp = nullptr;
+            long lv = strtol(v, &endp, 10);
+            if (endp == v || *endp != '\0') {
+                char rbuf[128];
+                CommandProcessor::replyErr(rbuf, (int)sizeof(rbuf),
+                                           "badval", k, corrId, replyFn, replyCtx);
+                anyParseErr = true;
+                continue;
+            }
+            int32_t iv = (int32_t)lv;
             memcpy(base + entry->offset, &iv, sizeof(int32_t));
             break;
         }
         case CFG_FLOAT_AS_INT: {
-            float fv = (float)atoi(v);
+            if (v[0] == '\0') {
+                char rbuf[128];
+                CommandProcessor::replyErr(rbuf, (int)sizeof(rbuf),
+                                           "badval", k, corrId, replyFn, replyCtx);
+                anyParseErr = true;
+                continue;
+            }
+            char* endp = nullptr;
+            long lv = strtol(v, &endp, 10);
+            if (endp == v || *endp != '\0') {
+                char rbuf[128];
+                CommandProcessor::replyErr(rbuf, (int)sizeof(rbuf),
+                                           "badval", k, corrId, replyFn, replyCtx);
+                anyParseErr = true;
+                continue;
+            }
+            float fv = (float)lv;
             memcpy(base + entry->offset, &fv, sizeof(float));
             break;
         }
@@ -320,17 +424,68 @@ void handleSet(const ArgList& args, const char* corrId,
         if (w > 0 && w < arem) { apos += w; arem -= w; }
     }
 
-    // Update PID gains in MotorController if any PID param changed.
-    if (pidChanged) {
-        mc.updatePidGains(cfg.ratioPidKp, cfg.ratioPidKi,
-                          cfg.ratioPidKd, cfg.ratioPidMax);
-    }
-    if (velChanged) {
-        mc.updateVelGains(cfg);
+    // If any parse / badkey error occurred, do not commit — cfg is unchanged.
+    if (anyParseErr) {
+        return;
     }
 
-    // Emit OK set only if at least one key was applied.
+    // Validate the candidate config before committing.
     if (apos > 0) {
+        const char* badKey = nullptr;
+        if (!validateConfig(candidate, &badKey)) {
+            // Find the failing key's current value in the candidate for the
+            // ERR badval key=value detail.
+            char detail[64];
+            // Look up the failing key in the registry to format its candidate value.
+            bool found = false;
+            for (int r = 0; r < kRegistryCount && !found; ++r) {
+                if (strcmp(kRegistry[r].key, badKey) == 0) {
+                    const char* cbase = reinterpret_cast<const char*>(&candidate);
+                    switch (kRegistry[r].type) {
+                    case CFG_FLOAT: {
+                        float fv;
+                        memcpy(&fv, cbase + kRegistry[r].offset, sizeof(float));
+                        snprintf(detail, sizeof(detail), "%s=%.3f", badKey, (double)fv);
+                        break;
+                    }
+                    case CFG_INT: {
+                        int32_t iv;
+                        memcpy(&iv, cbase + kRegistry[r].offset, sizeof(int32_t));
+                        snprintf(detail, sizeof(detail), "%s=%d", badKey, (int)iv);
+                        break;
+                    }
+                    case CFG_FLOAT_AS_INT: {
+                        float fv;
+                        memcpy(&fv, cbase + kRegistry[r].offset, sizeof(float));
+                        snprintf(detail, sizeof(detail), "%s=%d", badKey, (int)fv);
+                        break;
+                    }
+                    }
+                    found = true;
+                }
+            }
+            if (!found) {
+                // Fallback: key name only (should not happen with invariant keys).
+                snprintf(detail, sizeof(detail), "%s", badKey);
+            }
+            char rbuf[128];
+            CommandProcessor::replyErr(rbuf, (int)sizeof(rbuf),
+                                       "badval", detail, corrId, replyFn, replyCtx);
+            return;  // cfg unchanged
+        }
+
+        // Validation passed — commit atomically.
+        cfg = candidate;
+
+        // Update PID gains in MotorController if any PID param changed.
+        if (pidChanged) {
+            mc.updatePidGains(cfg.ratioPidKp, cfg.ratioPidKi,
+                              cfg.ratioPidKd, cfg.ratioPidMax);
+        }
+        if (velChanged) {
+            mc.updateVelGains(cfg);
+        }
+
         applied[apos] = '\0';
         char rbuf[520];
         CommandProcessor::replyOK(rbuf, (int)sizeof(rbuf), "set", applied, corrId,

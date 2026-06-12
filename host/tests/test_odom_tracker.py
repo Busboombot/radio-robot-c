@@ -144,14 +144,21 @@ class TestLinearScaleMath:
     """Tests for calibrate_linear.py scale computation helpers."""
 
     def setup_method(self) -> None:
-        # Import the helpers from the calibrate script
-        import importlib.util
-        spec = importlib.util.spec_from_file_location(
-            "calibrate_linear",
-            _HOST / "calibrate_linear.py",
-        )
-        self.mod = importlib.util.module_from_spec(spec)  # type: ignore[arg-type]
-        spec.loader.exec_module(self.mod)  # type: ignore[union-attr]
+        # Import from the canonical calibration package (since 028-002
+        # moved math helpers out of the entry-point scripts).
+        import robot_radio.calibration.helpers as _h
+        import robot_radio.calibration.linear as _l
+
+        class _Mod:
+            pass
+
+        self.mod = _Mod()
+        self.mod.scale_to_int8 = _h.scale_to_int8
+        self.mod.int8_to_scale = _h.int8_to_scale
+        self.mod.compute_new_linear_scale = _l.compute_new_linear_scale
+        self.mod.mean_ratio_stats = _l.mean_ratio_stats
+        self.mod.save_linear_scale_to_config = _l.save_linear_scale_to_config
+        self.mod.load_current_linear_scale = _l.load_current_linear_scale
 
     def test_scale_to_int8_typical(self) -> None:
         assert self.mod.scale_to_int8(1.027) == 27
@@ -221,13 +228,18 @@ class TestAngularScaleMath:
     """Tests for calibrate_angular.py scale computation helpers."""
 
     def setup_method(self) -> None:
-        import importlib.util
-        spec = importlib.util.spec_from_file_location(
-            "calibrate_angular",
-            _HOST / "calibrate_angular.py",
-        )
-        self.mod = importlib.util.module_from_spec(spec)  # type: ignore[arg-type]
-        spec.loader.exec_module(self.mod)  # type: ignore[union-attr]
+        import robot_radio.calibration.helpers as _h
+        import robot_radio.calibration.angular as _a
+
+        class _Mod:
+            pass
+
+        self.mod = _Mod()
+        self.mod.scale_to_int8 = _h.scale_to_int8
+        self.mod.mean_stdev = _h.mean_stdev
+        self.mod.compute_new_angular_scale = _a.compute_new_angular_scale
+        self.mod.heading_delta_cdeg = _a.heading_delta_cdeg
+        self.mod.save_angular_calibration_to_config = _a.save_angular_calibration_to_config
 
     def test_scale_to_int8_typical(self) -> None:
         assert self.mod.scale_to_int8(1.027) == 27
@@ -288,13 +300,14 @@ class TestLinearConfigWriteback:
     """Tests for save_linear_scale_to_config."""
 
     def setup_method(self) -> None:
-        import importlib.util
-        spec = importlib.util.spec_from_file_location(
-            "calibrate_linear",
-            _HOST / "calibrate_linear.py",
-        )
-        self.mod = importlib.util.module_from_spec(spec)  # type: ignore[arg-type]
-        spec.loader.exec_module(self.mod)  # type: ignore[union-attr]
+        import robot_radio.calibration.linear as _l
+
+        class _Mod:
+            pass
+
+        self.mod = _Mod()
+        self.mod.save_linear_scale_to_config = _l.save_linear_scale_to_config
+        self.mod.load_current_linear_scale = _l.load_current_linear_scale
 
     def test_save_linear_scale(self, tmp_path: Path) -> None:
         cfg = {
@@ -350,13 +363,13 @@ class TestAngularConfigWriteback:
     """Tests for save_angular_calibration_to_config."""
 
     def setup_method(self) -> None:
-        import importlib.util
-        spec = importlib.util.spec_from_file_location(
-            "calibrate_angular",
-            _HOST / "calibrate_angular.py",
-        )
-        self.mod = importlib.util.module_from_spec(spec)  # type: ignore[arg-type]
-        spec.loader.exec_module(self.mod)  # type: ignore[union-attr]
+        import robot_radio.calibration.angular as _a
+
+        class _Mod:
+            pass
+
+        self.mod = _Mod()
+        self.mod.save_angular_calibration_to_config = _a.save_angular_calibration_to_config
 
     def test_save_angular_scale_only(self, tmp_path: Path) -> None:
         cfg = {"calibration": {"otos_angular_scale": 1.0}}
@@ -413,7 +426,13 @@ class TestAngularConfigWriteback:
 # ---------------------------------------------------------------------------
 
 class TestScriptImportability:
-    """Verify the calibration scripts are importable with no syntax errors."""
+    """Verify the calibration scripts are importable with no syntax errors.
+
+    Since 028-002 the math functions live in robot_radio.calibration.*
+    and the entry-point scripts are thin (<30-line) wrappers.  We verify:
+    - The entry-point scripts have a main() function and are importable.
+    - The canonical math symbols live in the calibration package.
+    """
 
     def test_calibrate_linear_importable(self) -> None:
         import importlib.util
@@ -424,10 +443,6 @@ class TestScriptImportability:
         mod = importlib.util.module_from_spec(spec)  # type: ignore[arg-type]
         spec.loader.exec_module(mod)  # type: ignore[union-attr]
         assert hasattr(mod, "main")
-        assert hasattr(mod, "scale_to_int8")
-        assert hasattr(mod, "compute_new_linear_scale")
-        assert hasattr(mod, "mean_ratio_stats")
-        assert hasattr(mod, "save_linear_scale_to_config")
 
     def test_calibrate_angular_importable(self) -> None:
         import importlib.util
@@ -438,10 +453,24 @@ class TestScriptImportability:
         mod = importlib.util.module_from_spec(spec)  # type: ignore[arg-type]
         spec.loader.exec_module(mod)  # type: ignore[union-attr]
         assert hasattr(mod, "main")
-        assert hasattr(mod, "scale_to_int8")
-        assert hasattr(mod, "compute_new_angular_scale")
-        assert hasattr(mod, "heading_delta_cdeg")
-        assert hasattr(mod, "save_angular_calibration_to_config")
+
+    def test_linear_package_has_canonical_symbols(self) -> None:
+        """Canonical math symbols live in robot_radio.calibration.linear."""
+        import robot_radio.calibration.linear as _l
+        import robot_radio.calibration.helpers as _h
+        assert hasattr(_h, "scale_to_int8")
+        assert hasattr(_l, "compute_new_linear_scale")
+        assert hasattr(_l, "mean_ratio_stats")
+        assert hasattr(_l, "save_linear_scale_to_config")
+
+    def test_angular_package_has_canonical_symbols(self) -> None:
+        """Canonical math symbols live in robot_radio.calibration.angular."""
+        import robot_radio.calibration.angular as _a
+        import robot_radio.calibration.helpers as _h
+        assert hasattr(_h, "scale_to_int8")
+        assert hasattr(_a, "compute_new_angular_scale")
+        assert hasattr(_a, "heading_delta_cdeg")
+        assert hasattr(_a, "save_angular_calibration_to_config")
 
     def test_calibrate_linear_does_not_import_parse_so(self) -> None:
         """calibrate_linear.py must not reference parse_so."""

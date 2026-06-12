@@ -13,55 +13,19 @@ import time
 from robot_radio.io.serial_conn import SerialConnection, list_serial_ports, DEFAULT_PORT
 from robot_radio.robot import QBotPro, Nezha, NezhaProtocol, Cutebot
 from robot_radio.robot.protocol import parse_tlm
+from robot_radio.robot.connection import (
+    make_robot as _connection_make_robot,
+    get_port as _connection_get_port,
+    read_session_cache as _read_session_cache,
+    write_session_cache as _write_session_cache,
+    calibration_path as _calibration_path,
+    _parse_device_line,
+)
 from robot_radio.sensors.color import nezha_classifier
 from robot_radio.config.robot_config import get_robot_config, match_robot_by_id
+from robot_radio.calibration.helpers import scale_to_int8 as _scale_to_int8
 
 _verbose = False
-
-# ---------------------------------------------------------------------------
-# Session cache — connection state between rogo invocations
-# ---------------------------------------------------------------------------
-
-# Path to the ephemeral connection cache file.  Computed from __file__ so it
-# works regardless of the current working directory when rogo is invoked.
-_SESSION_CACHE_PATH = os.path.join(
-    os.path.dirname(__file__), "..", "..", "data", ".rogo_session.json"
-)
-
-
-def _read_session_cache() -> dict | None:
-    """Read the session cache from data/.rogo_session.json.
-
-    Returns a dict with at least ``port``, ``mode``, and ``device_name`` keys
-    on success.  Returns ``None`` if the file does not exist, cannot be read,
-    or is malformed.  Never raises.
-    """
-    try:
-        with open(_SESSION_CACHE_PATH) as f:
-            data = json.load(f)
-        if isinstance(data, dict) and "port" in data and "mode" in data:
-            return data
-        return None
-    except (FileNotFoundError, json.JSONDecodeError, OSError):
-        return None
-
-
-def _write_session_cache(port: str, mode: str, device_name: str) -> None:
-    """Write the connection cache to data/.rogo_session.json atomically.
-
-    Only called after a successful HELLO with a confidently detected mode
-    (i.e. when a DEVICE: announcement was parsed, not a fallback guess).
-    Writes to a .tmp file then renames to be crash-safe.  Swallows all
-    exceptions so a cache write failure never breaks a command.
-    """
-    tmp = _SESSION_CACHE_PATH + ".tmp"
-    try:
-        payload = json.dumps({"port": port, "mode": mode, "device_name": device_name})
-        with open(tmp, "w") as f:
-            f.write(payload)
-        os.replace(tmp, _SESSION_CACHE_PATH)
-    except Exception:
-        pass
 
 
 # Default wheel-speed clamp below which `rogo drive --mm` falls back
@@ -97,31 +61,6 @@ CRAWL_MAX_EFF_SPEED = (CRAWL_MM_PER_PULSE * 1000.0
                        / (CRAWL_PULSE_MS + CRAWL_DELAY_MS_MIN))  # ≈ 65 mm/s
 
 
-def _scale_to_int8(scale: float) -> int:
-    """Convert an OTOS scale factor to the firmware int8 encoding.
-
-    Firmware stores OL/OA as a signed offset from 1.0 in units of 0.001
-    (0.1% per step), clamped to int8 range.  So ``otos_linear_scale=1.027``
-    encodes as ``round((1.027 - 1.0) / 0.001) = 27``.
-
-    Edge case: if the config has ``otos_linear_scale == 1.0`` exactly, the
-    result is 0 — which collides with the firmware factory default (also 0).
-    In that case the freshness check in ``_make_robot()`` cannot distinguish
-    "never calibrated" from "calibrated to exactly 1.0".  For the current
-    ``nezha-1`` config this is not an issue (scale is not 1.0).  If you edit
-    the config to 1.0, the fast-path fires on fresh boot; the values pushed
-    would be the correct defaults anyway, so this is safe but means the warmup
-    skip still works correctly — no push is needed because the firmware default
-    IS the right value.
-    """
-    return max(-128, min(127, round((scale - 1.0) / 0.001)))
-
-
-def _calibration_path() -> str:
-    return os.path.join(os.path.dirname(__file__), "..", "..",
-                        "data", "robot_calibration.json")
-
-
 def _load_robot_calibration() -> dict:
     """Read robot_calibration.json once.  Return {} if missing/unreadable."""
     p = _calibration_path()
@@ -137,194 +76,28 @@ def _log(msg: str):
         print(f"  [{msg}]", file=sys.stderr)
 
 
-def _parse_device_line(lines: list[str]) -> dict | None:
-    """Find and parse a DEVICE: announcement from serial lines.
-    Tolerant of garbled serial — looks for 'DEVICE:' anywhere in the line.
-    """
-    for line in lines:
-        # Find DEVICE: even if there's garbage before it
-        idx = line.find("DEVICE:")
-        if idx < 0:
-            continue
-        parts = line[idx:].split(":")
-        if len(parts) >= 5:
-            return {
-                "role": parts[1],
-                "common_name": parts[2],
-                "device_name": parts[3],
-                "serial_field": ":".join(parts[4:]),
-            }
-    return None
-
-
 def _get_port(args) -> str:
     """Resolve port from args, session cache, or auto-detect.
 
-    Precedence:
-      1. ``--port`` flag — explicit port always wins; cache is bypassed.
-      2. Session cache (data/.rogo_session.json) — if the cached port is
-         still present in the current port list, return it.  This skips the
-         auto-detection scan and lets ``_make_robot()`` take the fast path.
-      3. Auto-detect: return the first port from ``list_serial_ports()``.
+    Delegates to ``robot_radio.robot.connection.get_port``.
     """
-    if args.port:
-        return args.port
-    ports = list_serial_ports()
-    if not ports:
-        print("Error: No USB modem ports found.", file=sys.stderr)
-        sys.exit(1)
-    # Try the session cache before falling back to index-0 auto-detect.
-    cache = _read_session_cache()
-    if cache and cache.get("port") in ports:
-        _log(f"using cached port: {cache['port']} (mode={cache.get('mode')})")
-        return cache["port"]
-    _log(f"auto-detected port: {ports[0]}")
-    return ports[0]
+    return _connection_get_port(args)
 
 
 def _make_robot(args) -> tuple[QBotPro, SerialConnection, dict]:
     """Connect and return (robot, connection, connect_result).
 
-    Auto-detects mode: 'relay' if a RELAY/BRIDGE device, 'direct' if a ROBOT.
-
-    Connection cache (warm-path speedup):
-    Before the full HELLO handshake, checks data/.rogo_session.json for a
-    cached port+mode pair.  If the cached port matches the resolved port AND
-    it is still present in the current port list, the connection is opened
-    directly (skip_hello=True) without the 300 ms sleep or announcement read.
-    On cache miss (stale port, missing file, or malformed JSON), falls back
-    to the full HELLO handshake and writes the cache on success.
-
-    After a successful HELLO that produced a confidently detected mode (a
-    DEVICE: announcement was parsed, not a fallback guess), the cache is
-    written with the port, mode, and device_name.
-
-    Calibration freshness check (warm-path speedup):
-    After connecting, reads the firmware's current OL register via
-    ``proto.otos_get_linear_scalar()`` (one fast round-trip, ~tens of ms) and compares it
-    against the config-derived expected value.  If they match, calibration
-    was already pushed this session and the push is skipped.  If they don't
-    match (including ``None`` on timeout, which happens when the robot was
-    just power-cycled and the firmware returns the factory default), the full
-    ``_push_calibration()`` is run automatically and a warning is emitted.
-
-    This replaces the previous unconditional ``_push_calibration()`` call,
-    which added ~2.1 s to every command invocation.
+    Delegates to ``robot_radio.robot.connection.make_robot`` so the CLI and
+    MCP server share one robot-construction path.  See that module for the
+    full docstring describing port resolution, session cache, and mode
+    detection.
     """
-    port = _get_port(args)
-    on_send = (lambda cmd: _log(f"TX: {cmd}")) if _verbose else None
-
-    # Check if we can use the fast-path (cache hit).
-    # --port overrides the cache: if the user explicitly specified a port, do
-    # a full HELLO regardless (they may have swapped devices).
-    cache = _read_session_cache()
-    ports = list_serial_ports()
-    use_cache = (
-        not args.port  # --port flag disables cache
-        and cache is not None
-        and cache.get("port") == port
-        and port in ports
+    return _connection_make_robot(
+        port=None,
+        mode=None,
+        verbose=_verbose,
+        args=args,
     )
-
-    if use_cache:
-        cached_mode = cache["mode"]
-        _log(f"cache hit: port={port} mode={cached_mode} — skipping HELLO")
-        conn = SerialConnection(port, mode=cached_mode, on_send=on_send)
-        result = conn.connect(skip_ping=True)
-        if "error" in result:
-            # Cache path failed — fall through to full HELLO below.
-            _log(f"cache-hit connect failed ({result['error']}), falling back to full HELLO")
-            use_cache = False
-        else:
-            # Validate the cache against the poll-time announcement (if any).
-            # The readiness poll sends HELLO and may receive a DEVICE: line.
-            # If it did, we can detect device/mode changes without a full HELLO.
-            ann = result.get("announcement")
-            if ann:
-                role = ann.get("role", "").upper()
-                detected_mode = "relay" if ("RELAY" in role or "BRIDGE" in role) else "direct"
-                detected_device = ann.get("device_name", "")
-                cached_device = cache.get("device_name", "")
-                mode_mismatch = (detected_mode != cached_mode)
-                device_mismatch = (detected_device and detected_device != cached_device)
-                if mode_mismatch or device_mismatch:
-                    # Cache is stale: the device on the port has changed.
-                    print(
-                        f"Warning: session cache stale "
-                        f"(mode={cached_mode!r}→{detected_mode!r}, "
-                        f"device={cached_device!r}→{detected_device!r}) "
-                        f"— re-detected mode={detected_mode}",
-                        file=sys.stderr,
-                    )
-                    conn._mode = detected_mode
-                    _write_session_cache(port, detected_mode, detected_device)
-                # else: cache is valid — fast path proceeds unchanged
-            # If ann is None (device did not announce during the short poll),
-            # keep the cached mode — no regression from previous behaviour.
-
-    if not use_cache:
-        conn = SerialConnection(port, on_send=on_send)
-        _log(f"connecting to {port}...")
-        result = conn.connect()
-        if "error" in result:
-            print(f"Error: {result['error']}", file=sys.stderr)
-            sys.exit(1)
-
-        ann = result.get("announcement")
-        # Also try to parse from raw lines in case announcement was garbled
-        if not ann:
-            ann = _parse_device_line(result.get("lines", []))
-            if ann:
-                result["announcement"] = ann
-        _log(f"HELLO response: announcement={ann}, lines={result.get('lines', [])}")
-
-        # Retry HELLO if still no announcement.
-        # Send raw HELLO (no relay prefix) so the relay itself responds.
-        if not ann:
-            for attempt in range(3):
-                _log(f"retry HELLO ({attempt + 1}/3)...")
-                time.sleep(0.3)
-                conn.handshake(b"HELLO\n")
-                lines = conn.read_lines(duration_ms=1200, stop_token="DEVICE:")
-                _log(f"  lines: {lines}")
-                ann = _parse_device_line(lines)
-                if ann:
-                    result["announcement"] = ann
-                    break
-
-        if not ann:
-            conn.disconnect()
-            print(f"Error: No device found on {port}. Is it powered on?", file=sys.stderr)
-            sys.exit(1)
-
-        # Set mode based on what we found
-        role = ann.get("role", "").upper()
-        if "RELAY" in role or "BRIDGE" in role:
-            conn._mode = "relay"
-        else:
-            conn._mode = "direct"
-
-        _log(f"connected to {ann.get('role', '?')} '{ann.get('common_name', '?')}' on {port} (mode={conn.mode})")
-
-        # Write the session cache.  Only cache when we have a confidently
-        # detected mode (a DEVICE: announcement was parsed) — do NOT cache a
-        # fallback/guessed mode, or a later invocation could use a wrong mode.
-        device_name = ann.get("device_name", "")
-        _write_session_cache(port, conn._mode, device_name)
-
-    cfg = get_robot_config()
-    model = getattr(cfg, "hardware_model", "cutebot").lower() if cfg else "cutebot"
-    if "nezha" in model:
-        robot = Nezha(NezhaProtocol(conn))
-    else:
-        robot = Cutebot(conn)
-
-    # Calibration values (ml, mr, tw, vel.*, OTOS scalars) are baked into the
-    # firmware at compile time by scripts/gen_default_config.py — no startup
-    # push needed.  Use `rogo cal` to force a re-push after editing robot JSON
-    # without reflashing.
-
-    return robot, conn, result
 
 
 def _push_calibration(conn: SerialConnection) -> None:

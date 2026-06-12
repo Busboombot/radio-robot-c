@@ -193,6 +193,53 @@ class Sim:
         lib.sim_get_exact_pose_h.argtypes = [ctypes.c_void_p]
         lib.sim_get_exact_pose_h.restype = ctypes.c_float
 
+        # D10 telemetry helpers (028-005)
+        # sim_get_tlm_bound(void* h) → int (1 if bound, 0 if not)
+        lib.sim_get_tlm_bound.argtypes = [ctypes.c_void_p]
+        lib.sim_get_tlm_bound.restype = ctypes.c_int
+
+        # sim_tick_collect_tlm(void* h, start_ms, total_ms, step_ms, buf, len) → int
+        lib.sim_tick_collect_tlm.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_uint32,
+            ctypes.c_uint32,
+            ctypes.c_uint32,
+            ctypes.c_char_p,
+            ctypes.c_int,
+        ]
+        lib.sim_tick_collect_tlm.restype = ctypes.c_int
+
+    # ------------------------------------------------------------------
+    # D10 telemetry helpers (028-005)
+    # ------------------------------------------------------------------
+
+    def get_tlm_bound(self) -> bool:
+        """Return True if the TLM channel is bound (STREAM was issued)."""
+        return bool(self._lib.sim_get_tlm_bound(self._h))
+
+    def tick_collect_tlm(self, total_ms: int, step_ms: int = 24) -> list[str]:
+        """Advance simulation and return a list of TLM frame strings emitted.
+
+        Each entry is one raw TLM line (without trailing newline).
+        ``total_ms`` is the window duration; ``step_ms`` is the tick step.
+        The sim clock continues from where it was last set by tick_for().
+        """
+        buf = ctypes.create_string_buffer(65536)
+        count = self._lib.sim_tick_collect_tlm(
+            self._h,
+            ctypes.c_uint32(self._t),
+            ctypes.c_uint32(total_ms),
+            ctypes.c_uint32(step_ms),
+            buf,
+            65536,
+        )
+        self._t += total_ms
+        if count <= 0:
+            return []
+        raw = buf.raw.split(b"\x00")[0].decode(errors="replace")
+        lines = [ln for ln in raw.split("\n") if ln.strip()]
+        return lines
+
     # ------------------------------------------------------------------
     # Field-profile helpers
     # ------------------------------------------------------------------

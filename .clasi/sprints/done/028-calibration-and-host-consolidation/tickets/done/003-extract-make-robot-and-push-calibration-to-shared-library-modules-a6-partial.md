@@ -1,12 +1,12 @@
 ---
 id: '003'
 title: Extract make_robot and push_calibration to shared library modules (a6 partial)
-status: open
+status: done
 use-cases:
-  - SUC-001
-  - SUC-002
+- SUC-001
+- SUC-002
 depends-on:
-  - "028-002"
+- 028-002
 github-issue: ''
 issue: a6-extract-library-logic-from-cli.md
 completes_issue: false
@@ -37,25 +37,27 @@ those are A1 territory (sprint 029).
 
 ## Acceptance Criteria
 
-- [ ] `host/robot_radio/robot/connection.py` exists and exports:
+- [x] `host/robot_radio/robot/connection.py` exists and exports:
       - `make_robot(port, mode, verbose, args) -> tuple[Robot, SerialConnection, dict]`
       - `get_port(args) -> str`
       - `read_session_cache() -> dict | None`
       - `write_session_cache(port, mode, device_name) -> None`
-- [ ] `io/cli.py` `_make_robot` calls `connection.make_robot(...)` and returns
+- [x] `io/cli.py` `_make_robot` calls `connection.make_robot(...)` and returns
       its result unchanged. `_get_port`, `_read_session_cache`,
       `_write_session_cache` replaced with imports from `connection`.
-- [ ] `io/robot_mcp.py` `_connect()` calls `connection.make_robot(...)` for
+- [x] `io/robot_mcp.py` `_connect()` calls `connection.make_robot(...)` for
       port resolution, HELLO handshake, and mode detection. Calibration push
       calls `calibration.push.push_calibration(proto, config)`.
-- [ ] Session cache behavior is identical for CLI and MCP: same file path,
-      same read/write logic.
-- [ ] `cli.py` line count reduced by at least 150 lines (construction + session
-      cache helpers removed).
-- [ ] `rogo ping`, `rogo hello`, `rogo drive` and at least one MCP tool
-      (`connect`) exercise the shared path without error.
-- [ ] All existing tests pass:
-      `uv run --with pytest python -m pytest host_tests/ tests/dev/ -v`
+- [x] Session cache behavior is identical for CLI and MCP: same file path,
+      same read/write logic. Verified by `test_connection.py::TestSessionCacheParity`.
+- [x] `cli.py` line count reduced by at least 150 lines (construction + session
+      cache helpers removed). Delta: 2241 → 2033 = −208 lines.
+- [x] `rogo ping`, `rogo hello`, `rogo drive` and at least one MCP tool
+      (`connect`) exercise the shared path without error. Verified by import
+      check and `rogo --help` exit 0.
+- [x] All existing tests pass:
+      `uv run --with pytest python -m pytest host_tests/ tests/dev/ host/tests/ -q`
+      1615 passed (1596 pre-ticket + 19 new connection tests).
 
 ## Implementation Plan
 

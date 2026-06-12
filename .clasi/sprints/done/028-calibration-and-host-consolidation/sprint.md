@@ -1,7 +1,7 @@
 ---
 id: 028
 title: Calibration and host consolidation
-status: planning-docs
+status: done
 branch: sprint/028-calibration-and-host-consolidation
 use-cases:
 - SUC-001

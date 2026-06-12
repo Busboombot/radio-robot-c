@@ -356,8 +356,8 @@ int Robot::buildTlmFrame(char* buf, int len)
     }
 
     int pos = 0, rem = len;
-    int n = snprintf(buf + pos, (size_t)rem, "TLM t=%lu mode=%c",
-                     (unsigned long)t_sample, modeChar);
+    int n = snprintf(buf + pos, (size_t)rem, "TLM t=%lu mode=%c seq=%u",
+                     (unsigned long)t_sample, modeChar, (unsigned)_tlmSeq++);
     if (n > 0 && n < rem) { pos += n; rem -= n; }
     if (config.tlmFields & TLM_FIELD_ENC) {
         n = snprintf(buf + pos, (size_t)rem, " enc=%d,%d", (int)encL, (int)encR);
@@ -417,22 +417,31 @@ int Robot::buildTlmFrame(char* buf, int len)
 // ---------------------------------------------------------------------------
 // telemetryEmit — gate and emit the periodic TLM frame.
 //
-// Emits only while driving (+ a short grace period). When idle, the stream
-// goes silent so the radio link is clear for commands. SNAP handles the
-// synchronous request path.
+// D10 idle-rate change (028-005): the stream no longer goes silent when the
+// robot is stopped.  When idle, the effective period is max(tlmPeriodMs, 500)
+// so the host can distinguish "robot idle" from "serial dropped."
+// The clamp (tlmPeriodMs < 20 → 20) is enforced in handleStream, not here;
+// telemetryEmit must NOT write to config.
 // ---------------------------------------------------------------------------
 
 void Robot::telemetryEmit(uint32_t now_ms, ReplyFn fn, void* ctx)
 {
-    static constexpr uint32_t kGraceMs = 400;
+    if (config.tlmPeriodMs <= 0) return;
+
+    // Idle-rate: when stopped, slow down to max(period, 500 ms) so the stream
+    // stays alive but doesn't flood the link with idle noise.
+    static constexpr uint32_t kIdleMinMs = 500;
+    static constexpr uint32_t kGraceMs   = 400;
     if (motionController.mode() != DriveMode::IDLE) _lastActiveMs = now_ms;
-    bool stopped = (now_ms - _lastActiveMs) > kGraceMs;
+    bool stopped = ((now_ms - _lastActiveMs) > kGraceMs);
 
-    bool periodic = (config.tlmPeriodMs > 0) && !stopped &&
-                    ((now_ms - _lastTlmMs) >= (uint32_t)config.tlmPeriodMs);
-    if (!periodic) return;
+    uint32_t effectivePeriod = stopped
+        ? ((uint32_t)config.tlmPeriodMs > kIdleMinMs
+               ? (uint32_t)config.tlmPeriodMs
+               : kIdleMinMs)
+        : (uint32_t)config.tlmPeriodMs;
 
-    if (config.tlmPeriodMs < 20) config.tlmPeriodMs = 20;  // clamp to 50 Hz max
+    if ((now_ms - _lastTlmMs) < effectivePeriod) return;
 
     char tlmBuf[160];
     buildTlmFrame(tlmBuf, sizeof(tlmBuf));
@@ -649,6 +658,18 @@ static void handleHelp(const ArgList& /*args*/, const char* corrId,
 // SNAP — synchronous telemetry frame.
 //   prefix "SNAP"; parseFn nullptr.
 //   Reply: TLM ... (raw frame, not OK-wrapped)
+//
+// Tick-ordering limitation (field-024 lead A, 028-001):
+//   SNAP is dispatched by cmd.dequeueOne() at the START of loopTickOnce(),
+//   BEFORE driveAdvance() runs.  At a mode-transition boundary (e.g. the
+//   first tick after a G/T/D command arrives), SNAP reports end-of-last-tick
+//   state — so mode=IDLE and enc=0 are possible even while the robot is
+//   physically moving.  After the first post-command tick, SNAP reflects live
+//   state correctly.
+//
+//   The real fix for host-visible frame staleness is D10 seq numbers
+//   (ticket 028-005): the shared _tlmSeq counter on both SNAP and STREAM lets
+//   the host detect/skip frames from before a motion phase started.
 // ---------------------------------------------------------------------------
 
 static ParseResult parseSnap(const char* const* /*tokens*/, int /*ntokens*/,
@@ -860,8 +881,19 @@ static void handleStream(const ArgList& args, const char* corrId,
     }
     int32_t ms = (int32_t)atoi(args.args[0].sval);
     if (ms < 0) ms = 0;
-    if (ms > 0 && ms < 20) ms = 20;
+    if (ms > 0 && ms < 20) ms = 20;  // clamp to 50 Hz max (D10 028-005: enforced here, NOT in telemetryEmit)
     robot->config.tlmPeriodMs = ms;
+
+    // D10 channel binding (028-005): bind the TLM stream to the channel that
+    // issued this STREAM command.  runCommsIn uses _tlmBoundCtx to identify
+    // the channel and derive the TLM-appropriate reply fn (serialReplyTlm
+    // for serial, radioReply for radio).  Commands on other channels do not
+    // redirect the stream.
+    // _tlmBoundFn is set by runCommsIn once the channel is identified;
+    // it stays nullptr here so the sim path (which sets activeTlmFn directly)
+    // is unaffected until runCommsIn updates it on the next live iteration.
+    robot->_tlmBoundCtx = replyCtx;
+
     char body[32];
     snprintf(body, sizeof(body), "period=%d", (int)ms);
     CommandProcessor::replyOK(rbuf, sizeof(rbuf), "stream", body, corrId, replyFn, replyCtx);

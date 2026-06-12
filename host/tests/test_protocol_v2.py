@@ -25,6 +25,7 @@ from robot_radio.robot.protocol import (
     parse_cfg,
     parse_response,
     parse_tlm,
+    tlm_drop_rate,
 )
 
 
@@ -1186,3 +1187,132 @@ class TestStreamDriveKeepalive:
         # No frames yielded (safety_stop causes return before yield).
         # The generator should have exited cleanly.
         assert frames == []
+
+
+# ===========================================================================
+# D10 seq field + tlm_drop_rate (ticket 028-005)
+# ===========================================================================
+
+class TestTLMSeqField:
+    """Tests for TLMFrame.seq parsing (D10 firmware 028-005)."""
+
+    def test_seq_parsed_from_tlm_line(self) -> None:
+        """seq= field is parsed into TLMFrame.seq as an int."""
+        frame = parse_tlm("TLM t=1000 mode=I seq=42")
+        assert frame is not None
+        assert frame.seq == 42
+
+    def test_seq_absent_on_old_firmware(self) -> None:
+        """TLM lines without seq= leave TLMFrame.seq as None."""
+        frame = parse_tlm("TLM t=1000 mode=S enc=100,95")
+        assert frame is not None
+        assert frame.seq is None
+
+    def test_seq_zero(self) -> None:
+        """seq=0 is valid."""
+        frame = parse_tlm("TLM t=0 mode=I seq=0")
+        assert frame is not None
+        assert frame.seq == 0
+
+    def test_seq_large_value(self) -> None:
+        """seq near uint16 max (65535) is parsed correctly."""
+        frame = parse_tlm("TLM t=100 mode=I seq=65534")
+        assert frame is not None
+        assert frame.seq == 65534
+
+    def test_seq_with_other_fields(self) -> None:
+        """seq= coexists correctly with enc, pose, and mode fields."""
+        frame = parse_tlm("TLM t=500 mode=D seq=7 enc=200,198 pose=100,-5,900")
+        assert frame is not None
+        assert frame.seq == 7
+        assert frame.enc == (200, 198)
+        assert frame.pose == (100, -5, 900)
+        assert frame.mode == "D"
+
+    def test_seq_bad_value_ignored(self) -> None:
+        """Non-integer seq= value leaves seq as None."""
+        frame = parse_tlm("TLM t=100 seq=notanumber")
+        assert frame is not None
+        assert frame.seq is None
+
+
+class TestTlmDropRate:
+    """Tests for tlm_drop_rate() helper (D10 028-005).
+
+    These tests use synthetic TLMFrame objects.  Real-robot drop-rate
+    measurement is DEFERRED — stakeholder field test.
+    """
+
+    def _frames(self, seqs: list[int | None]) -> list[TLMFrame]:
+        """Build a list of TLMFrame objects with the given seq values."""
+        return [TLMFrame(seq=s) for s in seqs]
+
+    def test_zero_frames(self) -> None:
+        assert tlm_drop_rate([]) == 0.0
+
+    def test_one_frame(self) -> None:
+        assert tlm_drop_rate(self._frames([5])) == 0.0
+
+    def test_no_drops_consecutive(self) -> None:
+        """Consecutive seq numbers → 0% drop rate."""
+        frames = self._frames([0, 1, 2, 3, 4])
+        assert tlm_drop_rate(frames) == 0.0
+
+    def test_one_dropped_frame(self) -> None:
+        """Gap of 2 in seq (one dropped frame between adjacent receives)."""
+        # seq 0, 2: expected 0,1,2 — 1 dropped out of 2 expected gaps.
+        frames = self._frames([0, 2])
+        assert tlm_drop_rate(frames) == pytest.approx(0.5)
+
+    def test_all_consecutive_long(self) -> None:
+        """Long sequence with no gaps → 0.0."""
+        frames = self._frames(list(range(100)))
+        assert tlm_drop_rate(frames) == 0.0
+
+    def test_every_other_dropped(self) -> None:
+        """Receive every other frame (50% drop rate)."""
+        # seq 0, 2, 4, 6: each gap=2, 1 dropped per 2 expected.
+        frames = self._frames([0, 2, 4, 6])
+        assert tlm_drop_rate(frames) == pytest.approx(0.5)
+
+    def test_all_seq_none(self) -> None:
+        """All frames have seq=None (pre-D10 firmware) → 0.0."""
+        frames = self._frames([None, None, None])
+        assert tlm_drop_rate(frames) == 0.0
+
+    def test_mixed_none_and_seq(self) -> None:
+        """Frames with seq=None are skipped; remaining are evaluated."""
+        # None frames are excluded; [0, 1, 2] → no drops.
+        frames = self._frames([None, 0, None, 1, 2])
+        assert tlm_drop_rate(frames) == 0.0
+
+    def test_uint16_wrap_around(self) -> None:
+        """uint16 wrap-around from 65535 to 0 is counted as gap=1 (not a drop)."""
+        frames = self._frames([65534, 65535, 0, 1])
+        assert tlm_drop_rate(frames) == 0.0
+
+    def test_uint16_wrap_with_drops(self) -> None:
+        """Wrap-around with one dropped frame across the boundary."""
+        # 65535 → 1: expected 65535, 0, 1 → gap=2, 1 dropped.
+        frames = self._frames([65535, 1])
+        assert tlm_drop_rate(frames) == pytest.approx(0.5)
+
+    def test_large_gap(self) -> None:
+        """Large gap → high drop rate."""
+        # seq 0 → 100: 99 dropped out of 100 expected.
+        frames = self._frames([0, 100])
+        assert tlm_drop_rate(frames) == pytest.approx(0.99)
+
+    def test_under_2pct_threshold(self) -> None:
+        """Simulate field-test scenario: 1% drop rate over 1200 frames.
+
+        DEFERRED — real-robot validation is a stakeholder field test.
+        This verifies the arithmetic at the expected field-test scale.
+        """
+        # 1200 frames, 12 dropped (1%)
+        seqs = list(range(1200))
+        # Simulate 12 evenly-spaced drops by removing every 100th frame.
+        received = [s for s in seqs if s % 100 != 50]
+        frames = self._frames(received)
+        rate = tlm_drop_rate(frames)
+        assert rate < 0.02, f"Expected rate < 2%, got {rate:.3f}"

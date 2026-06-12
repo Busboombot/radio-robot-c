@@ -43,12 +43,15 @@ class TLMFrame:
 
     All fields are optional — only sensors present in the frame are populated.
     ``t`` is the robot clock in milliseconds at sensor-sample time.
+    ``seq`` is the D10 sequence counter (uint16, wrapping at 65535); absent on
+    pre-028-005 firmware.  Use ``tlm_drop_rate(frames)`` to estimate packet loss.
     ``pose`` heading is in centi-degrees (integer), positions in mm.
     ``vel`` is per-wheel measured speed in mm/s (chip-preferred, encoder fallback).
     ``twist`` is fused body-frame velocity: (v_mmps, omega_mradps) as integers.
     """
     t: int | None = None
     mode: str | None = None
+    seq: int | None = None                       # D10 sequence counter (uint16, wraps at 65535)
     enc: tuple[int, int] | None = None          # (left_mm, right_mm)
     pose: tuple[int, int, int] | None = None    # (x_mm, y_mm, heading_cdeg)
     vel: tuple[int, int] | None = None          # (vL_mmps, vR_mmps) — per-wheel mm/s
@@ -144,6 +147,12 @@ def parse_tlm(line: str) -> TLMFrame | None:
     if "mode" in kv:
         frame.mode = kv["mode"]
 
+    if "seq" in kv:
+        try:
+            frame.seq = int(kv["seq"])
+        except ValueError:
+            pass
+
     if "enc" in kv:
         try:
             parts = kv["enc"].split(",")
@@ -209,6 +218,42 @@ def parse_tlm(line: str) -> TLMFrame | None:
             pass
 
     return frame
+
+
+def tlm_drop_rate(frames: "list[TLMFrame]") -> float:
+    """Estimate the TLM frame drop rate from a sequence of TLMFrame objects.
+
+    Uses the ``seq`` field (D10, firmware 028-005+) to detect gaps.  The
+    uint16 seq counter wraps at 65535; wrap-around is handled correctly.
+
+    Returns the fraction of expected sequence numbers that are absent:
+      0.0 — no drops detected (or fewer than 2 frames, or no seq fields).
+      1.0 — every possible intermediate frame was dropped.
+
+    Returns 0.0 for fewer than 2 frames or when all ``seq`` fields are None
+    (pre-D10 firmware).
+
+    Args:
+        frames: List of TLMFrame objects (in order received).
+    """
+    seq_frames = [f for f in frames if f.seq is not None]
+    if len(seq_frames) < 2:
+        return 0.0
+
+    expected_span = 0
+    drops = 0
+    for i in range(1, len(seq_frames)):
+        prev = seq_frames[i - 1].seq
+        curr = seq_frames[i].seq
+        # Gap accounting with uint16 wrap-around (modulo 65536).
+        gap = (curr - prev) & 0xFFFF  # type: ignore[operator]
+        expected_span += gap
+        if gap > 1:
+            drops += gap - 1
+
+    if expected_span == 0:
+        return 0.0
+    return drops / expected_span
 
 
 def parse_cfg(line: str) -> dict[str, str] | None:

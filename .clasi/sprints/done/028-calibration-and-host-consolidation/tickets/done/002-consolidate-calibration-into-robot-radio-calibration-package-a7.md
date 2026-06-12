@@ -1,9 +1,9 @@
 ---
 id: '002'
 title: Consolidate calibration into robot_radio/calibration/ package (a7)
-status: open
+status: done
 use-cases:
-  - SUC-001
+- SUC-001
 depends-on: []
 github-issue: ''
 issue: a7-consolidate-calibration.md
@@ -32,33 +32,33 @@ existing duplicates and verifies the consolidation satisfies the lint.
 
 ## Acceptance Criteria
 
-- [ ] New package `host/robot_radio/calibration/__init__.py` exists.
-- [ ] `host/robot_radio/calibration/helpers.py` contains exactly one
+- [x] New package `host/robot_radio/calibration/__init__.py` exists.
+- [x] `host/robot_radio/calibration/helpers.py` contains exactly one
       implementation each of: `scale_to_int8`, `int8_to_scale`, `mean_stdev`,
       `deep_merge`, `save_config`, `resolve_save_path`.
-- [ ] `host/robot_radio/calibration/push.py` contains `push_calibration(conn_or_proto, config)`
+- [x] `host/robot_radio/calibration/push.py` contains `push_calibration(conn_or_proto, config)`
       returning a result dict. Resolves the interface duality (architecture-update.md
       Open Question 3): when passed a `NezhaProtocol`, calls
       `proto.push_calibration(config)`; when passed a bare `SerialConnection`,
       constructs SET commands directly. Both paths tested.
-- [ ] `host/robot_radio/calibration/angular.py` contains `calibrate_turns(conn, config, ...)`
+- [x] `host/robot_radio/calibration/angular.py` contains `calibrate_turns(conn, config, ...)`
       — the interactive turns calibration logic, no duplication with `linear.py`.
-- [ ] `host/robot_radio/calibration/linear.py` contains `calibrate_distance(conn, config, ...)`
+- [x] `host/robot_radio/calibration/linear.py` contains `calibrate_distance(conn, config, ...)`
       — the interactive distance calibration logic.
-- [ ] `host/calibrate_angular.py` reduced to a thin entry point (< 30 lines):
+- [x] `host/calibrate_angular.py` reduced to a thin entry point (< 30 lines):
       imports `calibrate_turns`, handles CLI args, calls it.
-- [ ] `host/calibrate_linear.py` reduced to a thin entry point (< 30 lines).
-- [ ] `host/robot_radio/io/calibrate.py` reduced: the `rogo calibrate` subcommand
+- [x] `host/calibrate_linear.py` reduced to a thin entry point (< 30 lines).
+- [x] `host/robot_radio/io/calibrate.py` reduced: the `rogo calibrate` subcommand
       wiring remains; calibration math delegates to the package.
-- [ ] `cli.py` `_scale_to_int8` removed; replaced with import from
+- [x] `cli.py` `_scale_to_int8` removed; replaced with import from
       `robot_radio.calibration.helpers`.
-- [ ] Zero duplicated implementations of `scale_to_int8`, `mean_stdev`,
+- [x] Zero duplicated implementations of `scale_to_int8`, `mean_stdev`,
       `deep_merge` anywhere in the codebase (verify with grep).
-- [ ] Manual verification: run `python scripts/check_config_sync.py` (if sprint
+- [x] Manual verification: run `python scripts/check_config_sync.py` (if sprint
       025 ticket 003 has landed) and confirm exit 0; or manually confirm all
       calibration-output keys (`OL`, `OA`, `ML`, `MR`, `TW`) are read in
       `source/` firmware.
-- [ ] All existing tests pass:
+- [x] All existing tests pass:
       `uv run --with pytest python -m pytest host_tests/ tests/dev/ -v`
 
 ## Implementation Plan
