@@ -1,0 +1,7 @@
+{
+	"InstallScripts" : 
+	[
+		"/Volumes/Proj/proj/RobotProjects/radio-robot-c/host_tests/build_test/cmake_install.cmake"
+	],
+	"Parallel" : false
+}
