@@ -234,17 +234,40 @@ void Robot::otosCorrect(uint32_t now_ms)
 
     // Pass poseHrad for the lever-arm offset rotation (no-op when offsets are zero).
     float headingRad = state.inputs.poseHrad;
-    OtosPose p = otos.readTransformed(config, headingRad);
+
+    // N9 (030-008): use the return value of readTransformed — NOT the stale
+    // lastReadOk() from the previous tick.  _lastReadOk is updated INSIDE
+    // readTransformed (by readXYH), so checking it before the call would miss
+    // a failure that occurs on THIS tick.  A failed read decodes raw[6]={0}
+    // into pose(0,0,0)/vel(0,0); near the origin the Mahalanobis gate accepts
+    // these zeros and drags fusedV to zero — the D9 one-tick symptom.
+    OtosPose p;
+    bool poseOk = otos.readTransformed(config, p, headingRad);
+    if (!poseOk) {
+        // Same-tick I2C failure: mark otos invalid and skip fusion.
+        // Do not update otosX/Y/H or lastUpdMs with garbage zeros.
+        state.inputs.otos.valid = false;
+        return;
+    }
     state.inputs.otosX = p.x;
     state.inputs.otosY = p.y;
     state.inputs.otosH = p.h;
     state.inputs.otos.lastUpdMs = now_ms;
 
     // Read OTOS velocity and acceleration; store acceleration for telemetry.
-    OtosVelocity vel = otos.readVelocityTransformed(config, headingRad);
+    OtosVelocity vel;
+    bool velOk = otos.readVelocityTransformed(config, vel, headingRad);
     OtosAccel    acc = otos.readAccelTransformed(config);
     state.inputs.otosAccelX = acc.ax_mmps2;
     state.inputs.otosAccelY = acc.ay_mmps2;
+
+    // If the velocity read also failed this tick, use zero velocity rather
+    // than fusing garbage — the EKF's encoder-based velocity estimate is a
+    // better fallback.  We still fuse pose (poseOk was true).
+    if (!velOk) {
+        vel.v_mmps     = 0.0f;
+        vel.omega_rads = 0.0f;
+    }
 
     // Retrieve encoder-rate velocity from the most recent predict() tick.
     float enc_v     = odometry.lastEncV();
@@ -361,9 +384,20 @@ int Robot::buildTlmFrame(char* buf, int len)
     if (config.tlmFields & TLM_FIELD_POSE) {
         Odometry::getPose(state.inputs, pose_x, pose_y, pose_h);
     }
-    bool haveLine = line.is_initialized() && state.inputs.lineVS.valid &&
+    // N8 (030-008): gate line/color on freshness, not just the sticky valid bit.
+    // A sensor that wedges after boot keeps valid=true forever; consult the
+    // lastUpdMs / lagMs envelope instead: fresh = now − lastUpdMs ≤ 2×lagMs.
+    // lagMs is 0 until the first valid read (last­UpdMs stays 0 too), so the
+    // sub­traction wraps and the gate is never met — correct for "never read".
+    bool haveLine = line.is_initialized() &&
+                    state.inputs.lineVS.valid &&
+                    (t_sample - state.inputs.lineVS.lastUpdMs
+                         <= 2u * state.inputs.lineVS.lagMs) &&
                     (config.tlmFields & TLM_FIELD_LINE);
-    bool haveColor = colorSensor.is_initialized() && state.inputs.colorVS.valid &&
+    bool haveColor = colorSensor.is_initialized() &&
+                     state.inputs.colorVS.valid &&
+                     (t_sample - state.inputs.colorVS.lastUpdMs
+                          <= 2u * state.inputs.colorVS.lagMs) &&
                      (config.tlmFields & TLM_FIELD_COLOR);
     bool haveVel = (config.tlmFields & TLM_FIELD_VEL) != 0;
     float velL = haveVel ? state.inputs.velLMms : 0.0f;
@@ -406,7 +440,14 @@ int Robot::buildTlmFrame(char* buf, int len)
                      (int)(state.inputs.fusedOmega * 1000.0f));
         if (n > 0 && n < rem) { pos += n; rem -= n; }
     }
-    if (config.tlmFields & TLM_FIELD_OTOS) {
+    // N8 (030-008): gate raw otos= on freshness — same 2×lagMs rule as
+    // line/color above.  otos.valid stays true after the first success; if the
+    // sensor goes dark the last-good pose would be emitted forever without
+    // the freshness check.
+    if ((config.tlmFields & TLM_FIELD_OTOS) &&
+        state.inputs.otos.valid &&
+        (t_sample - state.inputs.otos.lastUpdMs
+             <= 2u * state.inputs.otos.lagMs)) {
         // Raw OTOS pose (pre-fusion): x,y mm and heading in centidegrees,
         // matching the pose= field encoding. Lets the host plot the raw OTOS
         // sensor track alongside enc-derived and fused pose. 18000/pi cdeg/rad.

@@ -46,17 +46,21 @@ public:
 
     // Read the raw position registers, convert LSBs to mm/rad, apply the
     // upside-down flip, mounting-offset lever-arm rotation (rotated by headingRad),
-    // and return the result as an OtosPose.  Does NOT write to HardwareState or call
+    // and write the result to poseOut.  Does NOT write to HardwareState or call
     // odometry.correct — those steps remain with the caller (Robot::otosCorrect).
-    // Returns {0,0,0} if not initialized.
+    // Returns true on I2C success; false if the burst read failed (poseOut = {0,0,0}).
     // headingRad: current robot heading (radians) used to rotate the mounting offset
     //   into the world frame.  No-op when odomOffX/Y are both zero (as in tovez.json).
-    OtosPose readTransformed(const RobotConfig& cfg, float headingRad = 0.0f) const override;
+    // N9 (030-008): callers MUST check the return value and skip fusion on false.
+    bool readTransformed(const RobotConfig& cfg, OtosPose& poseOut,
+                         float headingRad = 0.0f) const override;
 
     // Read velocity registers (REG_VELOCITY_XL = 0x26), apply the same flip
-    // and mounting rotation as readTransformed().  Returns {0,0} if not initialized.
+    // and mounting rotation as readTransformed().  Writes to velOut.
+    // Returns true on I2C success; false if the burst read failed (velOut = {0,0}).
     // headingRad: current robot heading (see readTransformed comment).
-    OtosVelocity readVelocityTransformed(const RobotConfig& cfg, float headingRad = 0.0f) const override;
+    bool readVelocityTransformed(const RobotConfig& cfg, OtosVelocity& velOut,
+                                 float headingRad = 0.0f) const override;
 
     // Read the OTOS STATUS register (0x1F) via readReg8.
     // Returns true on I2C success; fills out with the raw status byte.

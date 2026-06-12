@@ -12,22 +12,32 @@ static float otosGaussian(std::mt19937& rng, float sigma) {
 }
 #endif
 
-OtosPose MockOtosSensor::readTransformed(const RobotConfig& /*cfg*/, float /*headingRad*/) const {
-    OtosPose pose;
-    if (_useSimModel) {
-        pose.x = _odomX;
-        pose.y = _odomY;
-        pose.h = _odomH;
-    } else {
-        pose.x = _injectedX;
-        pose.y = _injectedY;
-        pose.h = _injectedH;
+bool MockOtosSensor::readTransformed(const RobotConfig& /*cfg*/, OtosPose& poseOut,
+                                      float /*headingRad*/) const {
+    if (_readFailure) {
+        poseOut = {0.0f, 0.0f, 0.0f};
+        return false;
     }
-    return pose;
+    if (_useSimModel) {
+        poseOut.x = _odomX;
+        poseOut.y = _odomY;
+        poseOut.h = _odomH;
+    } else {
+        poseOut.x = _injectedX;
+        poseOut.y = _injectedY;
+        poseOut.h = _injectedH;
+    }
+    return true;
 }
 
-OtosVelocity MockOtosSensor::readVelocityTransformed(const RobotConfig& /*cfg*/, float /*headingRad*/) const {
-    return {_velV, _velOmega};
+bool MockOtosSensor::readVelocityTransformed(const RobotConfig& /*cfg*/, OtosVelocity& velOut,
+                                              float /*headingRad*/) const {
+    if (_readFailure) {
+        velOut = {0.0f, 0.0f};
+        return false;
+    }
+    velOut = {_velV, _velOmega};
+    return true;
 }
 
 OtosAccel MockOtosSensor::readAccelTransformed(const RobotConfig& /*cfg*/) const {

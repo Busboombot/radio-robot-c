@@ -9,6 +9,9 @@ int MockLineSensor::currentRow() const {
 }
 
 bool MockLineSensor::readValues(uint16_t out[4]) const {
+    // N8 (030-008): when frozen, return false (no new data) so lineRead()
+    // skips the lastUpdMs update — the TLM freshness gate then drops the field.
+    if (_frozen) return false;
     int row = currentRow();
     for (int i = 0; i < 4; ++i) {
         out[i] = _table[row][i];

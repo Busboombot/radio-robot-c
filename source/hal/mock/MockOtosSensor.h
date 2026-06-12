@@ -23,14 +23,23 @@ struct RobotConfig;
 class MockOtosSensor : public IOtosSensor {
 public:
     // IOtosSensor interface --------------------------------------------------
-    OtosPose readTransformed(const RobotConfig& cfg, float headingRad = 0.0f) const override;
-    OtosVelocity readVelocityTransformed(const RobotConfig& cfg, float headingRad = 0.0f) const override;
+    // N9 (030-008): readTransformed / readVelocityTransformed now return bool.
+    // Returns false (and fills {0,0,0}/{0,0}) when read failure is injected via
+    // setReadFailure(true); callers must check the return and skip fusion.
+    bool readTransformed(const RobotConfig& cfg, OtosPose& poseOut,
+                         float headingRad = 0.0f) const override;
+    bool readVelocityTransformed(const RobotConfig& cfg, OtosVelocity& velOut,
+                                 float headingRad = 0.0f) const override;
     OtosAccel readAccelTransformed(const RobotConfig& cfg) const override;
 
     // D9: STATUS register and lastReadOk.
-    // Mock always returns success (statusOut=0, valid) so existing tests pass.
-    bool readStatus(uint8_t& out) const override { out = 0; return true; }
-    bool lastReadOk() const override { return true; }
+    // Mock returns failure when _readFailure is set; otherwise success.
+    bool readStatus(uint8_t& out) const override {
+        if (_readFailure) { out = 0xFF; return false; }
+        out = 0;
+        return true;
+    }
+    bool lastReadOk() const override { return !_readFailure; }
 
     void init() override {}
     void calibrateImu(uint8_t samples) override { (void)samples; }
@@ -49,6 +58,11 @@ public:
 
     // Test injection ---------------------------------------------------------
     void setInjectedPose(float x, float y, float h);
+
+    // N9 (030-008): inject a read failure so readTransformed /
+    // readVelocityTransformed return false and emit {0,0,0}/{0,0}.
+    // Simulates an I2C burst failure on this tick — use to test same-tick skip.
+    void setReadFailure(bool fail) { _readFailure = fail; }
 
     float injectedX() const { return _injectedX; }
     float injectedY() const { return _injectedY; }
@@ -74,6 +88,7 @@ private:
     float   _injectedX     = 0.0f;
     float   _injectedY     = 0.0f;
     float   _injectedH     = 0.0f;
+    bool    _readFailure   = false;  // N9: inject I2C read failure
     int16_t _rawX          = 0;
     int16_t _rawY          = 0;
     int16_t _rawH          = 0;

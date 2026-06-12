@@ -568,4 +568,61 @@ int sim_command_no_drain(void* h, const char* line, char* out_buf, int out_len)
     return n;
 }
 
+// ---- N8 sensor-freshness helpers (030-008) ----
+
+// Initialize (begin) the MockLineSensor so Robot::lineRead() considers it
+// present and emits line= in TLM.  Call before tests that need line data.
+void sim_init_line_sensor(void* h)
+{
+    static_cast<SimHandle*>(h)->hal.lineMock().begin();
+}
+
+// Initialize (begin) the MockColorSensor so Robot::colorRead() considers it
+// present and emits color= in TLM.  Call before tests that need color data.
+void sim_init_color_sensor(void* h)
+{
+    static_cast<SimHandle*>(h)->hal.colorMock().begin();
+}
+
+// Freeze / unfreeze the MockLineSensor.  When frozen, readValues() returns
+// false so Robot::lineRead() never updates lineVS.lastUpdMs — after ~2×lagMs
+// the TLM freshness gate drops the line= field from TLM frames.
+void sim_set_line_frozen(void* h, int frozen)
+{
+    static_cast<SimHandle*>(h)->hal.lineMock().setFrozen(frozen != 0);
+}
+
+// Freeze / unfreeze the MockColorSensor.  When frozen, pollRGBC() returns
+// false so Robot::colorRead() never updates colorVS.lastUpdMs — after ~2×lagMs
+// the TLM freshness gate drops the color= field from TLM frames.
+void sim_set_color_frozen(void* h, int frozen)
+{
+    static_cast<SimHandle*>(h)->hal.colorMock().setFrozen(frozen != 0);
+}
+
+// ---- N9 same-tick OTOS failure helper (030-008) ----
+
+// Inject / clear an OTOS read failure.  When set, MockOtosSensor::readTransformed
+// and readVelocityTransformed return false and emit {0,0,0}/{0,0}.
+// Robot::otosCorrect() must detect this same-tick failure via the return value
+// and skip EKF fusion — the fusedV/poseX/Y/H state must remain unchanged.
+void sim_set_otos_read_failure(void* h, int fail)
+{
+    static_cast<SimHandle*>(h)->hal.otosMock().setReadFailure(fail != 0);
+}
+
+// Read fusedV from state.inputs (EKF body-frame linear speed, mm/s).
+// Used by N9 test to assert the fused velocity is not dragged to zero on
+// a same-tick OTOS read failure.
+float sim_get_fused_v(void* h)
+{
+    return static_cast<SimHandle*>(h)->robot.state.inputs.fusedV;
+}
+
+// Read fusedOmega from state.inputs (EKF yaw rate, rad/s).
+float sim_get_fused_omega(void* h)
+{
+    return static_cast<SimHandle*>(h)->robot.state.inputs.fusedOmega;
+}
+
 } // extern "C"

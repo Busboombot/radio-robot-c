@@ -57,12 +57,24 @@ void OtosSensor::resetTracking()
     writeReg8(REG_RESET, 0x01);
 }
 
-OtosPose OtosSensor::readTransformed(const RobotConfig& cfg, float headingRad) const
+bool OtosSensor::readTransformed(const RobotConfig& cfg, OtosPose& poseOut,
+                                  float headingRad) const
 {
-    if (!is_initialized()) return {0.0f, 0.0f, 0.0f};
+    if (!is_initialized()) {
+        poseOut = {0.0f, 0.0f, 0.0f};
+        return false;
+    }
 
     int16_t rx = 0, ry = 0, rh = 0;
     readXYH(REG_POSITION_XL, rx, ry, rh);
+
+    // N9 (030-008): _lastReadOk is updated by readXYH above (same tick).
+    // Return false immediately if the burst read failed — caller must not fuse
+    // a zero-filled {0,0,0} pose into the EKF.
+    if (!_lastReadOk) {
+        poseOut = {0.0f, 0.0f, 0.0f};
+        return false;
+    }
 
     constexpr float kPosMmPerLsb  = 0.305f;
     constexpr float kHdgRadPerLsb = 0.00549f * (3.14159265f / 180.0f);
@@ -89,11 +101,10 @@ OtosPose OtosSensor::readTransformed(const RobotConfig& cfg, float headingRad) c
     float offXWorld = ch * cfg.odomOffX - sh * cfg.odomOffY;
     float offYWorld = sh * cfg.odomOffX + ch * cfg.odomOffY;
 
-    OtosPose pose;
-    pose.x = c * xF - s * yF - offXWorld;
-    pose.y = s * xF + c * yF - offYWorld;
-    pose.h = hF + cfg.odomYawDeg * (3.14159265f / 180.0f);
-    return pose;
+    poseOut.x = c * xF - s * yF - offXWorld;
+    poseOut.y = s * xF + c * yF - offYWorld;
+    poseOut.h = hF + cfg.odomYawDeg * (3.14159265f / 180.0f);
+    return true;
 }
 
 // ---------------------------------------------------------------------------
@@ -131,12 +142,23 @@ OtosPose OtosSensor::readTransformed(const RobotConfig& cfg, float headingRad) c
 //   channel of the velocity register (deg/s → rad/s), sign-preserved.
 // ---------------------------------------------------------------------------
 
-OtosVelocity OtosSensor::readVelocityTransformed(const RobotConfig& cfg, float /*headingRad*/) const
+bool OtosSensor::readVelocityTransformed(const RobotConfig& cfg, OtosVelocity& velOut,
+                                          float /*headingRad*/) const
 {
-    if (!is_initialized()) return {0.0f, 0.0f};
+    if (!is_initialized()) {
+        velOut = {0.0f, 0.0f};
+        return false;
+    }
 
     int16_t rvx = 0, rvy = 0, rvh = 0;
     readXYH(REG_VELOCITY_XL, rvx, rvy, rvh);
+
+    // N9 (030-008): _lastReadOk updated by readXYH above.  Return false on
+    // I2C failure so the caller does not fuse a zero velocity into the EKF.
+    if (!_lastReadOk) {
+        velOut = {0.0f, 0.0f};
+        return false;
+    }
 
     // Same LSB resolution as position (see comment block above).
     constexpr float kVelMmpsPerLsb   = 0.305f;           // mm/s per LSB
@@ -161,10 +183,9 @@ OtosVelocity OtosSensor::readVelocityTransformed(const RobotConfig& cfg, float /
     // zero, so omega passes through unchanged (after the flip above).
     float vxBody = c * vxF - s * vyF;
 
-    OtosVelocity vel;
-    vel.v_mmps     = vxBody;
-    vel.omega_rads = whF;
-    return vel;
+    velOut.v_mmps     = vxBody;
+    velOut.omega_rads = whF;
+    return true;
 }
 
 OtosAccel OtosSensor::readAccelTransformed(const RobotConfig& cfg) const

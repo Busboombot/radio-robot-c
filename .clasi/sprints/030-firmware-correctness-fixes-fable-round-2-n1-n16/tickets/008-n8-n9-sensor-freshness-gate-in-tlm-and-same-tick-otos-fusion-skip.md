@@ -1,9 +1,9 @@
 ---
-id: '008'
+id: 008
 title: 'N8+N9: Sensor freshness gate in TLM and same-tick OTOS fusion skip'
-status: open
+status: done
 use-cases:
-  - SUC-007
+- SUC-007
 depends-on: []
 github-issue: ''
 issue: fr2-n8-n9-sensor-validity.md
@@ -32,18 +32,18 @@ drags `fusedV` down (the D9 symptom).
 
 ## Acceptance Criteria
 
-- [ ] `buildTlmFrame` gates line/color sensor fields on freshness:
+- [x] `buildTlmFrame` gates line/color sensor fields on freshness:
       `now - lastUpdMs <= 2 * lagMs` (fields already present — no new fields needed).
-- [ ] `buildTlmFrame` gates the raw `otos=` field on freshness similarly.
-- [ ] `readTransformed()` and `readVelocityTransformed()` return a success bool.
-- [ ] `Robot::otosCorrect()` skips fusion when the same-tick read fails (checks the
+- [x] `buildTlmFrame` gates the raw `otos=` field on freshness similarly.
+- [x] `readTransformed()` and `readVelocityTransformed()` return a success bool.
+- [x] `Robot::otosCorrect()` skips fusion when the same-tick read fails (checks the
       return value of `readTransformed`, not the stale `lastReadOk()`).
-- [ ] New sim test: stalled line/color sensor (frozen mock) stops appearing in TLM
+- [x] New sim test: stalled line/color sensor (frozen mock) stops appearing in TLM
       after ~2 * lagMs.
-- [ ] New sim test: same-tick OTOS read failure does not fuse (0,0,0)/(0,0) into
+- [x] New sim test: same-tick OTOS read failure does not fuse (0,0,0)/(0,0) into
       the EKF (assert EKF state unchanged).
-- [ ] `python3 build.py` clean build passes.
-- [ ] `uv run --with pytest python -m pytest host_tests/ host/tests/` passes.
+- [x] `python3 build.py` clean build passes.
+- [x] `uv run --with pytest python -m pytest host_tests/ host/tests/` passes.
 
 ## Implementation Plan
 

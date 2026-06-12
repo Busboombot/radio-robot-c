@@ -17,12 +17,16 @@ void MockColorSensor::fillOutputs(int row, uint16_t& r, uint16_t& g,
 
 bool MockColorSensor::readRGBC(uint16_t& r, uint16_t& g,
                                 uint16_t& b, uint16_t& c) {
+    // N8 (030-008): when frozen, return false so colorRead() skips lastUpdMs.
+    if (_frozen) return false;
     fillOutputs(currentRow(), r, g, b, c);
     return true;
 }
 
 bool MockColorSensor::pollRGBC(uint16_t& r, uint16_t& g,
                                 uint16_t& b, uint16_t& c) {
+    // N8 (030-008): when frozen, return false so colorRead() skips lastUpdMs.
+    if (_frozen) return false;
     fillOutputs(currentRow(), r, g, b, c);
     return true;
 }

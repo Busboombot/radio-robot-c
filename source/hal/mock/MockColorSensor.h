@@ -28,7 +28,14 @@ public:
 
     void reset() { _elapsedMs = 0; }
 
+    // N8 (030-008): freeze the sensor so pollRGBC() returns false, simulating
+    // a wedged sensor.  When frozen, Robot::colorRead() never updates lastUpdMs,
+    // so the TLM freshness gate will drop the field after ~2×lagMs.
+    void setFrozen(bool frozen) { _frozen = frozen; }
+
 private:
+    bool     _frozen       = false;   // N8: frozen=true → pollRGBC returns false
+
     uint16_t _table[kScheduleRows][4] = {
         {0, 0, 0, 0},
         {0, 0, 0, 0},
