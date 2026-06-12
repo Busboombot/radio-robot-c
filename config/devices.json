@@ -4,7 +4,7 @@
     "common_name": "relay",
     "device_name": "gozop",
     "enum": 1,
-    "port": "/dev/cu.usbmodem212402",
+    "port": "/dev/cu.usbmodem2121402",
     "role": "RADIOBRIDGE",
     "serial": "4267970133",
     "uid": "99063602000528204f02a3519fdba0c7000000006e052820"
