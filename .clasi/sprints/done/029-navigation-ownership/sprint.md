@@ -1,7 +1,7 @@
 ---
 id: 029
 title: Navigation ownership
-status: planning-docs
+status: done
 branch: sprint/029-navigation-ownership
 use-cases: []
 issues:
