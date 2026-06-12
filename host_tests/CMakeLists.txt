@@ -34,6 +34,9 @@ add_library(firmware_host SHARED
     ${CONTROL_SOURCES}
     ${ROBOT_SOURCES}
     ${MOCK_SOURCES}
+    # BenchOtosSensor lives in source/hal/ (not mock/) so it is not globbed
+    # by MOCK_SOURCES.  Add it explicitly so the host build includes it.
+    "${REPO_ROOT}/source/hal/BenchOtosSensor.cpp"
     "${CMAKE_SOURCE_DIR}/sim_api.cpp"
 )
 

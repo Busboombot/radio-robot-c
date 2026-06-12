@@ -1,11 +1,14 @@
 ---
-id: "001"
-title: "BenchOtosSensor class"
-status: open
-use-cases: [SUC-001, SUC-002, SUC-004]
+id: '001'
+title: BenchOtosSensor class
+status: done
+use-cases:
+- SUC-001
+- SUC-002
+- SUC-004
 depends-on: []
-github-issue: ""
-issue: ""
+github-issue: ''
+issue: ''
 completes_issue: false
 ---
 <!-- CLASI: Before changing code or making plans, review the SE process in CLAUDE.md -->
@@ -64,17 +67,17 @@ the arc integration pattern to port.
 
 ## Acceptance Criteria
 
-- [ ] `source/hal/BenchOtosSensor.h` exists and declares `BenchOtosSensor`
+- [x] `source/hal/BenchOtosSensor.h` exists and declares `BenchOtosSensor`
   inheriting `IOtosSensor`.
-- [ ] `source/hal/BenchOtosSensor.cpp` implements all `IOtosSensor` virtual
+- [x] `source/hal/BenchOtosSensor.cpp` implements all `IOtosSensor` virtual
   methods; calibration stubs compile without warnings.
-- [ ] `readTransformed()` and `readVelocityTransformed()` return `true`.
-- [ ] `tick()` with zero dt is a no-op (no accumulator change).
-- [ ] With zero noise/drift, a single tick with `tgtL = tgtR = 100 mm/s` for
+- [x] `readTransformed()` and `readVelocityTransformed()` return `true`.
+- [x] `tick()` with zero dt is a no-op (no accumulator change).
+- [x] With zero noise/drift, a single tick with `tgtL = tgtR = 100 mm/s` for
   10 ms produces `_idealX` approximately `+1.0 mm` and `_otosX` within float
   precision of `_idealX`.
-- [ ] `python3 build.py` clean build passes (device firmware compiles).
-- [ ] `uv run --with pytest python -m pytest host_tests/ host/tests/` passes
+- [x] `python3 build.py` clean build passes (device firmware compiles).
+- [x] `uv run --with pytest python -m pytest host_tests/ host/tests/` passes
   (no existing tests regress).
 
 ## Implementation Plan
