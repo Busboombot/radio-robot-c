@@ -87,11 +87,7 @@ class Cutebot(Robot):
         """Send command, read lines until ENC response arrives.
         If the ENC response is lost (radio is unreliable), fall back
         to sending an explicit ENC command to read encoders."""
-        wire = f">{cmd}\n" if self._conn.mode == "relay" else f"{cmd}\n"
-        if self._conn.on_send:
-            self._conn.on_send(wire.rstrip())
-        self._conn._ser.write(wire.encode("utf-8"))
-        self._conn._ser.flush()
+        self._conn.send_fast(cmd)
         deadline = time.time() + timeout_ms / 1000.0
         while time.time() < deadline:
             lines = self._conn.read_lines(duration_ms=200)

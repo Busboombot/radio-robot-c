@@ -284,9 +284,7 @@ def _make_robot(args) -> tuple[QBotPro, SerialConnection, dict]:
             for attempt in range(3):
                 _log(f"retry HELLO ({attempt + 1}/3)...")
                 time.sleep(0.3)
-                conn._ser.reset_input_buffer()
-                conn._ser.write(b"HELLO\n")
-                conn._ser.flush()
+                conn.handshake(b"HELLO\n")
                 lines = conn.read_lines(duration_ms=1200, stop_token="DEVICE:")
                 _log(f"  lines: {lines}")
                 ann = _parse_device_line(lines)

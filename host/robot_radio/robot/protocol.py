@@ -265,12 +265,8 @@ class NezhaProtocol:
         return self._conn.read_lines(duration_ms)
 
     def read_pending_lines(self) -> list[str]:
-        """Drain the serial input buffer without blocking."""
-        ser = self._conn._ser
-        if ser is None or not ser.in_waiting:
-            return []
-        raw = ser.read(ser.in_waiting).decode("utf-8", errors="replace")
-        return [ln for ln in raw.split("\n") if ln.strip()]
+        """Drain the pending queues without blocking."""
+        return self._conn.read_pending_lines()
 
     # ------------------------------------------------------------------
     # Static parse helpers (reusable on raw lines from streaming callers)

@@ -1,11 +1,11 @@
 ---
 id: '002'
-title: "Seal transport boundary — remove all _ser reaches outside serial_conn.py"
-status: open
+title: "Seal transport boundary \u2014 remove all _ser reaches outside serial_conn.py"
+status: done
 use-cases:
-  - SUC-002
+- SUC-002
 depends-on:
-  - '001'
+- '001'
 github-issue: ''
 issue: a5-serial-transport-encapsulation.md
 completes_issue: true
@@ -101,17 +101,18 @@ This step must run on every PR targeting `master`.
 
 ## Acceptance Criteria
 
-- [ ] `grep -rn '_ser' host/robot_radio | grep -v io/serial_conn.py` returns
-      nothing (zero matches).
-- [ ] `protocol.py:read_pending_lines()` delegates to `self._conn.read_pending_lines()`.
-- [ ] `cli.py` HELLO probe uses `conn.handshake(b"HELLO\n")` instead of raw `_ser`
+- [x] `grep -rn '_ser' host/robot_radio | grep -v io/serial_conn.py` returns
+      nothing (zero matches). CI guard uses `\b_ser\b` to avoid false positives
+      from `list_serial_ports` and `stdio_server` substrings.
+- [x] `protocol.py:read_pending_lines()` delegates to `self._conn.read_pending_lines()`.
+- [x] `cli.py` HELLO probe uses `conn.handshake(b"HELLO\n")` instead of raw `_ser`
       writes; `reset_input_buffer()` call is removed.
-- [ ] `cutebot.py:_send_and_wait_enc()` uses `self._conn.send_fast(cmd)`.
-- [ ] `sim_conn.py` has no `_ser` attribute.
-- [ ] `SimConnection.read_pending_lines()` exists and returns `[]`.
-- [ ] CI grep guard is in the workflow and fails on any `_ser` match outside
+- [x] `cutebot.py:_send_and_wait_enc()` uses `self._conn.send_fast(cmd)`.
+- [x] `sim_conn.py` has no `_ser` attribute.
+- [x] `SimConnection.read_pending_lines()` exists and returns `[]`.
+- [x] CI grep guard is in the workflow and fails on any `_ser` match outside
       `io/serial_conn.py`.
-- [ ] Existing tests pass with no regressions (protocol, CLI, cutebot behaviour
+- [x] Existing tests pass with no regressions (protocol, CLI, cutebot behaviour
       unchanged): `uv run --with pytest python -m pytest -q tests/dev/`
 
 ## Implementation Plan

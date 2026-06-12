@@ -64,10 +64,6 @@ class SimConnection:
           Reset the log.
     """
 
-    # Stub so NezhaProtocol.read_pending_lines() (which accesses _ser)
-    # doesn't crash — it checks for None / in_waiting.
-    _ser = None
-
     def __init__(self, lib_path: str | pathlib.Path | None = None,
                  tick_step_ms: int = _DEFAULT_TICK_MS) -> None:
         self._lib_path = pathlib.Path(lib_path) if lib_path else _DEFAULT_LIB
@@ -175,6 +171,16 @@ class SimConnection:
         if not self.is_open:
             return []
         return self._advance(duration_ms, stop_token)
+
+    def read_pending_lines(self) -> list[str]:
+        """Non-blocking drain — always empty in sim (no buffered input concept).
+
+        The sim has no equivalent of the serial TLM/EVT queues: all sim output
+        is produced synchronously by _raw_command() or _advance().  Callers
+        that expect a non-blocking poll (e.g. NezhaProtocol.read_pending_lines)
+        get an empty list, which is correct — there is nothing waiting.
+        """
+        return []
 
     # ------------------------------------------------------------------
     # Sim-only interface
