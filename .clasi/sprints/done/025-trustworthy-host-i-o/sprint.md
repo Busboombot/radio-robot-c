@@ -1,7 +1,7 @@
 ---
 id: '025'
 title: Trustworthy host I/O
-status: planning-docs
+status: done
 branch: sprint/025-trustworthy-host-i-o
 use-cases: []
 issues:
