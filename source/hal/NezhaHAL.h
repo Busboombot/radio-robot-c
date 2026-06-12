@@ -4,6 +4,7 @@
 #include "I2CBus.h"
 #include "Motor.h"
 #include "OtosSensor.h"
+#include "BenchOtosSensor.h"
 #include "LineSensor.h"
 #include "ColorSensor.h"
 #include "PortIO.h"
@@ -25,6 +26,12 @@
  * NOTE: This header includes CODAL/MicroBit headers and must NOT be
  * included from host-build translation units. The host build (ticket 003)
  * will use MockHAL instead.
+ *
+ * Active-OTOS pointer (sprint 031):
+ *   _otosActive initially points to _otos (real sensor).
+ *   setOtosBench(true) redirects it to _benchOtos so that otos() returns
+ *   the bench sensor — transparent to Robot and the rest of the firmware.
+ *   setOtosBench(false) restores the real sensor.
  */
 class NezhaHAL : public Hardware {
 public:
@@ -35,11 +42,12 @@ public:
     IMotor&       motorR()      override { return _motorR; }
     ILineSensor&  lineSensor()  override { return _line; }
     IColorSensor& colorSensor() override { return _color; }
-    IOtosSensor&  otos()        override { return _otos; }
+    // otos() returns the ACTIVE sensor — real or bench depending on _otosActive.
+    IOtosSensor&  otos()        override { return *_otosActive; }
     IPortIO&      portIO()      override { return _portio; }
     IServo&       gripper()     override { return _gripper; }
 
-    // Call otos.begin(), line.begin(), color.begin().
+    // Call otos.begin(), line.begin(), color.begin(); also begin() bench sensor.
     void begin() override;
 
     // No-op: devices are self-contained.
@@ -48,13 +56,37 @@ public:
     // Expose the shared I2CBus for MotorController::setI2CBus().
     I2CBus& bus() { return _bus; }
 
+    // --- Bench OTOS swap (sprint 031) ---
+
+    // Redirect the active OTOS pointer to the bench sensor (on=true) or
+    // restore the real sensor (on=false).
+    void setOtosBench(bool on) {
+        _otosActive = on
+            ? static_cast<IOtosSensor*>(&_benchOtos)
+            : static_cast<IOtosSensor*>(&_otos);
+    }
+
+    // Direct accessor to the BenchOtosSensor for tick() calls and noise tuning.
+    BenchOtosSensor* benchOtosPtr() { return &_benchOtos; }
+
+    // Returns true when the bench sensor is currently active.
+    bool isBenchMode() const {
+        return _otosActive == static_cast<const IOtosSensor*>(&_benchOtos);
+    }
+
 private:
-    I2CBus      _bus;
-    Motor       _motorL;
-    Motor       _motorR;
-    OtosSensor  _otos;
-    LineSensor  _line;
-    ColorSensor _color;
-    PortIO      _portio;
-    Servo       _gripper;
+    I2CBus           _bus;
+    Motor            _motorL;
+    Motor            _motorR;
+    OtosSensor       _otos;
+    BenchOtosSensor  _benchOtos;
+    LineSensor       _line;
+    ColorSensor      _color;
+    PortIO           _portio;
+    Servo            _gripper;
+
+    // Active OTOS pointer — initialized to &_otos in the constructor.
+    // Must be declared AFTER both _otos and _benchOtos so those members
+    // are fully constructed before _otosActive is assigned.
+    IOtosSensor*     _otosActive;
 };

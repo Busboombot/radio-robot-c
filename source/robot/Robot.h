@@ -155,6 +155,15 @@ struct Robot {
         DebugCommandable* dbg   = nullptr,
         LoopScheduler*    sched = nullptr) const;
 
+    // ---- Bench OTOS tick (sprint 031) ----
+    // Feed commanded velocity into BenchOtosSensor each control tick.
+    // No-op (fast return) when bench mode is off or hal is not NezhaHAL.
+    void benchOtosTick(uint32_t now_ms);
+
+    // Returns true when NezhaHAL has the bench sensor selected.
+    // Always false when hal is MockHAL (HOST_BUILD).
+    bool isBenchOtosActive() const;
+
     // ---- Gating state that pairs with the kept methods ----
     uint32_t _lastTlmMs     = 0;
     uint32_t _lastActiveMs  = 0;
@@ -185,6 +194,10 @@ private:
     mutable CfgCtx      _cfgCtx    = {};  // GET / SET
     mutable RobotSysCtx _sysCtx    = {};  // HELLO, PING, ECHO, ID, VER, …, RF
     mutable MotionCtx   _motionCtx = {};  // S/T/D/G/R/TURN/RT/VW/X/STOP handlers (sprint 026-002)
+
+    // Bench OTOS tick timestamp — for signed-delta dt computation.
+    // Initialized to 0; first benchOtosTick() call passes dt=0 to tick() (no-op).
+    uint32_t _lastBenchTickMs = 0;
 
     // CommandQueue forward declaration for setMotionQueue.
     // (Included via MotionCommandHandlers.h → CommandQueue.h.)

@@ -185,7 +185,16 @@ void Robot::controlCollectSplitPhase(uint32_t now_ms, int /*pendingWheel*/)
 
 void Robot::otosCorrect(uint32_t now_ms)
 {
-    if (!otos.is_initialized()) return;
+    // Indirection through hal.otos() — reads the LIVE active pointer, not the
+    // cached `otos` ref (which was bound at construction to the real OtosSensor
+    // and cannot be re-seated).  When NezhaHAL::setOtosBench(true) is called,
+    // hal.otos() returns the BenchOtosSensor; the cached `otos` ref keeps
+    // pointing to the real chip.  This is the ONLY place otosCorrect() diverges
+    // from the `otos` ref; all other Robot read sites keep the cached ref.
+    // (sprint 031-002 reference-reseating fix)
+    IOtosSensor& activeOtos = hal.otos();
+
+    if (!activeOtos.is_initialized()) return;
 
     // -----------------------------------------------------------------------
     // D9 (027-005): OTOS STATUS register validity gate.
@@ -204,9 +213,9 @@ void Robot::otosCorrect(uint32_t now_ms)
     // reply channel captured when the active command (G/T/D/TURN) started.
     // -----------------------------------------------------------------------
     uint8_t otosStatus = 0;
-    bool statusOk = otos.readStatus(otosStatus);
+    bool statusOk = activeOtos.readStatus(otosStatus);
 
-    if (!statusOk || otosStatus != 0 || !otos.lastReadOk()) {
+    if (!statusOk || otosStatus != 0 || !activeOtos.lastReadOk()) {
         // OTOS is invalid: do not fuse; mark the validity envelope.
         state.inputs.otos.valid = false;
 
@@ -242,7 +251,7 @@ void Robot::otosCorrect(uint32_t now_ms)
     // into pose(0,0,0)/vel(0,0); near the origin the Mahalanobis gate accepts
     // these zeros and drags fusedV to zero — the D9 one-tick symptom.
     OtosPose p;
-    bool poseOk = otos.readTransformed(config, p, headingRad);
+    bool poseOk = activeOtos.readTransformed(config, p, headingRad);
     if (!poseOk) {
         // Same-tick I2C failure: mark otos invalid and skip fusion.
         // Do not update otosX/Y/H or lastUpdMs with garbage zeros.
@@ -256,8 +265,8 @@ void Robot::otosCorrect(uint32_t now_ms)
 
     // Read OTOS velocity and acceleration; store acceleration for telemetry.
     OtosVelocity vel;
-    bool velOk = otos.readVelocityTransformed(config, vel, headingRad);
-    OtosAccel    acc = otos.readAccelTransformed(config);
+    bool velOk = activeOtos.readVelocityTransformed(config, vel, headingRad);
+    OtosAccel    acc = activeOtos.readAccelTransformed(config);
     state.inputs.otosAccelX = acc.ax_mmps2;
     state.inputs.otosAccelY = acc.ay_mmps2;
 
@@ -350,6 +359,70 @@ void Robot::resetEncoders()
     // 3. Re-baseline Odometry's encoder snapshot so predict() sees delta=0
     //    on the very next tick rather than (0 - _prevEncL) = large negative.
     odometry.rebaselinePrev(0.0f, 0.0f);
+}
+
+// ---------------------------------------------------------------------------
+// benchOtosTick — feed commanded velocity into BenchOtosSensor each tick.
+//
+// Called from LoopTickOnce immediately before the OTOS block so that when
+// bench mode is active, BenchOtosSensor::tick() integrates this tick's
+// commanded velocities before otosCorrect() calls readTransformed().
+//
+// The dt computation uses a signed delta to avoid uint32 underflow
+// (project memory: watchdog-uint32-underflow).  First call always passes
+// dt=0 (no-op in BenchOtosSensor::tick).
+//
+// HOST_BUILD guard: NezhaHAL includes CODAL headers so is excluded from
+// host builds.  The downcast to NezhaHAL* is wrapped in #ifndef HOST_BUILD;
+// MockHAL returns nullptr and the function returns immediately, ensuring
+// the host test suite is unaffected.
+// ---------------------------------------------------------------------------
+
+#ifndef HOST_BUILD
+#include "NezhaHAL.h"
+#endif
+
+void Robot::benchOtosTick(uint32_t now_ms)
+{
+    // Signed-delta dt to avoid uint32 underflow (never plain-subtract two
+    // uint32 ms stamps — project memory: watchdog-uint32-underflow).
+    int32_t dt_signed = (int32_t)(now_ms - _lastBenchTickMs);
+    uint32_t dt_ms = (dt_signed > 0) ? (uint32_t)dt_signed : 0u;
+    _lastBenchTickMs = now_ms;
+
+#ifndef HOST_BUILD
+    // Downcast to NezhaHAL to access the active-pointer and bench sensor.
+    // If hal is not a NezhaHAL (e.g. MockHAL in a hypothetical shared context),
+    // return immediately — safe no-op.
+    auto* nh = static_cast<NezhaHAL*>(&hal);
+
+    // Early-return when bench mode is off (production path — nearly free).
+    if (!nh->isBenchMode()) return;
+
+    nh->benchOtosPtr()->tick(
+        state.commands.tgtLMms,
+        state.commands.tgtRMms,
+        config.trackwidthMm,
+        dt_ms);
+#else
+    // HOST_BUILD: NezhaHAL not available; bench mode always off in sim.
+    (void)dt_ms;
+#endif
+}
+
+// ---------------------------------------------------------------------------
+// isBenchOtosActive — returns true when NezhaHAL has the bench sensor active.
+// Always returns false in HOST_BUILD (MockHAL path).
+// ---------------------------------------------------------------------------
+
+bool Robot::isBenchOtosActive() const
+{
+#ifndef HOST_BUILD
+    auto* nh = static_cast<const NezhaHAL*>(&hal);
+    return nh->isBenchMode();
+#else
+    return false;
+#endif
 }
 
 // ---------------------------------------------------------------------------

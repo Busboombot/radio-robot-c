@@ -297,6 +297,48 @@ class Sim:
         ]
         lib.sim_tick_collect_tlm.restype = ctypes.c_int
 
+        # Bench OTOS sim hooks (031-002)
+        # sim_bench_otos_tick(void* h, float vel_l, float vel_r,
+        #                     float trackwidth_mm, uint32_t dt_ms)
+        lib.sim_bench_otos_tick.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_float,
+            ctypes.c_float,
+            ctypes.c_float,
+            ctypes.c_uint32,
+        ]
+        lib.sim_bench_otos_tick.restype = None
+
+        # sim_get_bench_otos_x/y/h → float (noiseless ideal accumulator)
+        lib.sim_get_bench_otos_x.argtypes = [ctypes.c_void_p]
+        lib.sim_get_bench_otos_x.restype = ctypes.c_float
+        lib.sim_get_bench_otos_y.argtypes = [ctypes.c_void_p]
+        lib.sim_get_bench_otos_y.restype = ctypes.c_float
+        lib.sim_get_bench_otos_h.argtypes = [ctypes.c_void_p]
+        lib.sim_get_bench_otos_h.restype = ctypes.c_float
+
+        # sim_get_bench_otos_errored_x/y/h → float (errored accumulator)
+        lib.sim_get_bench_otos_errored_x.argtypes = [ctypes.c_void_p]
+        lib.sim_get_bench_otos_errored_x.restype = ctypes.c_float
+        lib.sim_get_bench_otos_errored_y.argtypes = [ctypes.c_void_p]
+        lib.sim_get_bench_otos_errored_y.restype = ctypes.c_float
+        lib.sim_get_bench_otos_errored_h.argtypes = [ctypes.c_void_p]
+        lib.sim_get_bench_otos_errored_h.restype = ctypes.c_float
+
+        # sim_bench_otos_reset(void* h)
+        lib.sim_bench_otos_reset.argtypes = [ctypes.c_void_p]
+        lib.sim_bench_otos_reset.restype = None
+
+        # sim_bench_otos_set_noise(void* h, float noise_xy, float noise_h,
+        #                          float drift_rad_per_sec)
+        lib.sim_bench_otos_set_noise.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_float,
+            ctypes.c_float,
+            ctypes.c_float,
+        ]
+        lib.sim_bench_otos_set_noise.restype = None
+
     # ------------------------------------------------------------------
     # N7 queue-overflow helpers (030-005)
     # ------------------------------------------------------------------
@@ -474,3 +516,64 @@ class Sim:
         if fuse_otos:
             self._lib.sim_enable_otos_model(self._h)
             self._lib.sim_set_otos_fusion(self._h, ctypes.c_int(1))
+
+    # ------------------------------------------------------------------
+    # Bench OTOS sim hooks (031-002)
+    # ------------------------------------------------------------------
+
+    def bench_otos_tick(self, vel_l: float, vel_r: float,
+                        trackwidth_mm: float, dt_ms: int) -> None:
+        """Manually tick the BenchOtosSensor with explicit velocities.
+
+        In firmware this is driven by Robot::benchOtosTick() via NezhaHAL.
+        In the host sim NezhaHAL is excluded, so tests drive the sensor
+        directly to verify the integrator.
+
+        Args:
+            vel_l:          Left wheel commanded velocity, mm/s.
+            vel_r:          Right wheel commanded velocity, mm/s.
+            trackwidth_mm:  Wheel-to-wheel track width, mm.
+            dt_ms:          Elapsed time for this step, ms.
+        """
+        self._lib.sim_bench_otos_tick(
+            self._h,
+            ctypes.c_float(vel_l),
+            ctypes.c_float(vel_r),
+            ctypes.c_float(trackwidth_mm),
+            ctypes.c_uint32(dt_ms),
+        )
+
+    def get_bench_otos_ideal(self) -> tuple:
+        """Return (x, y, h) from the noiseless ideal accumulator."""
+        x = float(self._lib.sim_get_bench_otos_x(self._h))
+        y = float(self._lib.sim_get_bench_otos_y(self._h))
+        h = float(self._lib.sim_get_bench_otos_h(self._h))
+        return (x, y, h)
+
+    def get_bench_otos_errored(self) -> tuple:
+        """Return (x, y, h) from the errored accumulator."""
+        x = float(self._lib.sim_get_bench_otos_errored_x(self._h))
+        y = float(self._lib.sim_get_bench_otos_errored_y(self._h))
+        h = float(self._lib.sim_get_bench_otos_errored_h(self._h))
+        return (x, y, h)
+
+    def bench_otos_reset(self) -> None:
+        """Zero both BenchOtosSensor accumulators."""
+        self._lib.sim_bench_otos_reset(self._h)
+
+    def bench_otos_set_noise(self, noise_xy: float = 0.0,
+                              noise_h: float = 0.0,
+                              drift_rad_per_sec: float = 0.0) -> None:
+        """Set BenchOtosSensor error model parameters.
+
+        Args:
+            noise_xy:         Per-tick linear noise sigma (fraction of arc dist).
+            noise_h:          Per-tick yaw noise sigma (fraction of heading change).
+            drift_rad_per_sec: Slow additive yaw drift, rad/s.
+        """
+        self._lib.sim_bench_otos_set_noise(
+            self._h,
+            ctypes.c_float(noise_xy),
+            ctypes.c_float(noise_h),
+            ctypes.c_float(drift_rad_per_sec),
+        )

@@ -92,6 +92,12 @@ void loopTickOnce(Robot& robot, CommandProcessor& cmd, CommandQueue& queue,
     robot.odometry.predict(robot.state.inputs, cfg.trackwidthMm,
                            cfg.rotationalSlip, now);
 
+    // ===== BENCH OTOS: integrate commanded velocity into BenchOtosSensor ======
+    // Must run before the OTOS block so BenchOtosSensor::tick() advances its
+    // accumulators before otosCorrect() calls readTransformed().
+    // benchOtosTick() is a no-op when bench mode is off (fast early-return).
+    robot.benchOtosTick(now);
+
     // ===== OTOS: timed I2C pose read + EKF fusion ============================
     // In firmware: run when enOtos is set and lagOtosMs has elapsed.
     // In sim: the lagOtosMs gate is bypassed; fusion runs every tick when

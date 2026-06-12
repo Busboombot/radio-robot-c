@@ -12,6 +12,7 @@
 #include "hal/mock/MockHAL.h"
 #include "hal/mock/MockMotor.h"
 #include "hal/mock/MockOtosSensor.h"
+#include "hal/BenchOtosSensor.h"
 #include "types/Config.h"
 #include "control/RobotState.h"
 #include "control/MotionController.h"
@@ -92,6 +93,12 @@ struct SimHandle {
     CommandProcessor cmd;
     ReplyStore       replyStore;
 
+    // Bench OTOS sensor (sprint 031): standalone BenchOtosSensor for host-sim
+    // tests.  In the real firmware NezhaHAL owns this; in the sim we own it
+    // directly since NezhaHAL (CODAL) is excluded from HOST_BUILD.  Sim tests
+    // drive it via sim_bench_otos_tick() and read it via sim_get_bench_otos_*.
+    BenchOtosSensor  benchOtos;
+
     // Per-tick state: watchdog, last-run timestamps, active reply sink,
     // fuseOtos flag.  Replaces the former standalone watchdogMs field and
     // the hand-mirrored watchdog block in sim_tick().
@@ -103,7 +110,11 @@ struct SimHandle {
         , robot(hal, cfg)
         , _queue()
         , cmd(robot.buildCommandTable(nullptr, nullptr))
+        , benchOtos()
     {
+        // Initialize the bench OTOS sensor (sets _initialized = true; no I2C).
+        benchOtos.begin();
+
         // Wire robot geometry into MockHAL so ExactPoseTracker integrates correctly.
         hal.setTrackwidth(cfg.trackwidthMm);
 
@@ -644,6 +655,63 @@ float sim_get_ekf_p_diag(void* h, int idx)
 {
     if (idx < 0 || idx > 4) return -1.0f;
     return static_cast<SimHandle*>(h)->robot.odometry.ekfPDiag(idx);
+}
+
+// ---- Bench OTOS sim hooks (sprint 031-002) ----
+//
+// In firmware, NezhaHAL owns BenchOtosSensor and benchOtosTick() drives it.
+// In the host sim, NezhaHAL is excluded (CODAL), so the bench sensor is owned
+// directly by SimHandle.  These hooks let Python tests exercise the integrator
+// without going through NezhaHAL.
+//
+// Usage pattern:
+//   1. sim_bench_otos_tick(h, velL, velR, trackwidth, dt_ms) — integrate one step.
+//   2. sim_get_bench_otos_x/y/h(h)                          — read ideal pose.
+//   3. sim_bench_otos_reset(h)                               — zero accumulators.
+//   4. sim_bench_otos_set_noise(h, noiseXY, noiseH, drift)  — set error model.
+
+// Manually tick the bench OTOS sensor with explicit velocities.
+// This mirrors what Robot::benchOtosTick() does in firmware via NezhaHAL,
+// but operates on SimHandle::benchOtos directly.
+void sim_bench_otos_tick(void* h, float vel_l, float vel_r,
+                         float trackwidth_mm, uint32_t dt_ms)
+{
+    static_cast<SimHandle*>(h)->benchOtos.tick(vel_l, vel_r, trackwidth_mm, dt_ms);
+}
+
+// Read the noiseless ideal accumulator (ground truth).
+float sim_get_bench_otos_x(void* h) {
+    return static_cast<SimHandle*>(h)->benchOtos.idealX();
+}
+float sim_get_bench_otos_y(void* h) {
+    return static_cast<SimHandle*>(h)->benchOtos.idealY();
+}
+float sim_get_bench_otos_h(void* h) {
+    return static_cast<SimHandle*>(h)->benchOtos.idealH();
+}
+
+// Read the errored accumulator (what readTransformed returns).
+float sim_get_bench_otos_errored_x(void* h) {
+    return static_cast<SimHandle*>(h)->benchOtos.otosX();
+}
+float sim_get_bench_otos_errored_y(void* h) {
+    return static_cast<SimHandle*>(h)->benchOtos.otosY();
+}
+float sim_get_bench_otos_errored_h(void* h) {
+    return static_cast<SimHandle*>(h)->benchOtos.otosH();
+}
+
+// Reset both accumulators.
+void sim_bench_otos_reset(void* h) {
+    static_cast<SimHandle*>(h)->benchOtos.reset();
+}
+
+// Set error model parameters.
+void sim_bench_otos_set_noise(void* h, float noise_xy, float noise_h,
+                               float drift_rad_per_sec)
+{
+    static_cast<SimHandle*>(h)->benchOtos.setNoise(noise_xy, noise_h,
+                                                    drift_rad_per_sec);
 }
 
 } // extern "C"

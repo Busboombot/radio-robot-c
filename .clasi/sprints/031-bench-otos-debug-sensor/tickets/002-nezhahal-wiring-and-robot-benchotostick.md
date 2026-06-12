@@ -1,11 +1,14 @@
 ---
-id: "002"
-title: "NezhaHAL wiring and Robot::benchOtosTick"
-status: open
-use-cases: [SUC-001, SUC-002]
-depends-on: ["031-001"]
-github-issue: ""
-issue: ""
+id: '002'
+title: NezhaHAL wiring and Robot::benchOtosTick
+status: done
+use-cases:
+- SUC-001
+- SUC-002
+depends-on:
+- 031-001
+github-issue: ''
+issue: ''
 completes_issue: false
 ---
 <!-- CLASI: Before changing code or making plans, review the SE process in CLAUDE.md -->
@@ -72,16 +75,16 @@ and override in `NezhaHAL`. Either is fine; pick the lower-churn approach.
 
 ## Acceptance Criteria
 
-- [ ] `NezhaHAL::otos()` returns `*_otosActive`; behavior with bench off is
+- [x] `NezhaHAL::otos()` returns `*_otosActive`; behavior with bench off is
   identical to pre-sprint (pointer points to `_otos`).
-- [ ] `NezhaHAL::setOtosBench(true)` makes `otos()` return `_benchOtos`
+- [x] `NezhaHAL::setOtosBench(true)` makes `otos()` return `_benchOtos`
   reference; `setOtosBench(false)` restores `_otos`.
-- [ ] `Robot::benchOtosTick(now)` is a no-op when bench mode is off (no crash,
+- [x] `Robot::benchOtosTick(now)` is a no-op when bench mode is off (no crash,
   no accumulator advance).
-- [ ] `LoopTickOnce.cpp` calls `robot.benchOtosTick(now)` immediately before
+- [x] `LoopTickOnce.cpp` calls `robot.benchOtosTick(now)` immediately before
   the OTOS block.
-- [ ] `python3 build.py` clean build passes (device firmware compiles).
-- [ ] `uv run --with pytest python -m pytest host_tests/ host/tests/` passes
+- [x] `python3 build.py` clean build passes (device firmware compiles).
+- [x] `uv run --with pytest python -m pytest host_tests/ host/tests/` passes
   (no regressions — MockHAL path returns false/no-op cleanly).
 
 ## Implementation Plan
