@@ -1,9 +1,9 @@
 ---
 id: '001'
-title: "N1: Atomic encoder reset — eliminate D-command and ZERO enc pose corruption"
-status: open
+title: "N1: Atomic encoder reset \u2014 eliminate D-command and ZERO enc pose corruption"
+status: done
 use-cases:
-  - SUC-001
+- SUC-001
 depends-on: []
 github-issue: ''
 issue:
@@ -34,19 +34,20 @@ does not produce a jump on the next predict call.
 
 ## Acceptance Criteria
 
-- [ ] `Robot::resetEncoders()` added: atomically resets hardware accumulators,
+- [x] `Robot::resetEncoders()` added: atomically resets hardware accumulators,
       MotorController velocity baselines, `state.inputs.encLMm/R`, and
       `Odometry::_prevEncL/R` without touching pose.
-- [ ] `Robot::distanceDrive()` calls `resetEncoders()` (replaces the split reset).
-- [ ] `Robot::handleZero()` ZERO enc path calls `resetEncoders()`.
-- [ ] `Odometry::setPose()` snapshots current encoder inputs into `_prevEncL/R`.
-- [ ] New sim regression test: D-then-G with OTOS fusion OFF — pose delta after D
+- [x] `Robot::distanceDrive()` calls `resetEncoders()` (replaces the split reset).
+- [x] `Robot::handleZero()` ZERO enc path calls `resetEncoders()`.
+- [x] `Odometry::setPose()` snapshots current encoder inputs into `_prevEncL/R`.
+      (Already implemented in sprint 023; verified it reads s.encLMm/s.encRMm.)
+- [x] New sim regression test: D-then-G with OTOS fusion OFF — pose delta after D
       completes is less than 5 mm (no backward jump).
-- [ ] `ekf_rej` count after a D command with fusion ON is 0 in the sim test.
-- [ ] `ZERO enc` with nonzero accumulators: no frozen-encoder window on the
+- [x] `ekf_rej` count after a D command with fusion ON is 0 in the sim test.
+- [x] `ZERO enc` with nonzero accumulators: no frozen-encoder window on the
       following tick (sim test verifies no negative outlier rejection).
-- [ ] `python3 build.py` clean build passes with no new warnings.
-- [ ] `uv run --with pytest python -m pytest host_tests/ host/tests/` passes.
+- [x] `python3 build.py` clean build passes with no new warnings.
+- [x] `uv run --with pytest python -m pytest host_tests/ host/tests/` passes.
 
 ## Implementation Plan
 

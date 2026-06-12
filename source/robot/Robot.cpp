@@ -300,14 +300,37 @@ void Robot::portsRead()
 }
 
 // ---------------------------------------------------------------------------
-// distanceDrive — begin a distance drive and reset encoder outlier baseline.
+// resetEncoders — single canonical atomic encoder reset (N1, sprint 030-001).
 //
-// The encoder-reset workaround: beginDistance resets the MotionController's
-// accumulator to 0, but state.inputs.encLMm/R still hold the previous
-// drive's final value. The outlier filter compares new reads to those stale
-// values; the ~target→0 jump looks like a huge backward outlier and gets
-// REJECTED, freezing encLMm/R and corrupting the velocity loop. Zeroing
-// them here aligns the filter baseline with the fresh accumulator.
+// Atomically resets hardware accumulators, MotorController velocity baselines,
+// the outlier-filter baseline (state.inputs.encLMm/R), and Odometry's internal
+// encoder snapshot — without touching pose.
+//
+// Previously distanceDrive() reset hardware+MC but left Odometry::_prevEncL/R
+// stale, so the very next predict() computed dL = 0 - _prevEncL (large negative)
+// and teleported the pose backward by the prior segment's travel.  ZERO enc
+// was worse: hardware+MC reset but state.inputs.encLMm/R stayed stale, causing
+// the outlier filter to freeze encoder reads until the fresh accumulator climbed
+// back, then a pose jump.
+// ---------------------------------------------------------------------------
+
+void Robot::resetEncoders()
+{
+    // 1. Reset hardware accumulators AND MotorController velocity baselines
+    //    (_prevEncL/R, _hasTimestamp*, _prevTimeMsL/R).
+    motorController.resetEncoderAccumulators();
+
+    // 2. Align the outlier-filter baseline with the now-zeroed accumulators.
+    state.inputs.encLMm = 0.0f;
+    state.inputs.encRMm = 0.0f;
+
+    // 3. Re-baseline Odometry's encoder snapshot so predict() sees delta=0
+    //    on the very next tick rather than (0 - _prevEncL) = large negative.
+    odometry.rebaselinePrev(0.0f, 0.0f);
+}
+
+// ---------------------------------------------------------------------------
+// distanceDrive — begin a distance drive and atomically reset encoder state.
 // ---------------------------------------------------------------------------
 
 void Robot::distanceDrive(int32_t l, int32_t r, int32_t targetMm,
@@ -315,8 +338,10 @@ void Robot::distanceDrive(int32_t l, int32_t r, int32_t targetMm,
 {
     motionController.beginDistance((float)l, (float)r, targetMm,
                                    systemTime(), state.target, fn, ctx, corr_id);
-    state.inputs.encLMm = 0.0f;
-    state.inputs.encRMm = 0.0f;
+    // Atomic encoder reset: aligns hardware accumulators, MC velocity baselines,
+    // outlier-filter baseline, and Odometry encoder snapshot in one call.
+    // (Replaces the split reset that was here + inside beginDistance().)
+    resetEncoders();
 }
 
 // ---------------------------------------------------------------------------
@@ -749,7 +774,11 @@ static void handleZero(const ArgList& args, const char* corrId,
         if (strcmp(args.args[i].sval, "T")    == 0) doT    = true;
         if (strcmp(args.args[i].sval, "D")    == 0) doD    = true;
     }
-    if (doEnc)  robot->motorController.resetEncoderAccumulators();
+    // ZERO enc — atomic encoder reset: hardware accumulators, MC velocity
+    // baselines, outlier-filter baseline, and Odometry encoder snapshot.
+    // (N1 fix, sprint 030-001: replaces bare resetEncoderAccumulators() which
+    // left state.inputs.encLMm/R stale, freezing encoder reads for ~target mm.)
+    if (doEnc)  robot->resetEncoders();
     if (doPose) robot->odometry.zero(robot->state.inputs);
     // ZERO T — set timer baseline for HaltController TIME conditions.
     if (doT) {

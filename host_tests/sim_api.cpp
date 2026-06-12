@@ -319,6 +319,17 @@ float sim_get_pose_h(void* h)
     return static_cast<SimHandle*>(h)->robot.state.inputs.poseHrad;
 }
 
+// ---- EKF diagnostics ----
+
+// Cumulative EKF gate rejection count (all channels: position, heading, velocity).
+// Exposed for the N1 regression test: assert ekf_rej == 0 after a D command when
+// fusion is ON — the atomic encoder reset prevents the spurious negative delta that
+// previously caused Mahalanobis-gate rejections for ~10 ticks post-D. (030-001)
+int sim_get_ekf_rej_count(void* h)
+{
+    return static_cast<SimHandle*>(h)->robot.odometry.ekfRejectCount();
+}
+
 // ---- State injection ----
 
 // Inject encoder position directly into MockMotor (overrides physics).

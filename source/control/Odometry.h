@@ -181,6 +181,16 @@ public:
     // Zero pose in s: equivalent to setPose(s, 0, 0, 0).
     void zero(HardwareState& s);
 
+    // rebaselinePrev — reset the internal encoder snapshot to (encL, encR) without
+    // touching pose.  Called by Robot::resetEncoders() so that the next predict()
+    // sees a delta of 0 after a hardware accumulator reset, preventing the
+    // large-negative-delta backward teleport on every D command and ZERO enc.
+    // (N1 fix, sprint 030-001.)
+    void rebaselinePrev(float encL, float encR) {
+        _prevEncL = encL;
+        _prevEncR = encR;
+    }
+
     // ---------------------------------------------------------------------------
     // Telemetry
     // ---------------------------------------------------------------------------

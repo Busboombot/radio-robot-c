@@ -104,8 +104,28 @@ struct Robot {
     void colorRead();
     void portsRead();
 
-    // distanceDrive — calls motionController.beginDistance + zeroes encoder baseline
-    // in state.inputs so the outlier filter tracks from 0 (encoder-reset workaround).
+    // resetEncoders — atomically resets ALL encoder state so that both the outlier
+    // filter baseline and Odometry's previous-encoder snapshot see a fresh zero.
+    //
+    // Atomically:
+    //   1. Calls motorController.resetEncoderAccumulators() — resets hardware
+    //      accumulators AND MotorController velocity baselines (_prevEncL/R,
+    //      _hasTimestamp*, _prevTimeMsL/R).
+    //   2. Zeroes state.inputs.encLMm / encRMm — aligns the outlier filter
+    //      baseline with the fresh accumulators.
+    //   3. Calls odometry.rebaselinePrev(0, 0) — prevents Odometry::predict()
+    //      from computing a large negative delta (dL = 0 - _prevEncL) on the
+    //      very next tick, which previously teleported the pose backward by the
+    //      prior segment's travel.
+    //
+    // Does NOT touch pose (x, y, theta) or the EKF state.
+    // Called by distanceDrive() (D command) and handleZero() (ZERO enc path).
+    // (N1 fix, sprint 030-001.)
+    void resetEncoders();
+
+    // distanceDrive — calls motionController.beginDistance + calls resetEncoders()
+    // to atomically reset hardware accumulators, velocity baselines, the outlier
+    // filter baseline, and Odometry's encoder snapshot.
     void distanceDrive(int32_t l, int32_t r, int32_t targetMm,
                        ReplyFn fn, void* ctx, const char* corr_id = nullptr);
 

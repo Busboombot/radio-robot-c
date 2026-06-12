@@ -193,6 +193,10 @@ class Sim:
         lib.sim_get_exact_pose_h.argtypes = [ctypes.c_void_p]
         lib.sim_get_exact_pose_h.restype = ctypes.c_float
 
+        # sim_get_ekf_rej_count(void* h) → int  (030-001 N1 diagnostic)
+        lib.sim_get_ekf_rej_count.argtypes = [ctypes.c_void_p]
+        lib.sim_get_ekf_rej_count.restype = ctypes.c_int
+
         # D10 telemetry helpers (028-005)
         # sim_get_tlm_bound(void* h) → int (1 if bound, 0 if not)
         lib.sim_get_tlm_bound.argtypes = [ctypes.c_void_p]
