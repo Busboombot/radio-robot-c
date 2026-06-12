@@ -1,12 +1,12 @@
 ---
 id: '003'
 title: Add D11 double-OK gate test in sim
-status: open
+status: done
 use-cases:
-  - SUC-004
+- SUC-004
 depends-on:
-  - "026-001"
-  - "026-002"
+- 026-001
+- 026-002
 github-issue: ''
 issue: d11-single-ok-per-command.md
 completes_issue: true
@@ -70,16 +70,19 @@ does not block CI.
 
 ## Acceptance Criteria
 
-- [ ] `test_single_ok_per_converter_command` exists in `host/tests/test_protocol_v2.py`
+- [x] `test_single_ok_per_converter_command` exists in `host/tests/test_protocol_v2.py`
   (or a new `test_d11_gate.py` in `host_tests/`).
-- [ ] The test sends each of S, T, D, G, TURN, RT, R with a corr-id and asserts
+  Placed in `host_tests/test_d11_gate.py` — host/tests/ tests the Python protocol
+  layer and has no access to the C-ABI sim fixture.
+- [x] The test sends each of S, T, D, G, TURN, RT, R with a corr-id and asserts
   exactly one `OK #<id>` reply is received across the sync reply and all async
   EVT accumulation.
-- [ ] `test_direct_vw_replies_once` passes: direct `VW` also gets exactly one OK.
-- [ ] `test_d6_cannot_stomp_turn` exists and is marked `@pytest.mark.xfail`
+- [x] `test_direct_vw_replies_once` passes: direct `VW` also gets exactly one OK.
+- [x] `test_d6_cannot_stomp_turn` exists and is marked `@pytest.mark.xfail`
   (documents the D6 defect, expected to fail until sprint 027).
-- [ ] All new tests pass (`uv run pytest host/tests/ -v` or equivalent path).
-- [ ] All existing tests still pass.
+- [x] All new tests pass (`uv run --with pytest python -m pytest host_tests/ host/tests/ -v`).
+  529 passed, 1 xfailed (the D6 test).
+- [x] All existing tests still pass. (521 → 529 passed + 1 xfailed; no regressions)
 
 ## Testing
 
