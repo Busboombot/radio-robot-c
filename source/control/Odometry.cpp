@@ -65,11 +65,32 @@ void Odometry::predict(HardwareState& s, float trackwidthMm,
 
     // EKF predict — propagate state and covariance using encoder-derived arc segment.
     _ekf.predict(dCenter, dTheta, theta_before, dt_s);
+
+    // Fuse encoder-derived velocity into the EKF EVERY tick, regardless of OTOS
+    // health (033-003).  The EKF velocity states (v, omega) are a random walk in
+    // predict() — they only change via updateVelocity().  Previously that was
+    // called ONLY inside correctEKF() (the OTOS-gated path), so fusedV/fusedOmega
+    // were stuck at 0 whenever OTOS was invalid (lifted stand, real-world
+    // dropout): twist read 0 even while the wheels turned.  Encoder velocity is
+    // now the always-available velocity source; OTOS pose/heading/velocity fusion
+    // stays gated in correctEKF() and is no longer the only writer of v/omega.
+    //
+    // Suppress the omega observation when an encoder is wedged — a frozen wheel
+    // injects phantom yaw rate into the fused heading.  _encOmegaHealthy is driven
+    // by the wedge detector (033-005) and defaults true; linear v still fuses (a
+    // wedged wheel only corrupts the differential term).  Guard on dt_s > 0: on
+    // the first tick _lastEncV/_lastEncOmega are still 0 and there is no rate to
+    // fuse.
+    if (dt_s > 0.0f) {
+        float omega_obs = _encOmegaHealthy ? _lastEncOmega : 0.0f;
+        _ekf.updateVelocity(_lastEncV, omega_obs, _rEncV, _rEncV);
+    }
+
     s.poseX    = _ekf.x();
     s.poseY    = _ekf.y();
     s.poseHrad = _ekf.theta();
 
-    // Write EKF velocity states back to HardwareState.
+    // Write EKF velocity states back to HardwareState (after enc-velocity fusion).
     s.fusedV     = _ekf.v();
     s.fusedOmega = _ekf.omega();
 
@@ -182,15 +203,19 @@ void Odometry::initEKF(float q_xy, float q_theta, float q_v, float q_omega,
 // correctEKF — apply OTOS position, heading, and velocity observations to
 // the EKF (sprint 024-004: heading fusion added).
 //
-// Update order: position → heading → velocity(OTOS) → velocity(enc).
+// Update order: position → heading → velocity(OTOS).
 // All channels are Mahalanobis-gated inside EKF methods.
+//
+// 033-003: encoder-derived velocity is NO LONGER fused here.  It is fused
+// unconditionally in predict() every tick so that fusedV/fusedOmega stay live
+// even when OTOS is invalid.  Fusing it here too would double-count the same
+// encoder observation per OTOS tick.
 // ---------------------------------------------------------------------------
 
 void Odometry::correctEKF(HardwareState& s,
                           float x_otos, float y_otos,
                           float theta_otos_rad,
-                          float v_otos_mmps, float omega_otos_rads,
-                          float v_enc_mmps, float omega_enc_rads)
+                          float v_otos_mmps, float omega_otos_rads)
 {
     // 1. Fuse OTOS position (Mahalanobis-gated inside EKF).
     _ekf.updatePosition(x_otos, y_otos);
@@ -201,9 +226,6 @@ void Odometry::correctEKF(HardwareState& s,
     // 3. Fuse OTOS velocity (v, omega). Single scalar _rOtosV used for both
     //    v and omega noise (symmetric simplification — v1 design).
     _ekf.updateVelocity(v_otos_mmps, omega_otos_rads, _rOtosV, _rOtosV);
-
-    // 4. Fuse encoder-derived velocity (v, omega). Similarly symmetric.
-    _ekf.updateVelocity(v_enc_mmps, omega_enc_rads, _rEncV, _rEncV);
 
     // Write all EKF outputs back to HardwareState.
     s.poseX      = _ekf.x();

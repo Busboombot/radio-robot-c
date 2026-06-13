@@ -242,6 +242,10 @@ class Sim:
         lib.sim_get_fused_omega.argtypes = [ctypes.c_void_p]
         lib.sim_get_fused_omega.restype = ctypes.c_float
 
+        # sim_set_enc_omega_healthy(void* h, int healthy)
+        lib.sim_set_enc_omega_healthy.argtypes = [ctypes.c_void_p, ctypes.c_int]
+        lib.sim_set_enc_omega_healthy.restype = None
+
         # N11 pose injection helper (030-009)
         # sim_set_pose(void* h, float x, float y, float hrad)
         lib.sim_set_pose.argtypes = [
@@ -486,6 +490,14 @@ class Sim:
     def get_fused_omega(self) -> float:
         """Return fusedOmega (EKF yaw rate, rad/s) from state.inputs."""
         return float(self._lib.sim_get_fused_omega(self._h))
+
+    def set_enc_omega_healthy(self, healthy: bool) -> None:
+        """Set the encoder-omega health gate (033-003).
+
+        healthy=False simulates a wedged wheel: predict() suppresses the encoder
+        yaw-rate observation so a frozen encoder cannot inject phantom omega.
+        """
+        self._lib.sim_set_enc_omega_healthy(self._h, ctypes.c_int(1 if healthy else 0))
 
     # ------------------------------------------------------------------
     # Field-profile helpers

@@ -124,22 +124,22 @@ public:
                  float r_otos_xy, float r_otos_v, float r_enc_v,
                  float r_otos_theta);
 
-    // EKF correction — fuse OTOS position, heading, and velocity measurements,
-    // plus encoder-derived velocity, into the 5-state EKF.
-    // Call order: updatePosition → updateHeading → updateVelocity(OTOS) →
-    //             updateVelocity(enc). All channels apply Mahalanobis gating
-    // internally. Writes all EKF outputs back to s.
+    // EKF correction — fuse OTOS position, heading, and velocity measurements
+    // into the 5-state EKF.
+    // Call order: updatePosition → updateHeading → updateVelocity(OTOS).
+    // All channels apply Mahalanobis gating internally. Writes all EKF outputs
+    // back to s.
     //   x_otos, y_otos         — OTOS position observation (mm)
     //   theta_otos_rad         — OTOS heading observation (rad) — sprint 024-004
     //   v_otos_mmps            — OTOS body-frame linear velocity (mm/s)
     //   omega_otos_rads        — OTOS angular velocity (rad/s)
-    //   v_enc_mmps             — encoder-derived linear velocity (mm/s)
-    //   omega_enc_rads         — encoder-derived angular velocity (rad/s)
+    //
+    // 033-003: encoder-derived velocity is fused unconditionally in predict(),
+    // NOT here — fusing it in both paths would double-count it per OTOS tick.
     void correctEKF(HardwareState& s,
                     float x_otos, float y_otos,
                     float theta_otos_rad,
-                    float v_otos_mmps, float omega_otos_rads,
-                    float v_enc_mmps, float omega_enc_rads);
+                    float v_otos_mmps, float omega_otos_rads);
 
     // OTOS complementary correction — correct step of predict/correct.
     // (docs/kinematics-model.md §2.4; EKF upgrade path replaces this later.)
@@ -206,16 +206,19 @@ public:
     float ekfPDiag(int idx) const { return _ekf.pDiag(idx); }
 
     // Encoder-rate velocity from the most recent predict() call.
-    // Stored so correctEKF() (called from otosCorrect()) can pass them to the
-    // EKF velocity update channels without changing the cooperative loop's
-    // call signature.  Zero-initialised; updated each predict() tick.
-    //
-    // Design choice: store on Odometry rather than pass through the loop caller
-    // because predict() and otosCorrect() run on different loop phases (enOdom
-    // vs enOtos), so threading enc_v through the caller would require storing
-    // them in HardwareState or Robot anyway — no fewer coupling points.
+    // Zero-initialised; updated each predict() tick.  predict() fuses these into
+    // the EKF velocity channels unconditionally (033-003); the accessors remain
+    // for telemetry / tests.
     float lastEncV()     const { return _lastEncV; }     // body linear speed, mm/s
     float lastEncOmega() const { return _lastEncOmega; } // yaw rate, rad/s
+
+    // Encoder-omega health gate (033-003 / 033-005).  predict() fuses the
+    // encoder yaw-rate observation into the EKF every tick; when a wheel is
+    // wedged the differential term is phantom, so the wedge detector (033-005)
+    // sets this false to suppress the omega observation.  Linear v still fuses.
+    // Defaults true (both encoders assumed healthy).
+    void setEncOmegaHealthy(bool healthy) { _encOmegaHealthy = healthy; }
+    bool encOmegaHealthy() const { return _encOmegaHealthy; }
 
 private:
     // Intermediate compute state: previous encoder snapshot (not in HardwareState
@@ -240,6 +243,11 @@ private:
     // Set to 0 until the first valid predict() tick (dt > 0).
     float _lastEncV;     // body linear speed (mm/s)
     float _lastEncOmega; // yaw rate (rad/s)
+
+    // Encoder-omega health gate (033-003).  When false, predict() suppresses the
+    // encoder yaw-rate observation (wedged wheel → phantom omega).  Driven by the
+    // wedge detector (033-005); defaults true.
+    bool _encOmegaHealthy = true;
 
     EKF _ekf;              // Extended Kalman Filter — fuses encoder odometry with OTOS
 

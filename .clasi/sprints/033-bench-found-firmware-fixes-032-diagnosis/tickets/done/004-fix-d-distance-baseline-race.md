@@ -1,7 +1,7 @@
 ---
 id: '004'
 title: Fix D distance baseline race
-status: open
+status: done
 use-cases:
 - SUC-004
 depends-on: []

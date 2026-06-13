@@ -642,6 +642,15 @@ float sim_get_fused_omega(void* h)
     return static_cast<SimHandle*>(h)->robot.state.inputs.fusedOmega;
 }
 
+// 033-003: set the encoder-omega health gate.  When healthy=0, predict()
+// suppresses the encoder yaw-rate observation (simulating a wedged wheel) — the
+// hook the wedge detector (033-005) will drive.  Used to verify that a wedged
+// encoder cannot inject phantom omega into the fused state.
+void sim_set_enc_omega_healthy(void* h, int healthy)
+{
+    static_cast<SimHandle*>(h)->robot.odometry.setEncOmegaHealthy(healthy != 0);
+}
+
 // N11: inject a dead-reckoning pose into state.inputs directly.
 // Used by test_n11 to place the robot "past" a G target so the PURSUE
 // backtrack re-gate fires on the next few ticks.

@@ -174,13 +174,9 @@ void Robot::controlCollectSplitPhase(uint32_t now_ms, int /*pendingWheel*/)
 // to correctEKF() for EKF fusion.  Stores acceleration in HardwareState for
 // host telemetry via RobotState.
 //
-// Encoder-rate velocity (enc_v, enc_omega) is retrieved from the most recent
-// predict() call via Odometry::lastEncV()/lastEncOmega().  Design choice:
-// these are stored on Odometry rather than threaded through the cooperative
-// loop caller because predict() and otosCorrect() run on different loop phases
-// (enOdom vs enOtos), so passing them through the caller would require
-// HardwareState fields or Robot members anyway — no fewer coupling points.
-// Storing them on Odometry keeps the call sites unchanged.
+// Encoder-derived velocity is NOT fused here: as of 033-003 it is fused
+// unconditionally in Odometry::predict() every tick, so fusedV/fusedOmega stay
+// live even when this OTOS-gated path is skipped (lifted stand, dropout).
 // ---------------------------------------------------------------------------
 
 void Robot::otosCorrect(uint32_t now_ms)
@@ -278,14 +274,11 @@ void Robot::otosCorrect(uint32_t now_ms)
         vel.omega_rads = 0.0f;
     }
 
-    // Retrieve encoder-rate velocity from the most recent predict() tick.
-    float enc_v     = odometry.lastEncV();
-    float enc_omega = odometry.lastEncOmega();
-
+    // Encoder-derived velocity is fused unconditionally in Odometry::predict()
+    // every tick (033-003), so correctEKF() fuses only the OTOS observations.
     odometry.correctEKF(state.inputs, p.x, p.y,
                         p.h,
-                        vel.v_mmps, vel.omega_rads,
-                        enc_v, enc_omega);
+                        vel.v_mmps, vel.omega_rads);
 }
 
 // ---------------------------------------------------------------------------
