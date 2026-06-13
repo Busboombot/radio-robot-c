@@ -1,10 +1,17 @@
 """bench_validation_032.py — comprehensive full-stack bench validation via Bench OTOS.
 
-Sprint 032-001. Talks to the robot through the relay's DATA PLANE: open the relay
-serial port with DTR asserted (default), wait for the announce, send `!GO` to
-enter the data plane, then send PLAIN commands (no `>` prefix). One connection is
-held open for the whole run. Telemetry via SNAP polling (request/reply — reliable;
-async STREAM gets dropped by the bridge). See memory: relay-go-data-plane-protocol.
+Sprint 032-001 / revisited in 033-001. Talks to the robot through its USB serial
+port DIRECTLY (not via the relay). DBG replies (ForceReply::SERIAL) are routed
+to the robot's own USB serial port — over the relay they are invisible, which was
+the root cause of the sprint 032 bench session confusion.
+
+Connect the robot's USB port (NEZHA2 device, e.g. /dev/cu.usbmodem2121102) to
+the host — NOT the relay (RADIOBRIDGE, e.g. /dev/cu.usbmodem2121402).
+
+Uses SerialConnection(port, mode="direct") — plain commands with a corr-id
+suffix, no `>` relay prefix, no `!GO`. One connection held open for the whole run.
+Replies come back under the dict key "responses". Telemetry via SNAP polling:
+conn.send_fast("SNAP") then conn.read_lines(350, stop_token="TLM").
 
 Enables the Bench OTOS (`DBG OTOS BENCH 1`) so the full firmware stack runs on the
 bench stand (synthetic OTOS feeds commanded-motion pose so pose-dependent verbs
@@ -14,49 +21,64 @@ runaway spin, and EKF health.
 
 Units: pose=x_mm,y_mm,h_centideg ; twist=v_mmps,omega_mrad/s ; enc=L_mm,R_mm.
 
-Usage: uv run python tests/bench/bench_validation_032.py
+Usage: uv run python tests/bench/bench_validation_032.py [--port /dev/cu.usbmodemXXXX]
 """
 from __future__ import annotations
 import argparse, pathlib, re, sys, time
-import serial
 
 _REPO = pathlib.Path(__file__).resolve().parents[2]
 OUTDIR = _REPO / "docs" / "bench-validation-032"
 
+# Robot USB serial port (NEZHA2 device) — not the relay (RADIOBRIDGE).
+_DEFAULT_PORT = "/dev/cu.usbmodem2121102"
 
-class Relay:
-    """Raw data-plane link to the robot through the relay."""
-    def __init__(self, port):
-        self.s = serial.Serial(port, 115200, timeout=0.2)  # DTR asserted (default)
-        time.sleep(1.0)
-        self._read(0.6)                       # drain relay announce
-        self.s.reset_input_buffer()
-        go = self.tx("!GO", 0.6)
-        if "data plane" not in go:
-            self.tx("!GO", 0.6)               # one retry
-        self.tx("HELLO", 0.6)
+# Try to auto-detect the robot port from config/devices.json.
+def _robot_port_from_config() -> str | None:
+    import json
+    reg = _REPO / "config" / "devices.json"
+    if reg.exists():
+        for entry in json.loads(reg.read_text()).values():
+            role = (entry.get("role") or "").upper()
+            if role in ("NEZHA2", "ROBOT") and entry.get("port"):
+                return entry["port"]
+    return None
 
-    def _read(self, w):
-        t = time.time(); b = b""
-        while time.time() - t < w:
-            d = self.s.read(256)
-            if d: b += d
-        return b.decode(errors="replace")
 
-    def tx(self, msg, w=0.45):
-        self.s.write((msg + "\n").encode()); self.s.flush()
-        return self._read(w)
+def _make_connection(port: str):
+    """Open a SerialConnection in direct mode to the robot's USB serial port."""
+    import sys as _sys
+    _sys.path.insert(0, str(_REPO / "host"))
+    from robot_radio.io.serial_conn import SerialConnection
+    conn = SerialConnection(port, mode="direct")
+    result = conn.connect()
+    if "error" in result:
+        raise RuntimeError(f"Could not connect to {port}: {result['error']}")
+    if not result.get("pinged"):
+        # Try sending PING explicitly.
+        pr = conn.send("PING", read_ms=600, stop_token="OK pong")
+        if not any("pong" in ln.lower() for ln in pr.get("responses", [])):
+            print(f"WARNING: PING did not confirm pong from {port}. Proceeding anyway.")
+    return conn
 
-    def snap(self):
-        for _ in range(4):
-            for ln in self.tx("SNAP", 0.35).splitlines():
-                if ln.startswith("TLM"):
-                    return ln.strip()
-        return None
 
-    def close(self):
-        try: self.s.close()
-        except Exception: pass
+def _tx(conn, cmd: str, read_ms: int = 450) -> str:
+    """Send a command and return the first response line (or empty string)."""
+    result = conn.send(cmd, read_ms=read_ms, stop_token="OK")
+    lines = result.get("responses", [])
+    return lines[0].strip() if lines else ""
+
+
+def _snap(conn) -> str | None:
+    """Request one SNAP TLM frame and return the raw TLM line, or None."""
+    # SNAP replies with a raw TLM line (not OK-wrapped) — firmware routes it
+    # to the USB serial port; the _reader_loop puts it in _tlm_queue.
+    # Trigger SNAP (fire-and-forget, no corr-id needed) then drain _tlm_queue.
+    conn.send_fast("SNAP")
+    lines = conn.read_lines(350, stop_token="TLM")
+    for ln in lines:
+        if ln.startswith("TLM"):
+            return ln.strip()
+    return None
 
 
 def parse(ln):
@@ -77,17 +99,17 @@ def parse(ln):
     return d
 
 
-def drive(rl, label, cmd, dur_s, log):
+def drive(conn, label, cmd, dur_s, log):
     frames = []
-    rl.tx(cmd, 0.3)
+    _tx(conn, cmd, read_ms=300)
     t0 = time.time()
     while time.time() - t0 < dur_s:
-        ln = rl.snap()
+        ln = _snap(conn)
         if ln:
             f = parse(ln); f["t"] = round(time.time() - t0, 2); f["lbl"] = label
             frames.append(f)
             log.append(f"{label} t={f['t']}  {ln}")
-        rl.tx("+", 0.02)   # keepalive
+        conn.send_fast("+")   # keepalive (send_fast avoids eating a corr-id slot)
     return frames
 
 
@@ -119,47 +141,53 @@ def analyze(label, frames, problems):
 
 
 def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--port", default="/dev/cu.usbmodem2121402")
+    ap = argparse.ArgumentParser(
+        description="Full-stack bench validation via Bench OTOS. "
+                    "Requires the robot's USB serial port (NEZHA2 device), NOT the relay.")
+    ap.add_argument("--port", default=None,
+                    help="Robot USB serial port (NEZHA2 device, e.g. /dev/cu.usbmodem2121102). "
+                         "Defaults to auto-detect from config/devices.json, "
+                         f"then falls back to {_DEFAULT_PORT}.")
     args = ap.parse_args()
+
+    port = args.port or _robot_port_from_config() or _DEFAULT_PORT
+    print(f"Connecting to robot USB serial: {port}  (mode=direct, NOT relay)")
+
     OUTDIR.mkdir(parents=True, exist_ok=True)
     log, report, problems = [], [], []
 
-    rl = Relay(args.port)
-    pong = rl.tx("PING", 0.4)
-    print("PING:", pong.strip())
-    if "pong" not in pong.lower():
-        # one more try
-        pong = rl.tx("PING", 0.6); print("PING2:", pong.strip())
-    print("SET sTimeout=60000:", rl.tx("SET sTimeout=60000", 0.4).strip())
-    print("STREAM fields    :", rl.tx("STREAM 50 fields=mode,pose,twist,enc,ekf_rej", 0.4).strip())
-    print("DBG OTOS BENCH 1 :", rl.tx("DBG OTOS BENCH 1 20 10 0", 0.5).strip())
-    print("DBG OTOS         :", rl.tx("DBG OTOS", 0.6).strip())
+    conn = _make_connection(port)
+    print("PING:", _tx(conn, "PING", read_ms=500).strip())
+    print("SET sTimeout=60000:", _tx(conn, "SET sTimeout=60000", read_ms=400).strip())
+    print("STREAM fields    :", _tx(conn, "STREAM 50 fields=mode,pose,twist,enc,ekf_rej", read_ms=400).strip())
+    print("DBG OTOS BENCH 1 :", _tx(conn, "DBG OTOS BENCH 1 20 10 0", read_ms=500).strip())
+    print("DBG OTOS         :", _tx(conn, "DBG OTOS", read_ms=600).strip())
 
     try:
         # Seq 1: TURN x4
-        rl.tx("ZERO enc", 0.3); rl.tx("SI 0 0 0", 0.3)
+        _tx(conn, "ZERO enc", read_ms=300); _tx(conn, "SI 0 0 0", read_ms=300)
         for i in range(4):
-            report.append(analyze(f"turn{i+1}", drive(rl, f"turn{i+1}", "TURN 9000", 3.0, log), problems))
+            report.append(analyze(f"turn{i+1}", drive(conn, f"turn{i+1}", "TURN 9000", 3.0, log), problems))
         # Seq 2: square D+TURN
-        rl.tx("ZERO enc", 0.3); rl.tx("SI 0 0 0", 0.3)
+        _tx(conn, "ZERO enc", read_ms=300); _tx(conn, "SI 0 0 0", read_ms=300)
         for i in range(4):
-            report.append(analyze(f"sqD{i+1}", drive(rl, f"sqD{i+1}", "D 300 250 250", 3.0, log), problems))
-            report.append(analyze(f"sqT{i+1}", drive(rl, f"sqT{i+1}", "TURN 9000", 3.0, log), problems))
+            report.append(analyze(f"sqD{i+1}", drive(conn, f"sqD{i+1}", "D 300 250 250", 3.0, log), problems))
+            report.append(analyze(f"sqT{i+1}", drive(conn, f"sqT{i+1}", "TURN 9000", 3.0, log), problems))
         # Seq 3: velocity profiles
         for label, cmd, dur in [("D_slow_150", "D 250 150 150", 3.2),
                                  ("D_med_300", "D 400 300 300", 2.8),
                                  ("D_fast_500", "D 500 500 500", 2.4),
                                  ("T_timed_1500", "T 1500 300 300", 2.6)]:
-            rl.tx("ZERO enc", 0.3); rl.tx("SI 0 0 0", 0.3)
-            report.append(analyze(label, drive(rl, label, cmd, dur, log), problems))
-        print("DBG OTOS (final):", rl.tx("DBG OTOS", 0.6).strip())
+            _tx(conn, "ZERO enc", read_ms=300); _tx(conn, "SI 0 0 0", read_ms=300)
+            report.append(analyze(label, drive(conn, label, cmd, dur, log), problems))
+        print("DBG OTOS (final):", _tx(conn, "DBG OTOS", read_ms=600).strip())
     finally:
-        rl.tx("X", 0.3); rl.tx("STREAM 0", 0.3); rl.tx("DBG OTOS BENCH 0", 0.3)
-        rl.close()
+        _tx(conn, "X", read_ms=300); _tx(conn, "STREAM 0", read_ms=300)
+        _tx(conn, "DBG OTOS BENCH 0", read_ms=300)
+        conn.disconnect()
 
     (OUTDIR / "tlm_log.txt").write_text("\n".join(log))
-    out = ["# Bench validation 032 — full-stack drive via Bench OTOS (hardware)\n"]
+    out = ["# Bench validation 032 — full-stack drive via Bench OTOS (hardware, direct USB)\n"]
     for m in report:
         out.append(f"\n[{m['label']}] frames={m['n']}")
         for k in ("v_start","v_peak","v_end","v_jump_max","omega_peak","h_first","h_last","h_travel","ekf_rej_climb","v_series"):

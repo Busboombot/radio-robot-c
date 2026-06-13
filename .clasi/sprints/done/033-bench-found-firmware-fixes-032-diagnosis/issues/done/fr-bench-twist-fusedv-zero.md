@@ -1,6 +1,8 @@
 ---
-status: pending
+status: done
 sprint: '033'
+tickets:
+- 033-003
 ---
 
 # Bench finding — `twist=` (fused body velocity) reads 0,0 on hardware during driving

@@ -22,6 +22,7 @@ MotorController::MotorController(IMotor& left, IMotor& right, const RobotConfig&
       _wedgePrevValidL(false), _wedgePrevValidR(false),
       _stuckCountL(0), _stuckCountR(0),
       _wedgeEmittedL(false), _wedgeEmittedR(false),
+      _hasMovedL(false), _hasMovedR(false),
       _i2cBus(nullptr),
       _evtFn(nullptr), _evtCtx(nullptr)
 {
@@ -34,12 +35,14 @@ MotorController::MotorController(IMotor& left, IMotor& right, const RobotConfig&
 
 void MotorController::resetStuckCounters()
 {
-    _stuckCountL    = 0;
-    _stuckCountR    = 0;
-    _wedgeEmittedL  = false;
-    _wedgeEmittedR  = false;
+    _stuckCountL     = 0;
+    _stuckCountR     = 0;
+    _wedgeEmittedL   = false;
+    _wedgeEmittedR   = false;
     _wedgePrevValidL = false;
     _wedgePrevValidR = false;
+    _hasMovedL       = false;  // (033-005d) re-arm grace latches
+    _hasMovedR       = false;
 }
 
 void MotorController::setTarget(float leftMms, float rightMms)
@@ -66,6 +69,10 @@ void MotorController::startDriveClean(float leftMms, float rightMms)
     _cmdEncStartR = _prevEncR;
     _vcL.reset();
     _vcR.reset();
+    // (033-005d) Clear arming-grace latches: the detector must not fire until
+    // each wheel has moved at least once since this command started.
+    _hasMovedL = false;
+    _hasMovedR = false;
 }
 
 void MotorController::startDrive(float leftMms, float rightMms)
@@ -107,6 +114,9 @@ void MotorController::startDrive(float leftMms, float rightMms)
 
     _fasterIsRight = newFasterIsRight;
     _cmdRatio = newRatio;
+    // (033-005d) Clear arming-grace latches on streaming command start.
+    _hasMovedL = false;
+    _hasMovedR = false;
 }
 
 void MotorController::stop()
@@ -123,6 +133,9 @@ void MotorController::stop()
     _cmdEncStartR = _prevEncR;
     _motorL.setSpeed(0);
     _motorR.setSpeed(0);
+    // (033-005d) Clear arming-grace latches on stop.
+    _hasMovedL = false;
+    _hasMovedR = false;
 }
 
 void MotorController::resetIntegrators()
@@ -262,12 +275,18 @@ void MotorController::controlTick(HardwareState& inputs, MotorCommands& cmds,
         if (refreshedWheel == 1 || refreshedWheel == 3) {
             float encL = inputs.encLMm;
             if (cmds.tgtLMms != 0.0f) {
-                if (_wedgePrevValidL && encL == _wedgePrevEncL) {
-                    if (_stuckCountL < 255) ++_stuckCountL;
-                } else {
-                    // Encoder moved — re-arm.
+                if (_wedgePrevValidL && encL != _wedgePrevEncL) {
+                    // Encoder moved: re-arm and set the arming-grace latch.
                     _stuckCountL   = 0;
                     _wedgeEmittedL = false;
+                    _hasMovedL     = true;  // (033-005d) wheel has moved at least once
+                } else if (_wedgePrevValidL && encL == _wedgePrevEncL) {
+                    // (033-005d) Only count toward wedge threshold once the
+                    // wheel has moved at least once since the command started.
+                    // This prevents spin-up lag from firing the detector.
+                    if (_hasMovedL) {
+                        if (_stuckCountL < 255) ++_stuckCountL;
+                    }
                 }
             } else {
                 // Not commanded — reset.
@@ -288,10 +307,17 @@ void MotorController::controlTick(HardwareState& inputs, MotorCommands& cmds,
                     uint32_t busErr = 0, reentryN = 0;
                     int lastErrV = 0;
 #endif
-                    char evtBuf[96];
+                    // (033-005c) Include a fresh raw read alongside the filtered
+                    // value.  raw frozen + enc frozen → real chip/I2C wedge or
+                    // stall; raw moving + enc frozen → outlier-filter hold.
+                    // readEncoderMmFSettle is used (not Atomic) to avoid the
+                    // extra 4 ms pre-write idle during the EVT emit path.
+                    int rawL = (int)_motorL.readEncoderMmFSettle(_cal);
+                    char evtBuf[112];
                     snprintf(evtBuf, sizeof(evtBuf),
-                             "EVT enc_wedged wheel=L enc=%d n=%u err=%lu reentry=%lu lastErr=%d",
+                             "EVT enc_wedged wheel=L enc=%d raw=%d n=%u err=%lu reentry=%lu lastErr=%d",
                              (int)encL,
+                             rawL,
                              (unsigned)_stuckCountL,
                              (unsigned long)busErr,
                              (unsigned long)reentryN,
@@ -305,11 +331,16 @@ void MotorController::controlTick(HardwareState& inputs, MotorCommands& cmds,
         if (refreshedWheel == 2 || refreshedWheel == 3) {
             float encR = inputs.encRMm;
             if (cmds.tgtRMms != 0.0f) {
-                if (_wedgePrevValidR && encR == _wedgePrevEncR) {
-                    if (_stuckCountR < 255) ++_stuckCountR;
-                } else {
+                if (_wedgePrevValidR && encR != _wedgePrevEncR) {
+                    // Encoder moved: re-arm and set the arming-grace latch.
                     _stuckCountR   = 0;
                     _wedgeEmittedR = false;
+                    _hasMovedR     = true;  // (033-005d) wheel has moved at least once
+                } else if (_wedgePrevValidR && encR == _wedgePrevEncR) {
+                    // (033-005d) Gate on arming grace: don't count until moved once.
+                    if (_hasMovedR) {
+                        if (_stuckCountR < 255) ++_stuckCountR;
+                    }
                 }
             } else {
                 _stuckCountR   = 0;
@@ -329,10 +360,15 @@ void MotorController::controlTick(HardwareState& inputs, MotorCommands& cmds,
                     uint32_t busErr = 0, reentryN = 0;
                     int lastErrV = 0;
 #endif
-                    char evtBuf[96];
+                    // (033-005c) Include a fresh raw read alongside the filtered
+                    // value.  raw frozen + enc frozen → real chip/I2C wedge or
+                    // stall; raw moving + enc frozen → outlier-filter hold.
+                    int rawR = (int)_motorR.readEncoderMmFSettle(_cal);
+                    char evtBuf[112];
                     snprintf(evtBuf, sizeof(evtBuf),
-                             "EVT enc_wedged wheel=R enc=%d n=%u err=%lu reentry=%lu lastErr=%d",
+                             "EVT enc_wedged wheel=R enc=%d raw=%d n=%u err=%lu reentry=%lu lastErr=%d",
                              (int)encR,
+                             rawR,
                              (unsigned)_stuckCountR,
                              (unsigned long)busErr,
                              (unsigned long)reentryN,

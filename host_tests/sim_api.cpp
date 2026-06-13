@@ -642,6 +642,15 @@ float sim_get_fused_omega(void* h)
     return static_cast<SimHandle*>(h)->robot.state.inputs.fusedOmega;
 }
 
+// 033-003: set the encoder-omega health gate.  When healthy=0, predict()
+// suppresses the encoder yaw-rate observation (simulating a wedged wheel) — the
+// hook the wedge detector (033-005) will drive.  Used to verify that a wedged
+// encoder cannot inject phantom omega into the fused state.
+void sim_set_enc_omega_healthy(void* h, int healthy)
+{
+    static_cast<SimHandle*>(h)->robot.odometry.setEncOmegaHealthy(healthy != 0);
+}
+
 // N11: inject a dead-reckoning pose into state.inputs directly.
 // Used by test_n11 to place the robot "past" a G target so the PURSUE
 // backtrack re-gate fires on the next few ticks.
@@ -718,6 +727,33 @@ void sim_bench_otos_set_noise(void* h, float noise_xy, float noise_h,
 {
     static_cast<SimHandle*>(h)->benchOtos.setNoise(noise_xy, noise_h,
                                                     drift_rad_per_sec);
+}
+
+// ---- 033-005 wedge-defense sim hooks ----
+
+// Read the per-wheel wedge latch state from MotorController (033-005e).
+// Returns 1 if the wedge EVT latch is set (wheel is wedged), 0 otherwise.
+int sim_get_wheel_wedged_l(void* h)
+{
+    return static_cast<SimHandle*>(h)->robot.motorController.wheelWedgedL() ? 1 : 0;
+}
+int sim_get_wheel_wedged_r(void* h)
+{
+    return static_cast<SimHandle*>(h)->robot.motorController.wheelWedgedR() ? 1 : 0;
+}
+
+// Read the odometry wedge-active gate (033-005e).
+// Returns 1 when Odometry::_wedgeActive is true (dTheta suppressed in predict).
+int sim_get_odometry_wedge_active(void* h)
+{
+    return static_cast<SimHandle*>(h)->robot.odometry.wedgeActive() ? 1 : 0;
+}
+
+// Read the odometry encoder-omega health gate (033-003 / 033-005e).
+// Returns 1 when healthy (omega fused), 0 when suppressed (wedged).
+int sim_get_odometry_enc_omega_healthy(void* h)
+{
+    return static_cast<SimHandle*>(h)->robot.odometry.encOmegaHealthy() ? 1 : 0;
 }
 
 } // extern "C"

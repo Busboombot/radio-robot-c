@@ -242,6 +242,10 @@ class Sim:
         lib.sim_get_fused_omega.argtypes = [ctypes.c_void_p]
         lib.sim_get_fused_omega.restype = ctypes.c_float
 
+        # sim_set_enc_omega_healthy(void* h, int healthy)
+        lib.sim_set_enc_omega_healthy.argtypes = [ctypes.c_void_p, ctypes.c_int]
+        lib.sim_set_enc_omega_healthy.restype = None
+
         # N11 pose injection helper (030-009)
         # sim_set_pose(void* h, float x, float y, float hrad)
         lib.sim_set_pose.argtypes = [
@@ -338,6 +342,21 @@ class Sim:
             ctypes.c_float,
         ]
         lib.sim_bench_otos_set_noise.restype = None
+
+        # 033-005 wedge-defense sim hooks
+        # sim_get_wheel_wedged_l / sim_get_wheel_wedged_r → int (0 or 1)
+        lib.sim_get_wheel_wedged_l.argtypes = [ctypes.c_void_p]
+        lib.sim_get_wheel_wedged_l.restype = ctypes.c_int
+        lib.sim_get_wheel_wedged_r.argtypes = [ctypes.c_void_p]
+        lib.sim_get_wheel_wedged_r.restype = ctypes.c_int
+
+        # sim_get_odometry_wedge_active(void* h) → int (0 or 1)
+        lib.sim_get_odometry_wedge_active.argtypes = [ctypes.c_void_p]
+        lib.sim_get_odometry_wedge_active.restype = ctypes.c_int
+
+        # sim_get_odometry_enc_omega_healthy(void* h) → int (0 or 1)
+        lib.sim_get_odometry_enc_omega_healthy.argtypes = [ctypes.c_void_p]
+        lib.sim_get_odometry_enc_omega_healthy.restype = ctypes.c_int
 
     # ------------------------------------------------------------------
     # N7 queue-overflow helpers (030-005)
@@ -487,6 +506,14 @@ class Sim:
         """Return fusedOmega (EKF yaw rate, rad/s) from state.inputs."""
         return float(self._lib.sim_get_fused_omega(self._h))
 
+    def set_enc_omega_healthy(self, healthy: bool) -> None:
+        """Set the encoder-omega health gate (033-003).
+
+        healthy=False simulates a wedged wheel: predict() suppresses the encoder
+        yaw-rate observation so a frozen encoder cannot inject phantom omega.
+        """
+        self._lib.sim_set_enc_omega_healthy(self._h, ctypes.c_int(1 if healthy else 0))
+
     # ------------------------------------------------------------------
     # Field-profile helpers
     # ------------------------------------------------------------------
@@ -560,6 +587,31 @@ class Sim:
     def bench_otos_reset(self) -> None:
         """Zero both BenchOtosSensor accumulators."""
         self._lib.sim_bench_otos_reset(self._h)
+
+    # ------------------------------------------------------------------
+    # 033-005 wedge-defense sim hooks
+    # ------------------------------------------------------------------
+
+    def get_wheel_wedged_l(self) -> bool:
+        """Return True if the left wheel wedge latch is set (033-005e).
+
+        The latch fires when the left encoder has been identical for
+        kWedgeThreshold consecutive commanded ticks (after the first move).
+        Resets when the encoder changes again.
+        """
+        return bool(self._lib.sim_get_wheel_wedged_l(self._h))
+
+    def get_wheel_wedged_r(self) -> bool:
+        """Return True if the right wheel wedge latch is set (033-005e)."""
+        return bool(self._lib.sim_get_wheel_wedged_r(self._h))
+
+    def get_odometry_wedge_active(self) -> bool:
+        """Return True when Odometry::_wedgeActive is set (dTheta suppressed)."""
+        return bool(self._lib.sim_get_odometry_wedge_active(self._h))
+
+    def get_odometry_enc_omega_healthy(self) -> bool:
+        """Return True when the encoder-omega health gate is enabled (033-003/005)."""
+        return bool(self._lib.sim_get_odometry_enc_omega_healthy(self._h))
 
     def bench_otos_set_noise(self, noise_xy: float = 0.0,
                               noise_h: float = 0.0,

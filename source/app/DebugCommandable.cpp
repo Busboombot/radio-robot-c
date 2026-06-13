@@ -363,7 +363,8 @@ static ParseResult parseDbgOtosBench(const char* const* tokens, int ntokens,
         res.args.count = 1;
         res.args.args[0].type  = ArgType::INT;
         res.args.args[0].ival  = atoi(tokens[0]);
-        res.args.args[0].fval  = 0.0f;
+        // NOTE: ival/fval are a UNION — do NOT also write fval here; that would
+        // zero ival (0.0f == 0x00000000) and make every enable read as 0. (033-002)
         res.args.args[0].sval[0] = '\0';
     } else {
         res.args.count = 0;
@@ -388,21 +389,21 @@ static ParseResult parseDbgOtosBench(const char* const* tokens, int ntokens,
     if (base + extra < MAX_ARGS) {
         res.args.args[base + extra].type  = ArgType::FLOAT;
         res.args.args[base + extra].fval  = noiseXY;
-        res.args.args[base + extra].ival  = 0;
+        // ival shares a union with fval — do NOT write it (would zero the float).
         res.args.args[base + extra].sval[0] = '\0';
         ++extra;
     }
     if (base + extra < MAX_ARGS) {
         res.args.args[base + extra].type  = ArgType::FLOAT;
         res.args.args[base + extra].fval  = noiseH;
-        res.args.args[base + extra].ival  = 0;
+        // ival shares a union with fval — do NOT write it (would zero the float).
         res.args.args[base + extra].sval[0] = '\0';
         ++extra;
     }
     if (base + extra < MAX_ARGS) {
         res.args.args[base + extra].type  = ArgType::FLOAT;
         res.args.args[base + extra].fval  = drift;
-        res.args.args[base + extra].ival  = 0;
+        // ival shares a union with fval — do NOT write it (would zero the float).
         res.args.args[base + extra].sval[0] = '\0';
         ++extra;
     }
@@ -420,33 +421,27 @@ static void handleDbgOtosBench(const ArgList& args, const char* corrId,
     // arg[0]: enable flag (0 or 1); default to 0 if omitted.
     int enable = (args.count >= 1) ? args.args[0].ival : 0;
 
-#ifndef HOST_BUILD
-    // Reach NezhaHAL via the robot's hal reference (same pattern as benchOtosTick).
-    auto* nh = static_cast<NezhaHAL*>(&ctx.robot->hal);
-    nh->setOtosBench(enable != 0);
+    // Toggle bench mode through the Robot facade: firmware -> NezhaHAL::setOtosBench;
+    // HOST_BUILD -> a sim-observable flag.  This lets the sim regression-test the
+    // enable path, which a union-aliasing parse bug (033-002) had been zeroing.
+    ctx.robot->setBenchOtosEnabled(enable != 0);
 
-    // Apply optional noise/drift params when bench mode is being enabled.
+#ifndef HOST_BUILD
+    // Apply optional noise/drift params when enabling (firmware bench sensor only).
     // args[1]=noiseXY, args[2]=noiseH, args[3]=drift.  Sentinel = -1.0f.
     if (enable && args.count >= 4) {
+        auto* nh = static_cast<NezhaHAL*>(&ctx.robot->hal);
         float noiseXY = args.args[1].fval;
         float noiseH  = args.args[2].fval;
         float drift   = args.args[3].fval;
-
-        // Negative sentinel means "not provided"; apply defaults.
         if (noiseXY < 0.0f) noiseXY = 0.02f;  // 2% linear sigma default
         if (noiseH  < 0.0f) noiseH  = 0.01f;  // 1% yaw sigma default
         if (drift   < 0.0f) drift   = 0.0f;   // no drift default
-
         nh->benchOtosPtr()->setNoise(noiseXY, noiseH, drift);
     }
-
-    int active = nh->isBenchMode() ? 1 : 0;
-#else
-    // HOST_BUILD: NezhaHAL not available; toggle is a no-op.
-    int active = 0;
-    (void)enable;
 #endif
 
+    int active = ctx.robot->isBenchOtosActive() ? 1 : 0;
     char msg[32];
     snprintf(msg, sizeof(msg), "otos bench=%d", active);
     CommandProcessor::replyOK(rbuf, sizeof(rbuf), "dbg", msg,

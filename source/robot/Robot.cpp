@@ -142,6 +142,11 @@ void Robot::controlCollectSplitPhase(uint32_t now_ms, int /*pendingWheel*/)
                     float dr2 = r2 - state.inputs.encRMm;
                     if (dr2 <= kMaxDeltaMm && dr2 >= -kMaxDeltaMm) { newR = r2; break; }
                 }
+                // (033-005b) Outlier rejection: increment the consecutive-reject
+                // streak counter.  Saturate at 255 to avoid uint8 wrap.
+                if (_filterRejectStreakR < 255) ++_filterRejectStreakR;
+            } else {
+                _filterRejectStreakR = 0;
             }
             state.inputs.encRMm = newR;
         }
@@ -157,14 +162,67 @@ void Robot::controlCollectSplitPhase(uint32_t now_ms, int /*pendingWheel*/)
                     float dr2 = r2 - state.inputs.encLMm;
                     if (dr2 <= kMaxDeltaMm && dr2 >= -kMaxDeltaMm) { newL = r2; break; }
                 }
+                // (033-005b) Outlier rejection: increment streak counter.
+                if (_filterRejectStreakL < 255) ++_filterRejectStreakL;
+            } else {
+                _filterRejectStreakL = 0;
             }
             state.inputs.encLMm = newL;
         }
+
+        // (033-005b) Emit EVT enc_filter_hold at threshold crossing (onset only).
+        // We emit exactly once when streak == threshold, not on every tick above,
+        // to avoid flooding the link with repeated EVTs for a persistent hold.
+        // Use _tlmBoundFn so the EVT goes to the same channel as TLM; silently
+        // drop when no channel is bound (no STREAM issued yet).
+        if (_filterRejectStreakR == kFilterRejectStreakThreshold &&
+                _tlmBoundFn != nullptr) {
+            char evtBuf[64];
+            snprintf(evtBuf, sizeof(evtBuf),
+                     "EVT enc_filter_hold wheel=R streak=%u",
+                     (unsigned)_filterRejectStreakR);
+            _tlmBoundFn(evtBuf, _tlmBoundCtx);
+        }
+        if (_filterRejectStreakL == kFilterRejectStreakThreshold &&
+                _tlmBoundFn != nullptr) {
+            char evtBuf[64];
+            snprintf(evtBuf, sizeof(evtBuf),
+                     "EVT enc_filter_hold wheel=L streak=%u",
+                     (unsigned)_filterRejectStreakL);
+            _tlmBoundFn(evtBuf, _tlmBoundCtx);
+        }
+    } else {
+        // Not driving: reset streak counters so they don't carry over into the
+        // next drive episode.
+        _filterRejectStreakL = 0;
+        _filterRejectStreakR = 0;
     }
     _prevDriving = driving;
     _lastControlMs = now_ms;
     // refreshedWheel=3: both wheels updated; 0: idle, no velocity update.
     motorController.controlTick(state.inputs, state.commands, now_ms, driving ? 3 : 0);
+
+    // (033-005e) Push wedge state into Odometry after every control tick.
+    // wheelWedgedL/R() return the EVT-latch state from the detector above.
+    //
+    // setWedgeActive: unconditionally mirrors the combined wedge flag — dTheta
+    // suppression is purely Robot-owned (no external setter in tests).
+    //
+    // setEncOmegaHealthy: only called when a wedge is ACTIVE.  When no wedge is
+    // active we do NOT call setEncOmegaHealthy(true) — this preserves any manual
+    // override (e.g. sim_set_enc_omega_healthy(false) in 033-003 tests) and avoids
+    // overwriting the gate each tick when everything is healthy.  The gate is only
+    // restored to true when the wedge clears (anyWedged transitions false→true→false).
+    bool anyWedged = motorController.wheelWedgedL() || motorController.wheelWedgedR();
+    odometry.setWedgeActive(anyWedged);
+    if (anyWedged) {
+        // Wheel is wedged: suppress both dTheta and the omega observation.
+        odometry.setEncOmegaHealthy(false);
+    } else if (_prevAnyWedged) {
+        // Wedge just cleared: restore omega health (encoder re-armed → moving again).
+        odometry.setEncOmegaHealthy(true);
+    }
+    _prevAnyWedged = anyWedged;
 }
 
 // ---------------------------------------------------------------------------
@@ -174,13 +232,9 @@ void Robot::controlCollectSplitPhase(uint32_t now_ms, int /*pendingWheel*/)
 // to correctEKF() for EKF fusion.  Stores acceleration in HardwareState for
 // host telemetry via RobotState.
 //
-// Encoder-rate velocity (enc_v, enc_omega) is retrieved from the most recent
-// predict() call via Odometry::lastEncV()/lastEncOmega().  Design choice:
-// these are stored on Odometry rather than threaded through the cooperative
-// loop caller because predict() and otosCorrect() run on different loop phases
-// (enOdom vs enOtos), so passing them through the caller would require
-// HardwareState fields or Robot members anyway — no fewer coupling points.
-// Storing them on Odometry keeps the call sites unchanged.
+// Encoder-derived velocity is NOT fused here: as of 033-003 it is fused
+// unconditionally in Odometry::predict() every tick, so fusedV/fusedOmega stay
+// live even when this OTOS-gated path is skipped (lifted stand, dropout).
 // ---------------------------------------------------------------------------
 
 void Robot::otosCorrect(uint32_t now_ms)
@@ -278,14 +332,11 @@ void Robot::otosCorrect(uint32_t now_ms)
         vel.omega_rads = 0.0f;
     }
 
-    // Retrieve encoder-rate velocity from the most recent predict() tick.
-    float enc_v     = odometry.lastEncV();
-    float enc_omega = odometry.lastEncOmega();
-
+    // Encoder-derived velocity is fused unconditionally in Odometry::predict()
+    // every tick (033-003), so correctEKF() fuses only the OTOS observations.
     odometry.correctEKF(state.inputs, p.x, p.y,
                         p.h,
-                        vel.v_mmps, vel.omega_rads,
-                        enc_v, enc_omega);
+                        vel.v_mmps, vel.omega_rads);
 }
 
 // ---------------------------------------------------------------------------
@@ -411,8 +462,24 @@ void Robot::benchOtosTick(uint32_t now_ms)
 }
 
 // ---------------------------------------------------------------------------
-// isBenchOtosActive — returns true when NezhaHAL has the bench sensor active.
-// Always returns false in HOST_BUILD (MockHAL path).
+// setBenchOtosEnabled — enable/disable bench OTOS mode.
+//   Firmware: delegates to NezhaHAL::setOtosBench (swaps the active OTOS).
+//   HOST_BUILD: records the flag so the sim can observe the toggle.
+// ---------------------------------------------------------------------------
+
+void Robot::setBenchOtosEnabled(bool on)
+{
+#ifndef HOST_BUILD
+    auto* nh = static_cast<NezhaHAL*>(&hal);
+    nh->setOtosBench(on);
+#else
+    _simBenchOtosActive = on;
+#endif
+}
+
+// ---------------------------------------------------------------------------
+// isBenchOtosActive — returns true when the bench sensor is active.
+//   Firmware: NezhaHAL::isBenchMode().  HOST_BUILD: the recorded flag.
 // ---------------------------------------------------------------------------
 
 bool Robot::isBenchOtosActive() const
@@ -421,7 +488,7 @@ bool Robot::isBenchOtosActive() const
     auto* nh = static_cast<const NezhaHAL*>(&hal);
     return nh->isBenchMode();
 #else
-    return false;
+    return _simBenchOtosActive;
 #endif
 }
 

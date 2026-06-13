@@ -379,11 +379,28 @@ void MotionController::beginDistance(float leftMms, float rightMms,
     _activeCmd.setStopStyle(MotionCommand::StopStyle::SOFT);
     _activeCmd.setDoneEvt("EVT done D");
 
-    // Snapshot hardware state for MotionBaseline.
-    // After resetEncoderAccumulators() the accumulators are 0; Robot will
-    // also zero state.inputs.encLMm/R immediately after this call returns, so
-    // the baseline enc0 captured by MotionCommand::start() will be 0 — matching
-    // the DISTANCE stop evaluation which reads (encLMm + encRMm)/2 from HardwareState.
+    // Zero the software encoder mirror BEFORE snapshotting the baseline so that
+    // enc0 starts from 0, matching the freshly-reset hardware accumulators.
+    //
+    // 033-004 baseline-race fix: previously this zeroing happened only in
+    // Robot::distanceDrive() AFTER beginDistance() returned, so MotionCommand::
+    // start() below captured the PREVIOUS command's stale encoder average as
+    // enc0Mm.  A D following a TURN (with no ZERO enc between) could then
+    // instant-complete on the first evaluate: once distanceDrive() zeroed the
+    // mirror, traveled = |0 − staleEnc0| already exceeded targetMm.  Zeroing the
+    // mirror here makes enc0Mm and encDiff0Mm both 0 regardless of call order.
+    // Robot::distanceDrive() still calls resetEncoders() after this (re-zeroing
+    // the mirror plus resetting velocity baselines and the odometry snapshot).
+    if (_hwState) {
+        _hwState->encLMm = 0;
+        _hwState->encRMm = 0;
+    }
+
+    // Snapshot hardware state for MotionBaseline.  The encoder mirror was just
+    // zeroed above and the hardware accumulators were reset at the top of this
+    // function, so the baseline enc0/encDiff0 captured by MotionCommand::start()
+    // are both 0 — matching the DISTANCE stop evaluation which reads
+    // (encLMm + encRMm)/2 from HardwareState.
     HardwareState emptyState{};
     const HardwareState& inputs = _hwState ? *_hwState : emptyState;
     _activeCmd.start(inputs, now_ms);

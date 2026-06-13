@@ -1,7 +1,9 @@
 ---
-status: pending
+status: done
 resolution: refuted
 sprint: '033'
+tickets:
+- 033-005
 ---
 
 # Bench finding — "right encoder under-counts" — REFUTED (was a command-format misread)

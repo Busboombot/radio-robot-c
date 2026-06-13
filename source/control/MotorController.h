@@ -126,6 +126,16 @@ public:
     void resetStuckCounters();
 
     /**
+     * wheelWedgedL / wheelWedgedR — expose the per-wheel latch state (033-005e).
+     *
+     * Returns true from the tick the EVT enc_wedged latch fires until the encoder
+     * moves again (latch re-arms).  Used by Robot::controlCollectSplitPhase() to
+     * push the wedge state into Odometry so predict() can suppress phantom dTheta.
+     */
+    bool wheelWedgedL() const { return _wedgeEmittedL; }
+    bool wheelWedgedR() const { return _wedgeEmittedR; }
+
+    /**
      * getVelocitySourceFlags — always returns false for both wheels.
      *
      * The chip readSpeed (0x47) path was disabled in sprint 013 to fix
@@ -200,8 +210,17 @@ private:
 
     uint8_t  _stuckCountL;        // consecutive identical-while-commanded reads (L)
     uint8_t  _stuckCountR;        // consecutive identical-while-commanded reads (R)
-    bool     _wedgeEmittedL;      // latch: EVT already sent for this episode (L)
-    bool     _wedgeEmittedR;      // latch: EVT already sent for this episode (R)
+    bool     _wedgeEmittedL;      // latch: EVT already sent for this episode (L); exposed via wheelWedgedL() (033-005e)
+    bool     _wedgeEmittedR;      // latch: EVT already sent for this episode (R); exposed via wheelWedgedR() (033-005e)
+
+    // (033-005d) Arming grace: wedge detector does not arm until the wheel
+    // has moved at least once since the command started.  This prevents the
+    // spin-up lag of a drained battery from firing the detector prematurely
+    // (the sprint-032 bench run saw EVT enc_wedged in this exact regime).
+    // Latches clear on startDriveClean(), startDrive(), and stop(); set when
+    // the encoder value first differs from the start snapshot.
+    bool     _hasMovedL;          // true once left encoder has moved this episode
+    bool     _hasMovedR;          // true once right encoder has moved this episode
 
     // Optional I2CBus pointer for stats in EVT body.
     I2CBus*  _i2cBus;

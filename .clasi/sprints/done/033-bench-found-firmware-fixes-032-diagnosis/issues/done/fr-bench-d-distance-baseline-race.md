@@ -1,6 +1,8 @@
 ---
-status: pending
+status: done
 sprint: '033'
+tickets:
+- 033-004
 ---
 
 # D distance-stop baseline races the encoder reset — D after TURN can complete with zero motion

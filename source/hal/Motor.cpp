@@ -133,11 +133,57 @@ void Motor::resetEncoder()
     // Mirror TypeScript resetRelAngleValue(): snapshot the current raw
     // angle into the software offset so that subsequent reads return zero.
     //
-    // Use the atomic read path (request → 4 ms busy-wait → collect) to
-    // guarantee a valid reading.  readEncoderRaw() issues write+immediate-read
-    // with no inter-transaction delay and returns a stale/garbage value on the
-    // cooperative single-loop firmware (fix[014]: atomic encoder reset).
-    _encOffset += readEncoderAtomic();
+    // (033-005a) Median-of-3 snapshot + readback verification:
+    //   1. Take three atomic reads and use the median as the offset delta.
+    //      A single garbage read (e.g. the ~149 mm ZERO-enc offset corruption
+    //      seen on bench, Robot.cpp:123-125) cannot skew the median.
+    //   2. After updating _encOffset, verify that a fresh atomic read returns
+    //      |result| < kReadbackThreshold (≈ 2 encoder counts).  If not, retry
+    //      the whole snapshot up to kMaxRetries times.  This catches cases where
+    //      a corrupted offset causes subsequent reads to be non-zero even after
+    //      the reset (false "no motion" reads from the velocity loop).
+    //
+    // Cost: 3 atomic reads × ~8 ms each = ~24 ms per successful reset;
+    //       up to kMaxRetries+1 attempts (rare: only on genuine I2C garbage).
+    static constexpr int     kMaxRetries       = 2;
+    static constexpr int32_t kReadbackThreshold = 2;  // tenths of degrees ≈ <1 mm
+
+    for (int attempt = 0; attempt <= kMaxRetries; ++attempt) {
+        // Median-of-3: take three reads and sort to find the middle value.
+        int32_t s0 = readEncoderAtomic();
+        int32_t s1 = readEncoderAtomic();
+        int32_t s2 = readEncoderAtomic();
+
+        // Three-element median (branchless sort not available in C++11 without
+        // algorithm; use explicit comparisons that the compiler inlines well).
+        int32_t lo = s0, mid = s1, hi = s2;
+        if (lo > hi) { int32_t tmp = lo; lo = hi; hi = tmp; }
+        if (lo > mid) { int32_t tmp = lo; lo = mid; mid = tmp; }
+        if (mid > hi) { mid = hi; }
+        int32_t snapshot = mid;
+
+        _encOffset += snapshot;
+
+        // Readback check: after the offset update, a fresh read should be ≈ 0.
+        int32_t readback = readEncoderAtomic();
+        if (readback >= -kReadbackThreshold && readback <= kReadbackThreshold) {
+            // Clean reset — done.
+            return;
+        }
+        // Readback non-zero: the offset snapshot was corrupted.  Undo this
+        // attempt (restore _encOffset) and retry.
+        _encOffset -= snapshot;
+    }
+    // All retries exhausted: apply the last snapshot anyway so the encoder is
+    // at least approximately zero rather than leaving it completely uncorrected.
+    int32_t s0 = readEncoderAtomic();
+    int32_t s1 = readEncoderAtomic();
+    int32_t s2 = readEncoderAtomic();
+    int32_t lo = s0, mid = s1, hi = s2;
+    if (lo > hi) { int32_t tmp = lo; lo = hi; hi = tmp; }
+    if (lo > mid) { int32_t tmp = lo; lo = mid; mid = tmp; }
+    if (mid > hi) { mid = hi; }
+    _encOffset += mid;
 }
 
 int32_t Motor::readEncoderAtomic() const
