@@ -180,7 +180,12 @@ void sim_tick(void* h, uint32_t now_ms)
     SimHandle* s = static_cast<SimHandle*>(h);
     // Keep the injected clock in sync so Robot::systemTime() returns sim time.
     g_sim_now_ms = now_ms;
-    s->hal.tick(now_ms);
+    // (034-005) Upgraded to two-arg overload so the HAL plant receives the
+    // current actuator commands.  Ordering invariant preserved: this call runs
+    // BEFORE controlCollectSplitPhase so the encoders it reads are already
+    // updated.  loopTickOnce will call hal.tick(now,cmds) again with the same
+    // timestamp; MockHAL's dt==0 guard makes that second call a no-op.
+    s->hal.tick(now_ms, s->robot.state.commands);
     s->robot.controlCollectSplitPhase(now_ms, 0);
 
     // Ensure _ts has the current reply sink before each tick so that watchdog
@@ -489,7 +494,10 @@ int sim_tick_collect_tlm(void* h, uint32_t start_ms, uint32_t total_ms,
     uint32_t end_ms = start_ms + total_ms;
     for (uint32_t t = start_ms; t < end_ms; t += step_ms) {
         g_sim_now_ms = t;
-        s->hal.tick(t);
+        // (034-005) Upgraded to two-arg overload — same ordering invariant as
+        // sim_tick: plant runs before controlCollectSplitPhase; loopTickOnce's
+        // subsequent hal.tick(t,cmds) is idempotent via the dt==0 guard.
+        s->hal.tick(t, s->robot.state.commands);
         s->robot.controlCollectSplitPhase(t, 0);
 
         s->_ts.activeFn    = storeReply;

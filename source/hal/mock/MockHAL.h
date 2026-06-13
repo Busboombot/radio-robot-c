@@ -59,6 +59,18 @@ public:
     void begin() override {}
     void tick(uint32_t now_ms) override;
 
+    // Actuator-state tick (034-005): satisfies the Hardware base-class overload
+    // that delivers commanded motor velocities to the HAL plant.  MockHAL's
+    // plant is already driven by the single-arg tick(); this overload delegates
+    // to it so the dt-guard makes it idempotent when called again from
+    // loopTickOnce with the same timestamp (sim_api calls this before
+    // controlCollectSplitPhase; loopTickOnce calls it after driveAdvance with
+    // the same now — the dt==0 guard skips the second integration).
+    void tick(uint32_t now_ms, const MotorCommands& cmds) override {
+        (void)cmds;  // MockHAL plant reads motor objects directly; cmds unused
+        tick(now_ms);
+    }
+
     // Test accessors ---------------------------------------------------------
     MockMotor&       motorLMock()    { return _motorL; }
     MockMotor&       motorRMock()    { return _motorR; }
