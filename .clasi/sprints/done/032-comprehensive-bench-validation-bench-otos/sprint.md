@@ -1,9 +1,13 @@
 ---
 id: '032'
 title: Comprehensive bench validation (Bench OTOS)
-status: ticketing
+status: done
 branch: sprint/032-comprehensive-bench-validation-bench-otos
-use-cases: [SUC-001, SUC-002, SUC-003, SUC-004]
+use-cases:
+- SUC-001
+- SUC-002
+- SUC-003
+- SUC-004
 issues: []
 ---
 <!-- CLASI: Before changing code or making plans, review the SE process in CLAUDE.md -->
