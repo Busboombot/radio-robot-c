@@ -16,3 +16,26 @@ buildcache.json
 *.pyc
 .venv
 __pycache__
+
+# --- CMake / generated build directories ---
+# Build dirs created by tooling/agents: build/, build_prod2/, build_prod_test/, etc.
+# (build_*/ uses an underscore so it never matches utils/cmake/buildtools/ sources)
+build_*/
+cmake-build-*/
+
+# CMake-generated files, wherever they land in the tree.
+# These names are always generated and are never checked-in source
+# (real .cmake modules live under utils/cmake/ and are unaffected).
+CMakeCache.txt
+CMakeFiles/
+CMakeScripts/
+CMakeRuleHashes.txt
+cmake_install.cmake
+cmake_uninstall.cmake
+CTestTestfile.cmake
+Makefile.cmake
+TargetDirectories.txt
+install_manifest.txt
+compile_commands.json
+DEPFILE
+_deps/
