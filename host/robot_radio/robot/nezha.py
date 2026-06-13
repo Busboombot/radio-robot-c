@@ -49,7 +49,7 @@ from typing import Any, Generator
 
 from robot_radio.nav.pose import Pose
 from robot_radio.robot.robot import Robot
-from robot_radio.robot.protocol import NezhaProtocol, TLMFrame, ParsedResponse, parse_tlm
+from robot_radio.robot.protocol import NezhaProtocol, TLMFrame, ParsedResponse, parse_tlm, parse_response
 from robot_radio.robot.robot_state import RobotState
 
 
@@ -231,23 +231,147 @@ class Nezha(Robot):
 
         return self.encoders
 
+    def _run_until_done(
+        self, verb: str, on_tick: Any, timeout_s: float
+    ) -> str:
+        """Private tick loop for callback-driven go_to / turn.
+
+        Reads lines from ``self._proto._conn.read_lines(duration_ms=50)``,
+        updates robot state from each TLM frame, and calls ``on_tick(self)``
+        after each update.
+
+        Returns one of: ``"done"``, ``"safety_stop"``, ``"aborted"``,
+        ``"timeout"``.
+
+        Termination rules (in evaluation order per iteration):
+        1. ``on_tick`` returns ``False`` → send ``X``, disable stream,
+           return ``"aborted"``.
+        2. ``EVT done <verb>`` arrives → disable stream, return ``"done"``.
+        3. ``EVT safety_stop`` arrives → disable stream, return
+           ``"safety_stop"``.
+        4. Wall-clock ``timeout_s`` exceeded → send ``X``, disable stream,
+           return ``"timeout"``.
+        5. No TLM arrived and keepalive interval elapsed → send ``+``
+           keepalive (safety belt; the SerialConnection daemon also does
+           this).
+        """
+        _KEEPALIVE_INTERVAL = 0.200  # seconds between keepalives
+        deadline = time.monotonic() + timeout_s
+        last_keepalive = time.monotonic()
+        had_tlm = False
+
+        while time.monotonic() < deadline:
+            lines = self._proto._conn.read_lines(duration_ms=50)
+            had_tlm = False
+
+            for raw_line in lines:
+                r = parse_response(raw_line)
+                if r is None:
+                    continue
+
+                if r.tag == "TLM":
+                    tlm = parse_tlm(raw_line)
+                    if tlm is not None:
+                        self._apply_tlm(tlm)
+                        had_tlm = True
+                        result = on_tick(self)
+                        if result is False:
+                            self._proto._conn.send_fast("X")
+                            self._proto.stream(0)
+                            return "aborted"
+
+                elif r.tag == "EVT":
+                    tokens = r.tokens
+                    if tokens and tokens[0] == "done":
+                        if len(tokens) < 2 or tokens[1] == verb:
+                            self._proto.stream(0)
+                            return "done"
+                    elif tokens and tokens[0] == "safety_stop":
+                        self._proto.stream(0)
+                        return "safety_stop"
+
+            # Keepalive safety belt (daemon normally covers this).
+            now = time.monotonic()
+            if not had_tlm and (now - last_keepalive) >= _KEEPALIVE_INTERVAL:
+                self._proto._conn.send_fast("+")
+                last_keepalive = now
+
+        # Deadline exceeded.
+        self._proto._conn.send_fast("X")
+        self._proto.stream(0)
+        return "timeout"
+
     def go_to(self, x_mm: int, y_mm: int, speed_mms: int,
               on_tick: Any = None,
               timeout_s: float = 15.0) -> tuple[int, int, str]:
-        """Blocking go-to (G command). Returns (left_enc_mm, right_enc_mm, outcome).
+        """Blocking or callback-driven go-to (G command).
 
-        ``on_tick`` is accepted for ABC compatibility but ignored in the
-        blocking implementation (pass ``None`` to use the default blocking
-        behaviour).  ``timeout_s`` caps the total wait time.
+        Returns ``(left_enc_mm, right_enc_mm, outcome)`` where ``outcome``
+        is one of ``"done"``, ``"safety_stop"``, or ``"timeout"``.
 
-        outcome is one of "done", "safety_stop", or "timeout".
+        Parameters
+        ----------
+        x_mm, y_mm:
+            Target position in robot-relative mm (forward, left).
+        speed_mms:
+            Cruise speed in mm/s (clamped to ≥ 1).
+        on_tick:
+            When ``None`` (default), the method blocks using
+            ``wait_for_evt_done`` — identical to the pre-sprint behaviour.
+            No STREAM is enabled.  This is the path used by Navigator.
+
+            When a callable is provided, ``STREAM 80`` is enabled before
+            issuing ``G``, and ``on_tick(robot)`` is called after each TLM
+            tick.  Returning ``False`` from ``on_tick`` aborts the move
+            (sends ``X``, outcome ``"aborted"``).
+        timeout_s:
+            Maximum wall-clock seconds to wait.
         """
         speed = max(abs(speed_mms), 1)
-        self._proto.go_to(x_mm, y_mm, speed)
-        timeout_ms = int(timeout_s * 1000)
-        outcome = self._proto.wait_for_evt_done("G", timeout_ms)
-        time.sleep(0.2)
-        return self.encoders[0], self.encoders[1], outcome
+        if on_tick is None:
+            # Back-compat blocking path — behaviour unchanged from pre-sprint.
+            self._proto.go_to(x_mm, y_mm, speed)
+            timeout_ms = int(timeout_s * 1000)
+            outcome = self._proto.wait_for_evt_done("G", timeout_ms)
+            time.sleep(0.2)
+            return self.encoders[0], self.encoders[1], outcome
+        else:
+            self._proto.stream(80)
+            self._proto.go_to(x_mm, y_mm, speed)
+            outcome = self._run_until_done("G", on_tick, timeout_s)
+            return self.encoders[0], self.encoders[1], outcome
+
+    def turn(self, heading_cdeg: int, on_tick: Any = None,
+             eps_cdeg: int | None = None,
+             timeout_s: float = 10.0) -> str:
+        """Rotate to an absolute heading (TURN command).
+
+        Returns outcome string: ``"done"``, ``"safety_stop"``,
+        ``"aborted"``, or ``"timeout"``.
+
+        Parameters
+        ----------
+        heading_cdeg:
+            Target heading in centi-degrees.  Positive = CCW (matches OTOS
+            CCW convention).  Range −18000 … +18000.
+        on_tick:
+            When ``None`` (default), blocks using ``wait_for_evt_done``.
+            When a callable, enables ``STREAM 80``, issues ``TURN``, and
+            calls ``on_tick(robot)`` after each TLM tick.  Return ``False``
+            from ``on_tick`` to abort.
+        eps_cdeg:
+            Optional heading tolerance in centi-degrees (default 300 = 3°).
+        timeout_s:
+            Maximum wall-clock seconds to wait.
+        """
+        if on_tick is None:
+            self._proto.turn(heading_cdeg, eps_cdeg=eps_cdeg)
+            timeout_ms = int(timeout_s * 1000)
+            return self._proto.wait_for_evt_done("TURN", timeout_ms)
+        else:
+            self._proto.stream(80)
+            self._proto.turn(heading_cdeg, eps_cdeg=eps_cdeg)
+            return self._run_until_done("TURN", on_tick, timeout_s)
 
     def read_encoders(self) -> tuple[int, int]:
         """Return cached encoder state (updated by streaming TLM frames)."""
