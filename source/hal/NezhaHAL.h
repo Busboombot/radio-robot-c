@@ -65,8 +65,9 @@ public:
     // --- Bench OTOS swap (sprint 031) ---
 
     // Redirect the active OTOS pointer to the bench sensor (on=true) or
-    // restore the real sensor (on=false).
-    void setOtosBench(bool on) {
+    // restore the real sensor (on=false).  Overrides Hardware::setOtosBench
+    // (034-003).
+    void setOtosBench(bool on) override {
         _otosActive = on
             ? static_cast<IOtosSensor*>(&_benchOtos)
             : static_cast<IOtosSensor*>(&_otos);
@@ -75,8 +76,9 @@ public:
     // Direct accessor to the BenchOtosSensor for tick() calls and noise tuning.
     BenchOtosSensor* benchOtosPtr() { return &_benchOtos; }
 
-    // Returns true when the bench sensor is currently active.
-    bool isBenchMode() const {
+    // Returns true when the bench sensor is currently active.  Overrides
+    // Hardware::isBenchMode (034-003).
+    bool isBenchMode() const override {
         return _otosActive == static_cast<const IOtosSensor*>(&_benchOtos);
     }
 

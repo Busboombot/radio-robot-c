@@ -74,6 +74,12 @@ public:
     // Set robot trackwidth (mm) so ExactPoseTracker can integrate correctly.
     void setTrackwidth(float mm) { _trackwidthMm = mm; }
 
+    // Bench-OTOS swap (034-003): MockHAL tracks the toggle so that host-sim
+    // tests can round-trip DBG OTOS BENCH enable/disable via the Hardware
+    // interface without a NezhaHAL downcast.
+    void setOtosBench(bool on) override { _benchMode = on; }
+    bool isBenchMode() const   override { return _benchMode; }
+
 private:
     MockMotor        _motorL;
     MockMotor        _motorR;
@@ -85,4 +91,5 @@ private:
     uint32_t         _lastTickMs   = 0;
     ExactPoseTracker _exactPose;
     float            _trackwidthMm = 0.0f;
+    bool             _benchMode    = false;  // bench-OTOS toggle (034-003)
 };

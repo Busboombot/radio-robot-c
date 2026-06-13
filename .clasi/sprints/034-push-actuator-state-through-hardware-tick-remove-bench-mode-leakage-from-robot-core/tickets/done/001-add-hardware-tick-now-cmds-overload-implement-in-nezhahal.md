@@ -1,7 +1,7 @@
 ---
 id: '001'
 title: Add Hardware::tick(now, cmds) overload; implement in NezhaHAL
-status: open
+status: done
 use-cases:
 - SUC-034-002
 depends-on: []

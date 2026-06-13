@@ -1,7 +1,7 @@
 ---
 id: '002'
 title: Replace benchOtosTick in loopTickOnce with guarded hal.tick(now, cmds)
-status: open
+status: done
 use-cases:
 - SUC-034-001
 - SUC-034-002

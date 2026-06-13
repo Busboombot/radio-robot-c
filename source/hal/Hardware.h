@@ -48,4 +48,14 @@ public:
         (void)now_ms;
         (void)cmds;
     }
+
+    // Bench-OTOS swap (034-003): redirect otos() to the bench sensor (on=true)
+    // or restore the real sensor (on=false).  Default no-op for HALs that do
+    // not support bench mode (MockHAL uses the overrides below; NezhaHAL
+    // overrides with the real swap).
+    virtual void setOtosBench(bool on) { (void)on; }
+
+    // Returns true when the bench OTOS sensor is currently active (034-003).
+    // Default false for HALs that do not support bench mode.
+    virtual bool isBenchMode() const { return false; }
 };

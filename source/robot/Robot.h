@@ -155,25 +155,11 @@ struct Robot {
         DebugCommandable* dbg   = nullptr,
         LoopScheduler*    sched = nullptr) const;
 
-    // ---- Bench OTOS tick (sprint 031) ----
-    // Feed commanded velocity into BenchOtosSensor each control tick.
-    // No-op (fast return) when bench mode is off or hal is not NezhaHAL.
-    void benchOtosTick(uint32_t now_ms);
-
-    // Enable/disable bench OTOS mode. Firmware delegates to NezhaHAL::setOtosBench;
-    // HOST_BUILD records _simBenchOtosActive so the sim can observe the toggle.
-    void setBenchOtosEnabled(bool on);
-
-    // Returns true when the bench sensor is selected (NezhaHAL::isBenchMode in
-    // firmware; the recorded flag in HOST_BUILD).
-    bool isBenchOtosActive() const;
-
     // ---- Gating state that pairs with the kept methods ----
     uint32_t _lastTlmMs     = 0;
     uint32_t _lastActiveMs  = 0;
     uint32_t _lastControlMs = 0;
     bool     _prevDriving   = false;
-    bool     _simBenchOtosActive = false;  // HOST_BUILD bench-mode mirror (033-002)
 
     // ---- Wedge-state tracking for enc-omega gate (033-005e) ----
     // Tracks whether a wheel was wedged on the previous tick so Robot can
@@ -214,10 +200,6 @@ private:
     mutable CfgCtx      _cfgCtx    = {};  // GET / SET
     mutable RobotSysCtx _sysCtx    = {};  // HELLO, PING, ECHO, ID, VER, …, RF
     mutable MotionCtx   _motionCtx = {};  // S/T/D/G/R/TURN/RT/VW/X/STOP handlers (sprint 026-002)
-
-    // Bench OTOS tick timestamp — for signed-delta dt computation.
-    // Initialized to 0; first benchOtosTick() call passes dt=0 to tick() (no-op).
-    uint32_t _lastBenchTickMs = 0;
 
     // CommandQueue forward declaration for setMotionQueue.
     // (Included via MotionCommandHandlers.h → CommandQueue.h.)

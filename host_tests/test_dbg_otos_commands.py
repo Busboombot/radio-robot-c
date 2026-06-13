@@ -163,8 +163,8 @@ def test_dbg_otos_query_zero_at_start():
     """At startup all pose fields are zero."""
     with Sim() as s:
         r = send(s, "DBG OTOS")
-        # Check that ideal, otos, fused all contain 0.0 (or similar zero).
-        # Parse format: ideal=0.0,0.0,0.0000 otos=0.0,0.0,0.0000 fused=0.0,0.0,0.0000
+        # F1 fix (034-004): integer format: ideal=0,0,0 otos=0,0,0 fused=0,0,0
+        # 'ideal=0' and 'fused=0' are still present in 'ideal=0,0,0' / 'fused=0,0,0'.
         assert "ideal=0" in r, f"Expected 'ideal=0...' at start, got: {repr(r)}"
         assert "fused=0" in r, f"Expected 'fused=0...' at start, got: {repr(r)}"
 
@@ -184,4 +184,73 @@ def test_dbg_otos_not_dispatched_as_bench():
         )
         assert "otos bench=" not in r, (
             f"DBG OTOS was incorrectly dispatched to BENCH handler: {repr(r)}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# F1 integer format — 034-004 new host sim test
+# ---------------------------------------------------------------------------
+
+def test_dbg_otos_query_integer_format_non_zero_fused():
+    """DBG OTOS reply has integer (not float) format; fused= is non-zero when
+    OTOS pose has been injected and fused via otosCorrect().
+
+    034-004 (F1 fix): CODAL/newlib-nano has no float printf; the reply was
+    changed to scaled integers (mm for position, cdeg for heading).
+    This test verifies:
+      1. The reply does NOT contain '.' characters in the numeric fields
+         (integer-only format).
+      2. The fused= field is non-zero after a known OTOS pose is injected
+         and fused — confirms the integer-format path produces real numbers,
+         not the empty strings that %f produced on hardware.
+    """
+    import ctypes
+    import math
+
+    with Sim() as s:
+        # Inject a known OTOS pose: x=500 mm, y=-100 mm, h=pi/2 rad (90°).
+        # Enable OTOS fusion so otosCorrect() fuses the injected pose into
+        # state.inputs.otosX/Y/H (the "fused" fields that DBG OTOS reads).
+        s._lib.sim_set_otos_pose(
+            s._h,
+            ctypes.c_float(500.0),
+            ctypes.c_float(-100.0),
+            ctypes.c_float(math.pi / 2),
+        )
+        # enable_otos_model + otos_fusion marks MockOtosSensor initialized and
+        # enables the otosCorrect() EKF path each tick.
+        s._lib.sim_enable_otos_model(s._h)
+        s._lib.sim_set_otos_fusion(s._h, ctypes.c_int(1))
+
+        # Advance one tick so loopTickOnce calls otosCorrect and fuses the pose.
+        s.tick_for(24)
+
+        r = send(s, "DBG OTOS")
+
+        # Field-presence sanity.
+        assert "fused=" in r, f"Expected 'fused=' in reply, got: {repr(r)}"
+
+        # F1 check: the pose triple for fused must not contain a decimal point.
+        # Locate 'fused=' and check the triple that follows.
+        fused_idx = r.find("fused=")
+        assert fused_idx >= 0, f"'fused=' not found in: {repr(r)}"
+        triple_start = fused_idx + len("fused=")
+        # The triple ends at the next space or end-of-line.
+        triple_end = r.find(" ", triple_start)
+        if triple_end < 0:
+            triple_end = len(r)
+        fused_triple = r[triple_start:triple_end]
+        assert "." not in fused_triple, (
+            f"fused= triple contains '.' (float format, not integer): "
+            f"fused_triple={repr(fused_triple)}, full reply={repr(r)}"
+        )
+
+        # Non-zero check: after injecting x=500 the fused x should be close to 500.
+        # Extract the first integer in the triple.
+        parts = fused_triple.split(",")
+        assert len(parts) >= 3, f"fused triple should have 3 parts, got: {repr(fused_triple)}"
+        fused_x_mm = int(parts[0])
+        assert abs(fused_x_mm) > 10, (
+            f"fused_x should be non-zero after pose injection, got {fused_x_mm} mm; "
+            f"full reply: {repr(r)}"
         )
