@@ -47,9 +47,6 @@ def __getattr__(name: str):
     if name == "Navigator":
         from robot_radio.nav.navigator import Navigator
         return Navigator
-    if name == "PurePursuitTracker":
-        from robot_radio.controllers.pure_pursuit import PurePursuitTracker
-        return PurePursuitTracker
     if name == "QBotPro":
         from robot_radio.robot.cutebot import QBotPro
         return QBotPro

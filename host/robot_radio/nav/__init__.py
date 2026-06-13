@@ -3,11 +3,13 @@
 Re-exports the public navigation API so callers can use:
 
     from robot_radio.nav import Navigator, NavParams, Pose, Waypoint, PoseAlign
+    from robot_radio.nav import camera_goto
 """
 
 from robot_radio.nav.nav_params import NavParams
 from robot_radio.nav.pose import Pose, Waypoint
 from robot_radio.nav.pose_align import align_otos_to_camera as PoseAlign
+from robot_radio.nav import camera_goto
 
 
 def __getattr__(name: str):

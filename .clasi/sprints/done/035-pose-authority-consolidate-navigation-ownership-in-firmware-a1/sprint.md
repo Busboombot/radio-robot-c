@@ -1,7 +1,7 @@
 ---
 id: '035'
 title: 'Pose authority: consolidate navigation ownership in firmware (A1)'
-status: planning-docs
+status: done
 branch: sprint/035-pose-authority-consolidate-navigation-ownership-in-firmware-a1
 use-cases:
 - SUC-001

@@ -24,6 +24,11 @@ from robot_radio.robot.connection import (
 from robot_radio.sensors.color import nezha_classifier
 from robot_radio.config.robot_config import get_robot_config, match_robot_by_id
 from robot_radio.calibration.helpers import scale_to_int8 as _scale_to_int8
+from robot_radio.nav.camera_goto import (
+    crawl_drive_distance as _crawl_drive_distance_impl,
+    spin_to_yaw_camera as _spin_to_yaw_camera_impl,
+    go_to_world_camera as _go_to_world_camera_impl,
+)
 
 _verbose = False
 
@@ -559,44 +564,12 @@ def _turn_command(angle_deg: float, speed_mms: int,
 
 def _crawl_drive_distance(robot: QBotPro, speed_mms: int,
                           target_mm: int) -> tuple[int, int]:
-    """Pulse-train slow drive when |speed| is below the firmware MIN clamp.
+    """Thin wrapper — delegates to nav.camera_goto.crawl_drive_distance.
 
-    Each pulse is a short T command at CRAWL_PULSE_SPEED for CRAWL_PULSE_MS,
-    followed by `delay_ms` of coast.  We choose `delay_ms` so the average
-    speed across pulse+delay matches `speed_mms`, clamped at the calibration
-    floor (delay ≥ CRAWL_DELAY_MS_MIN).
-
-    Stops after the number of pulses needed to cover `target_mm` at the
-    calibrated mm-per-pulse.  Returns the firmware's final encoder reading.
+    Logic extracted to nav/camera_goto.py (ticket 035-001).
     """
-    eff_v = abs(speed_mms)
-    if eff_v < 1:
-        raise SystemExit("Error: crawl speed must be > 0")
-    target_mm = abs(target_mm)
-    if target_mm < 1:
-        raise SystemExit("Error: crawl distance must be > 0")
-
-    # Cycle period to hit the requested effective speed.
-    cycle_ms = max(CRAWL_PULSE_MS + CRAWL_DELAY_MS_MIN,
-                   int(round(CRAWL_MM_PER_PULSE * 1000.0 / eff_v)))
-    delay_ms = cycle_ms - CRAWL_PULSE_MS
-    pulses = max(1, int(round(target_mm / CRAWL_MM_PER_PULSE)))
-    sign = 1 if speed_mms >= 0 else -1
-    pulse_v = sign * CRAWL_PULSE_SPEED
-
-    # Cap the actual effective speed reported back if we hit the floor.
-    eff_actual = CRAWL_MM_PER_PULSE * 1000.0 / cycle_ms
-
-    _log(f"crawl mode: {pulses} pulses × T+{pulse_v}+{pulse_v}+{CRAWL_PULSE_MS} "
-         f"(delay {delay_ms} ms, eff ≈ {eff_actual:.1f} mm/s, "
-         f"target {target_mm} mm ≈ {pulses * CRAWL_MM_PER_PULSE:.1f} mm)")
-
-    enc_l, enc_r = 0, 0
-    for i in range(pulses):
-        enc_l, enc_r = robot.speed_for_time(pulse_v, pulse_v, CRAWL_PULSE_MS)
-        if delay_ms > 0:
-            time.sleep(delay_ms / 1000.0)
-    return enc_l, enc_r
+    return _crawl_drive_distance_impl(robot, speed_mms, target_mm,
+                                      log=_log)
 
 
 # ── Commands ──────────────────────────────────────────────────────────
@@ -854,86 +827,6 @@ def cmd_turn(args):
         print(f"done: turned {args.degrees:+.0f}° (RT, encoder dead-reckoning)")
 
 
-def _spin_to_world_yaw(proto, field, tag_id, target_deg, speed, tol_deg):
-    """Closed-loop streaming spin to an absolute world yaw (deg).
-
-    Reads the robot tag yaw from `field` (the camera is ground truth, so this
-    is slip-immune), computes the shortest signed delta to `target_deg`, then
-    drives a streaming-S spin with velocity-projected stop. Caller owns the
-    open camera/field and serial connection; this only spins.
-
-    Returns the final signed yaw error in degrees, or None if the camera
-    never saw the robot tag.
-    """
-    import math as _math
-    from robot_radio.io.calibrate import _get_tag_yaw
-
-    # Control parameters (mirror calibrate.py)
-    TICK_S = 0.03
-    WATCHDOG_MS = 500
-    DELTA_MAX_DEG = 30.0
-    MAX_SECS = 15.0
-    COAST_S = 0.10   # empirical coast time after proto.stop() (tuned 2026-05-28)
-
-    # Read current yaw → compute shortest signed delta to target.
-    cur_yaw_rad = _get_tag_yaw(field, tag_id, timeout_s=3.0)
-    if cur_yaw_rad is None:
-        return None
-    cur_deg = _math.degrees(cur_yaw_rad)
-    raw_diff = target_deg - cur_deg
-    diff = ((raw_diff + 180.0) % 360.0) - 180.0
-    print(f"current={cur_deg:+.1f}°  target={target_deg:+.1f}°  "
-          f"need={diff:+.1f}° ({'CCW' if diff > 0 else 'CW'})")
-
-    # v2: no set_watchdog verb; use SET sTimeout=<ms> to configure firmware watchdog.
-    proto.set_config(sTimeout=WATCHDOG_MS)
-    prev_cam = cur_yaw_rad
-    prev_time = time.monotonic()
-    total_cam_deg = 0.0
-    ang_vel = 0.0
-    t_start = prev_time
-
-    while True:
-        cur_cam = _get_tag_yaw(field, tag_id, timeout_s=0.10)
-        now = time.monotonic()
-        if cur_cam is not None:
-            raw = cur_cam - prev_cam
-            d = ((raw + _math.pi) % (2.0 * _math.pi)) - _math.pi
-            d_deg = _math.degrees(d)
-            dt = now - prev_time
-            if abs(d_deg) > DELTA_MAX_DEG:
-                prev_cam = cur_cam
-                prev_time = now
-            elif dt > 0:
-                ang_vel = 0.6 * ang_vel + 0.4 * (d_deg / dt)
-                total_cam_deg += d_deg
-                prev_cam = cur_cam
-                prev_time = now
-
-        remaining = diff - total_cam_deg
-        projected = total_cam_deg + ang_vel * COAST_S
-        projected_err = diff - projected
-
-        if abs(projected_err) <= tol_deg and abs(ang_vel) > 5.0:
-            proto.stop()
-            time.sleep(max(COAST_S * 1.5, 0.4))
-            break
-        if time.monotonic() - t_start > MAX_SECS:
-            proto.stop()
-            print(f"WARNING: hit {MAX_SECS}s timeout; not at target")
-            break
-
-        direction = 1 if remaining > 0 else -1
-        proto.drive(-direction * speed, direction * speed)
-        time.sleep(TICK_S)
-
-    final_cam = _get_tag_yaw(field, tag_id, timeout_s=2.0)
-    if final_cam is None:
-        return None
-    final_deg = _math.degrees(final_cam)
-    return ((target_deg - final_deg + 180.0) % 360.0) - 180.0
-
-
 def cmd_turnto(args):
     """Closed-loop turn to an absolute world yaw using the aprilcam daemon.
 
@@ -948,6 +841,8 @@ def cmd_turnto(args):
         rogo turnto 0     # face world-CCW zero (which is +Y per aprilcam)
         rogo turnto 90    # face +X
         rogo turnto -90   # face -X
+
+    Control logic lives in nav.camera_goto.spin_to_yaw_camera (ticket 035-001).
     """
     from aprilcam.config import Config
     from aprilcam.client.control import DaemonControl
@@ -987,7 +882,8 @@ def cmd_turnto(args):
         return _daemon_read_pose(dc, cam, tag_id, timeout_s=timeout_s)
 
     try:
-        err = _daemon_spin_to_yaw(proto, read_pose, target_deg, speed, tol_deg)
+        err = _spin_to_yaw_camera_impl(proto, read_pose, target_deg, speed, tol_deg,
+                                       log=_log)
         if err is None:
             sys.exit(f"Error: daemon could not see robot tag {tag_id}.")
         print(f"final error={err:+.1f}°  (target={target_deg:+.1f}°)")
@@ -1021,59 +917,6 @@ def _daemon_read_pose(dc, cam, tag_id, timeout_s=2.0):
     return None
 
 
-def _daemon_spin_to_yaw(proto, read_pose, target_deg, speed, tol_deg,
-                        max_secs=8.0):
-    """Velocity-projected closed-loop spin to an absolute world yaw (deg).
-
-    Same convergent control law as `turnto` (`_spin_to_world_yaw`), but reads
-    yaw from the aprilcam daemon via `read_pose()` (a callable returning
-    (x, y, yaw_rad) or None). Returns the final signed yaw error in degrees,
-    or None if the daemon never reported the robot.
-    """
-    import math as _math
-    COAST_S = 0.10
-    p = read_pose(3.0)
-    if p is None:
-        return None
-    cur_deg = _math.degrees(p[2])
-    diff = ((target_deg - cur_deg + 180.0) % 360.0) - 180.0
-    # v2: no set_watchdog verb; use SET sTimeout=<ms> to configure firmware watchdog.
-    proto.set_config(sTimeout=500)
-    prev_cam = p[2]
-    prev_t = time.monotonic()
-    total = 0.0
-    ang_vel = 0.0
-    t0 = prev_t
-    while True:
-        p = read_pose(0.2)
-        now = time.monotonic()
-        if p is not None:
-            d = ((p[2] - prev_cam + _math.pi) % (2.0 * _math.pi)) - _math.pi
-            d_deg = _math.degrees(d)
-            dt = now - prev_t
-            if abs(d_deg) <= 30.0 and dt > 0:
-                ang_vel = 0.6 * ang_vel + 0.4 * (d_deg / dt)
-                total += d_deg
-            prev_cam = p[2]
-            prev_t = now
-        remaining = diff - total
-        projected_err = diff - (total + ang_vel * COAST_S)
-        if abs(projected_err) <= tol_deg and abs(ang_vel) > 5.0:
-            proto.stop()
-            time.sleep(max(COAST_S * 1.5, 0.4))
-            break
-        if now - t0 > max_secs:
-            proto.stop()
-            break
-        direction = 1 if remaining > 0 else -1
-        proto.drive(-direction * speed, direction * speed)
-        time.sleep(0.03)
-    p = read_pose(1.5)
-    if p is None:
-        return None
-    return ((target_deg - _math.degrees(p[2]) + 180.0) % 360.0) - 180.0
-
-
 def cmd_goto(args):
     """Turn to face an absolute world point, then drive there (closed-loop).
 
@@ -1092,8 +935,9 @@ def cmd_goto(args):
         the robot's forward direction in the daemon frame is (-sinθ, cosθ),
         i.e. world motion_dir = tag_yaw + 90°. So to head toward a point at
         bearing φ = atan2(dy, dx), the required tag yaw is φ - 90°.
+
+    Control logic lives in nav.camera_goto.go_to_world_camera (ticket 035-001).
     """
-    import math as _math
     from aprilcam.config import Config
     from aprilcam.client.control import DaemonControl
     from robot_radio.robot.protocol import NezhaProtocol
@@ -1123,109 +967,16 @@ def cmd_goto(args):
         sys.exit("Error: aprilcam daemon reports no cameras.")
     cam = cams[0]
 
-    def _wrap(a):
-        return (a + _math.pi) % (2.0 * _math.pi) - _math.pi
-
     def read_pose(timeout_s=1.0):
         return _daemon_read_pose(dc, cam, tag_id, timeout_s=timeout_s)
 
-    # Control parameters.
-    TICK_S = 0.05
-    WATCHDOG_MS = 800
-    AIM_GATE_DEG = gate_deg       # turn in place (convergent spin) above this
-    REAIM_GATE_DEG = gate_deg * 1.8  # abort a forward burst if drift exceeds this
-    SPIN_TOL_DEG = 4.0
-    STEER_KP = 1.0                # gentle in-burst steering (frac per rad)
-    SLOW_RADIUS_CM = 18.0         # ramp cruise down within this of target
-    MIN_DRIVE = 70               # mm/s floor (above motor deadband)
-    BURST_MAX_S = 1.2
-
     try:
-        p = read_pose(3.0)
-        if p is None:
-            sys.exit(f"Error: daemon could not see robot tag {tag_id} "
-                     "(calibrated). Is the playfield calibrated and the robot "
-                     "in view?")
-        rx, ry, yaw = p
-        d0 = _math.hypot(target_x - rx, target_y - ry)
-        print(f"start: robot=({rx:.1f}, {ry:.1f}) yaw={_math.degrees(yaw):+.0f}°  "
-              f"target=({target_x:.1f}, {target_y:.1f})  dist={d0:.1f}cm")
-        if d0 <= arrive_cm:
-            print(f"Already within {arrive_cm:.1f}cm (dist={d0:.1f}cm); done.")
-            return
-
-        # v2: no set_watchdog verb; use SET sTimeout=<ms> to configure firmware watchdog.
-        proto.set_config(sTimeout=WATCHDOG_MS)
-        t_start = time.monotonic()
-
-        while True:
-            if time.monotonic() - t_start > max_secs:
-                proto.stop()
-                print(f"WARNING: hit {max_secs:.0f}s timeout; not at target")
-                break
-
-            p = read_pose(1.0)
-            if p is None:
-                proto.stop()
-                continue
-            rx, ry, yaw = p
-            dx, dy = target_x - rx, target_y - ry
-            dist = _math.hypot(dx, dy)
-            if dist <= arrive_cm:
-                proto.stop()
-                break
-
-            motion_dir = _math.atan2(dy, dx)
-            req_yaw = _wrap(motion_dir - _math.pi / 2)   # forward = (-sinθ, cosθ)
-            head_err = _wrap(req_yaw - yaw)
-
-            # Aim with the proven velocity-projected spin if badly off heading.
-            if abs(head_err) > _math.radians(AIM_GATE_DEG):
-                _log(f"aim: head_err={_math.degrees(head_err):+.0f}° → "
-                     f"spin to {_math.degrees(req_yaw):+.0f}°")
-                _daemon_spin_to_yaw(proto, read_pose, _math.degrees(req_yaw),
-                                    turn_speed, SPIN_TOL_DEG)
-                continue
-
-            # Forward burst toward the target, monitored — break out to re-aim
-            # on drift, on arrival, or when distance stops decreasing.
-            _log(f"drive: dist={dist:.1f}cm head_err={_math.degrees(head_err):+.0f}°")
-            b_start = time.monotonic()
-            best = dist
-            while time.monotonic() - b_start < BURST_MAX_S:
-                q = read_pose(0.25)
-                if q is None:
-                    break
-                rx, ry, yaw = q
-                dx, dy = target_x - rx, target_y - ry
-                dist = _math.hypot(dx, dy)
-                if dist <= arrive_cm:
-                    break
-                he = _wrap(_wrap(_math.atan2(dy, dx) - _math.pi / 2) - yaw)
-                if abs(he) > _math.radians(REAIM_GATE_DEG):
-                    break
-                if dist > best + 2.0:   # overshot / moving away → re-aim
-                    break
-                best = min(best, dist)
-                v = MIN_DRIVE + (cruise - MIN_DRIVE) * min(1.0, dist / SLOW_RADIUS_CM)
-                steer = max(-0.5, min(0.5, STEER_KP * he))
-                proto.drive(int(round(v * (1.0 - steer))),
-                            int(round(v * (1.0 + steer))))
-                time.sleep(TICK_S)
-            proto.stop()
-            time.sleep(0.15)
-
-        # Final report.
-        time.sleep(0.3)
-        end = read_pose(2.0)
-        if end is not None:
-            ex, ey, eyaw = end
-            err = _math.hypot(target_x - ex, target_y - ey)
-            elapsed = time.monotonic() - t_start
-            print(f"final=({ex:.1f}, {ey:.1f})cm yaw={_math.degrees(eyaw):+.0f}°  "
-                  f"error={err:.1f}cm  ({elapsed:.1f}s)")
-        else:
-            print("done (lost robot tag for final readout)")
+        _go_to_world_camera_impl(
+            proto, read_pose,
+            target_x, target_y,
+            cruise, turn_speed, gate_deg, arrive_cm, max_secs,
+            log=_log,
+        )
     finally:
         try:
             proto.stop()

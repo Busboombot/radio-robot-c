@@ -1,11 +1,11 @@
 ---
 id: '002'
 title: Delete host-side steering controllers and demote navigator.py to route planner
-status: open
+status: done
 use-cases:
 - SUC-003
 depends-on:
-- '035-001'
+- 035-001
 github-issue: ''
 issue: a1b-delete-host-steering-controllers.md
 completes_issue: true

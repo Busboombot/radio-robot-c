@@ -1,11 +1,11 @@
 ---
 id: '003'
 title: Write pose-authority architecture statement and consolidate docs
-status: open
+status: done
 use-cases:
 - SUC-004
 depends-on:
-- '035-002'
+- 035-002
 github-issue: ''
 issue: a1c-pose-authority-architecture-statement.md
 completes_issue: true

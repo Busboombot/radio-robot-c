@@ -1,7 +1,7 @@
 ---
 id: '001'
 title: Fold cmd_goto and spin helpers out of cli.py into nav/camera_goto.py
-status: open
+status: done
 use-cases:
 - SUC-001
 - SUC-002

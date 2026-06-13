@@ -1,5 +1,5 @@
 ---
-status: draft
+status: approved
 sprint: '035'
 ---
 <!-- CLASI: Before changing code or making plans, review the SE process in CLAUDE.md -->
