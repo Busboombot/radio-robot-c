@@ -160,8 +160,12 @@ struct Robot {
     // No-op (fast return) when bench mode is off or hal is not NezhaHAL.
     void benchOtosTick(uint32_t now_ms);
 
-    // Returns true when NezhaHAL has the bench sensor selected.
-    // Always false when hal is MockHAL (HOST_BUILD).
+    // Enable/disable bench OTOS mode. Firmware delegates to NezhaHAL::setOtosBench;
+    // HOST_BUILD records _simBenchOtosActive so the sim can observe the toggle.
+    void setBenchOtosEnabled(bool on);
+
+    // Returns true when the bench sensor is selected (NezhaHAL::isBenchMode in
+    // firmware; the recorded flag in HOST_BUILD).
     bool isBenchOtosActive() const;
 
     // ---- Gating state that pairs with the kept methods ----
@@ -169,6 +173,7 @@ struct Robot {
     uint32_t _lastActiveMs  = 0;
     uint32_t _lastControlMs = 0;
     bool     _prevDriving   = false;
+    bool     _simBenchOtosActive = false;  // HOST_BUILD bench-mode mirror (033-002)
 
     // ---- D10 telemetry: sequence counter + channel binding (028-005) ----
     // _tlmSeq: monotonically incrementing uint16 emitted as seq=<n> in every

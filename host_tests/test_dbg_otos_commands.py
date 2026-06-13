@@ -89,11 +89,27 @@ def test_dbg_otos_bench_before_dbg_otos_dispatch():
 # ---------------------------------------------------------------------------
 
 def test_dbg_otos_bench_enable():
-    """DBG OTOS BENCH 1 replies OK dbg otos bench=<n> (host: bench=0 no-op)."""
+    """DBG OTOS BENCH 1 must actually ENABLE bench mode -> reply bench=1.
+
+    Regression for 033-002: a union-aliasing parse bug in parseDbgOtosBench
+    (writing fval=0.0f after ival on the shared union) zeroed the enable flag,
+    so the handler always saw enable=0 and replied bench=0 even for `BENCH 1`.
+    The HOST handler now mirrors the toggle via Robot::setBenchOtosEnabled so the
+    sim observes the real enable state.
+    """
     with Sim() as s:
         r = send(s, "DBG OTOS BENCH 1")
         assert "OK" in r.upper(), f"Expected OK reply, got: {repr(r)}"
-        assert "otos bench=" in r, f"Expected 'otos bench=' in reply, got: {repr(r)}"
+        assert "otos bench=1" in r, f"BENCH 1 must report bench=1, got: {repr(r)}"
+
+
+def test_dbg_otos_bench_enable_round_trip():
+    """Enable -> disable -> enable round-trips the bench flag, incl. with noise args."""
+    with Sim() as s:
+        assert "otos bench=1" in send(s, "DBG OTOS BENCH 1")
+        assert "otos bench=0" in send(s, "DBG OTOS BENCH 0")
+        # Positional noise args after the enable flag must not break the enable parse.
+        assert "otos bench=1" in send(s, "DBG OTOS BENCH 1 20 10")
 
 
 def test_dbg_otos_bench_disable():

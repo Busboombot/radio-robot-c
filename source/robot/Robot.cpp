@@ -411,8 +411,24 @@ void Robot::benchOtosTick(uint32_t now_ms)
 }
 
 // ---------------------------------------------------------------------------
-// isBenchOtosActive — returns true when NezhaHAL has the bench sensor active.
-// Always returns false in HOST_BUILD (MockHAL path).
+// setBenchOtosEnabled — enable/disable bench OTOS mode.
+//   Firmware: delegates to NezhaHAL::setOtosBench (swaps the active OTOS).
+//   HOST_BUILD: records the flag so the sim can observe the toggle.
+// ---------------------------------------------------------------------------
+
+void Robot::setBenchOtosEnabled(bool on)
+{
+#ifndef HOST_BUILD
+    auto* nh = static_cast<NezhaHAL*>(&hal);
+    nh->setOtosBench(on);
+#else
+    _simBenchOtosActive = on;
+#endif
+}
+
+// ---------------------------------------------------------------------------
+// isBenchOtosActive — returns true when the bench sensor is active.
+//   Firmware: NezhaHAL::isBenchMode().  HOST_BUILD: the recorded flag.
 // ---------------------------------------------------------------------------
 
 bool Robot::isBenchOtosActive() const
@@ -421,7 +437,7 @@ bool Robot::isBenchOtosActive() const
     auto* nh = static_cast<const NezhaHAL*>(&hal);
     return nh->isBenchMode();
 #else
-    return false;
+    return _simBenchOtosActive;
 #endif
 }
 
