@@ -1,5 +1,8 @@
 ---
-status: pending
+status: in-progress
+sprint: '035'
+tickets:
+- 035-001
 ---
 
 # A1a — Fold cmd_goto and spin helpers out of cli.py into nav/camera_goto.py

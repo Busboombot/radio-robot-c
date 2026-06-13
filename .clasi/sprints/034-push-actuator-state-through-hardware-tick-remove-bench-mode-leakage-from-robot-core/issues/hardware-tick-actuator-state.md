@@ -1,5 +1,12 @@
 ---
-status: pending
+status: in-progress
+sprint: '034'
+tickets:
+- 034-001
+- 034-002
+- 034-003
+- 034-005
+- 034-006
 ---
 
 # Refactor — `Hardware::tick` carries actuator command state; kill `benchOtosTick` and robot-visible bench mode

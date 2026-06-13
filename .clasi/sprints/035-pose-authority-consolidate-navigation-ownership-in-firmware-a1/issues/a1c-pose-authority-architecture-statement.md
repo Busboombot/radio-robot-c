@@ -1,5 +1,8 @@
 ---
-status: pending
+status: in-progress
+sprint: '035'
+tickets:
+- 035-003
 ---
 
 # A1c — Write pose-authority statement in docs/architecture.md and consolidate

@@ -1,5 +1,8 @@
 ---
-status: pending
+status: in-progress
+sprint: '035'
+tickets:
+- 035-002
 ---
 
 # A1b — Delete host-side steering controllers and demote navigator.py to route planner

@@ -1,6 +1,8 @@
 ---
-status: pending
-sprint: '031'
+status: in-progress
+sprint: '034'
+tickets:
+- 034-004
 ---
 
 # Bench OTOS — synthetic OTOS sensor for full-stack bench testing
