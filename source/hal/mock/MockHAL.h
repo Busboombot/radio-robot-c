@@ -6,6 +6,7 @@
 #include "MockLineSensor.h"
 #include "MockColorSensor.h"
 #include "MockOtosSensor.h"
+#include "../BenchOtosSensor.h"
 #include "MockPortIO.h"
 #include "MockServo.h"
 
@@ -42,34 +43,37 @@ struct ExactPoseTracker {
  *
  * No CODAL dependency. Compiles with plain clang++ -std=c++11 -I source.
  *
+ * Bench OTOS (mirrors NezhaHAL): MockHAL also owns the real firmware
+ * BenchOtosSensor and an active-OTOS pointer.  setOtosBench(true) redirects
+ * otos() to the bench sensor — the SAME synthetic-pose device the firmware
+ * runs on hardware — so a sim run with bench mode on integrates the identical
+ * BenchOtosSensor the bench does.  tick(now,cmds) feeds it the commanded wheel
+ * velocity each step (the cmds the firmware loop already passes through
+ * Hardware::tick).
+ *
  * Test code accesses the underlying mock objects via motorLMock(),
  * motorRMock(), and otosMock() to inject state or inspect results.
  */
 class MockHAL : public Hardware {
 public:
+    // The host sim does not call hal.begin() (unlike main.cpp on hardware), so
+    // initialize the bench sensor here — otherwise BenchOtosSensor::tick() is a
+    // no-op (the !_initialized guard) and bench mode would silently do nothing.
+    MockHAL() { _benchOtos.begin(); }
+
     // Hardware interface -----------------------------------------------------
     IMotor&       motorL()      override { return _motorL; }
     IMotor&       motorR()      override { return _motorR; }
     ILineSensor&  lineSensor()  override { return _line; }
     IColorSensor& colorSensor() override { return _color; }
-    IOtosSensor&  otos()        override { return _otos; }
+    // Active OTOS — real mock sensor, or the bench sensor when bench mode is on.
+    IOtosSensor&  otos()        override { return *_otosActive; }
     IPortIO&      portIO()      override { return _portIO; }
     IServo&       gripper()     override { return _servo; }
 
-    void begin() override {}
+    void begin() override { _benchOtos.begin(); }
     void tick(uint32_t now_ms) override;
-
-    // Actuator-state tick (034-005): satisfies the Hardware base-class overload
-    // that delivers commanded motor velocities to the HAL plant.  MockHAL's
-    // plant is already driven by the single-arg tick(); this overload delegates
-    // to it so the dt-guard makes it idempotent when called again from
-    // loopTickOnce with the same timestamp (sim_api calls this before
-    // controlCollectSplitPhase; loopTickOnce calls it after driveAdvance with
-    // the same now — the dt==0 guard skips the second integration).
-    void tick(uint32_t now_ms, const MotorCommands& cmds) override {
-        (void)cmds;  // MockHAL plant reads motor objects directly; cmds unused
-        tick(now_ms);
-    }
+    void tick(uint32_t now_ms, const MotorCommands& cmds) override;
 
     // Test accessors ---------------------------------------------------------
     MockMotor&       motorLMock()    { return _motorL; }
@@ -79,29 +83,44 @@ public:
     MockOtosSensor&  otosMock()      { return _otos; }
     MockPortIO&      portIOMock()    { return _portIO; }
     MockServo&       servoMock()     { return _servo; }
+    BenchOtosSensor* benchOtosPtr()  { return &_benchOtos; }
 
     // Exact-pose oracle (pre-slip, pre-noise ground truth).
     ExactPoseTracker& exactPoseMock() { return _exactPose; }
 
-    // Set robot trackwidth (mm) so ExactPoseTracker can integrate correctly.
+    // Set robot trackwidth (mm) so ExactPoseTracker / the bench sensor integrate
+    // correctly.
     void setTrackwidth(float mm) { _trackwidthMm = mm; }
 
-    // Bench-OTOS swap (034-003): MockHAL tracks the toggle so that host-sim
-    // tests can round-trip DBG OTOS BENCH enable/disable via the Hardware
-    // interface without a NezhaHAL downcast.
-    void setOtosBench(bool on) override { _benchMode = on; }
-    bool isBenchMode() const   override { return _benchMode; }
+    // Bench-OTOS swap (mirrors NezhaHAL): redirect the active OTOS pointer to
+    // the bench sensor (on=true) or the real mock sensor (on=false).  The sim
+    // then runs the SAME BenchOtosSensor the firmware runs on hardware.
+    void setOtosBench(bool on) override {
+        _otosActive = on
+            ? static_cast<IOtosSensor*>(&_benchOtos)
+            : static_cast<IOtosSensor*>(&_otos);
+    }
+    bool isBenchMode() const override {
+        return _otosActive == static_cast<const IOtosSensor*>(&_benchOtos);
+    }
 
 private:
+    // Shared dt-guarded plant integration for both tick() overloads.
+    // cmds is non-null only on the actuator-state tick; when bench mode is
+    // active it feeds the BenchOtosSensor the commanded wheel velocity.
+    void advance(uint32_t now_ms, const MotorCommands* cmds);
+
     MockMotor        _motorL;
     MockMotor        _motorR;
     MockLineSensor   _line;
     MockColorSensor  _color;
     MockOtosSensor   _otos;
+    BenchOtosSensor  _benchOtos;
     MockPortIO       _portIO;
     MockServo        _servo;
     uint32_t         _lastTickMs   = 0;
     ExactPoseTracker _exactPose;
     float            _trackwidthMm = 0.0f;
-    bool             _benchMode    = false;  // bench-OTOS toggle (034-003)
+    // Active OTOS pointer — _otos (real) by default; _benchOtos when bench mode.
+    IOtosSensor*     _otosActive   = &_otos;
 };

@@ -13,6 +13,11 @@ import pytest
 _HOST_TESTS = pathlib.Path(__file__).parent
 _BUILD_DIR = _HOST_TESTS / "build"
 
+# Tests live in unit/ (and other subdirs); make the shared helper modules in
+# this directory (firmware.py, etc.) importable from anywhere in the tree.
+if str(_HOST_TESTS) not in sys.path:
+    sys.path.insert(0, str(_HOST_TESTS))
+
 
 @pytest.fixture(scope="session", autouse=True)
 def build_lib():

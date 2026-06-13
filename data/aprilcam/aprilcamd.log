@@ -1,0 +1,28 @@
+Traceback (most recent call last):
+  File "<frozen runpy>", line 198, in _run_module_as_main
+  File "<frozen runpy>", line 88, in _run_code
+  File "/Volumes/Proj/proj/RobotProjects/AprilTags/src/aprilcam/daemon/__main__.py", line 96, in <module>
+    main()
+    ~~~~^^
+  File "/Volumes/Proj/proj/RobotProjects/AprilTags/src/aprilcam/daemon/__main__.py", line 92, in main
+    ).run()
+      ~~~^^
+  File "/Volumes/Proj/proj/RobotProjects/AprilTags/src/aprilcam/daemon/server.py", line 144, in run
+    from .grpc_server import AprilCamServicer, make_grpc_server
+  File "/Volumes/Proj/proj/RobotProjects/AprilTags/src/aprilcam/daemon/grpc_server.py", line 32, in <module>
+    from grpc_reflection.v1alpha import reflection
+ModuleNotFoundError: No module named 'grpc_reflection'
+Traceback (most recent call last):
+  File "<frozen runpy>", line 198, in _run_module_as_main
+  File "<frozen runpy>", line 88, in _run_code
+  File "/Volumes/Proj/proj/RobotProjects/AprilTags/src/aprilcam/daemon/__main__.py", line 96, in <module>
+    main()
+    ~~~~^^
+  File "/Volumes/Proj/proj/RobotProjects/AprilTags/src/aprilcam/daemon/__main__.py", line 92, in main
+    ).run()
+      ~~~^^
+  File "/Volumes/Proj/proj/RobotProjects/AprilTags/src/aprilcam/daemon/server.py", line 144, in run
+    from .grpc_server import AprilCamServicer, make_grpc_server
+  File "/Volumes/Proj/proj/RobotProjects/AprilTags/src/aprilcam/daemon/grpc_server.py", line 32, in <module>
+    from grpc_reflection.v1alpha import reflection
+ModuleNotFoundError: No module named 'grpc_reflection'

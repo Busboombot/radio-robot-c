@@ -14,8 +14,8 @@ Targets: 16 colored sites (8 squares + 8 dots). Each iteration ranks them by
 distance, drops the closest 4, and picks one at random. Background keepalive +
 firmware safety-stop are the backstop.
 
-  uv run python tests/bench/tour_goto.py            # 10 hops
-  uv run python tests/bench/tour_goto.py --iters 20 --seed 3
+  uv run python tests/playfield_tour/tour_goto.py            # 10 hops
+  uv run python tests/playfield_tour/tour_goto.py --iters 20 --seed 3
 """
 import argparse
 import math
@@ -24,7 +24,7 @@ import random
 import sys
 import time
 
-_BENCH = pathlib.Path(__file__).resolve().parent
+_BENCH = pathlib.Path(__file__).resolve().parent.parent / "bench"  # shared bench helpers
 if str(_BENCH) not in sys.path:
     sys.path.insert(0, str(_BENCH))
 from bench_safety import BenchRun  # noqa: E402
