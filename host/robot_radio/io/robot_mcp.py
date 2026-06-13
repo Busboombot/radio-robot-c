@@ -214,14 +214,17 @@ async def list_tools() -> list[types.Tool]:
 
         # Navigation
         types.Tool(name="navigate_to",
-                   description="PID-navigate to world coordinate (cm) using camera feedback at ~30fps.",
+                   description="Navigate to world coordinate (cm) via firmware G command. "
+                               "Reads current pose from camera, converts to robot-relative mm, "
+                               "issues firmware G command, and waits for EVT done G.",
                    inputSchema={"type": "object", "properties": {
                        "x": {"type": "number"},
                        "y": {"type": "number"},
                        "camera": {"type": "integer", "default": 3},
                        "robot_tag": {"type": "integer", "default": 1},
                        "timeout": {"type": "number", "default": 30},
-                       "forward_only": {"type": "boolean", "default": False},
+                       "speed_mms": {"type": "integer", "default": 200,
+                                     "description": "Navigation speed in mm/s"},
                    }, "required": ["x", "y"]}),
         types.Tool(name="visit_tags",
                    description="Visit a list of tags in sequence, navigating to each one.",
@@ -266,28 +269,19 @@ async def list_tools() -> list[types.Tool]:
                    }, "required": ["target"]}),
 
         types.Tool(name="follow_path",
-                   description="Follow a multi-waypoint path using a path-following controller and camera feedback. "
+                   description="Follow a multi-waypoint path via sequential firmware G commands. "
                                "path is a list of [x, y] world coordinates in cm. "
-                               "The robot tracks the path using the selected controller; arrival is declared "
-                               "when within stop_dist cm of the final waypoint. "
-                               "Use controller='pure_pursuit' (default) or controller='stanley'.",
+                               "Issues one G command per waypoint, waiting for EVT done G before advancing.",
                    inputSchema={"type": "object", "properties": {
                        "path": {"type": "array",
                                 "items": {"type": "array", "items": {"type": "number"}, "minItems": 2, "maxItems": 2},
                                 "description": "Ordered list of [x, y] waypoints in cm"},
                        "camera_index": {"type": "integer", "default": 3},
                        "robot_tag": {"type": "integer", "default": 1},
-                       "timeout": {"type": "number", "default": 30.0},
-                       "lookahead": {"type": "number", "default": 15.0,
-                                     "description": "Lookahead circle radius in cm (used by pure_pursuit)"},
-                       "trackwidth": {"type": "number", "default": 9.0,
-                                      "description": "Wheel-to-wheel spacing in cm"},
-                       "base_speed": {"type": "number", "default": 40.0,
-                                      "description": "Nominal forward motor command (0-100)"},
-                       "stop_dist": {"type": "number", "default": 5.0,
-                                     "description": "Arrival threshold in cm"},
-                       "controller": {"type": "string", "default": "pure_pursuit",
-                                      "description": "Path-following controller: 'pure_pursuit' or 'stanley'"},
+                       "timeout": {"type": "number", "default": 30.0,
+                                   "description": "Per-waypoint timeout in seconds"},
+                       "speed_mms": {"type": "integer", "default": 200,
+                                     "description": "Navigation speed in mm/s"},
                    }, "required": ["path"]}),
 
         # Gripper navigation
@@ -454,95 +448,6 @@ async def list_tools() -> list[types.Tool]:
                        "required": ["path"],
                    }),
 
-        types.Tool(name="follow_pose_path",
-                   description=(
-                       "Plan a curved path between two poses and drive the robot along it. "
-                       "Three phases: (1) spin-align to face the initial path tangent, "
-                       "(2) path-following controller to track the path, (3) final in-place turn to match "
-                       "end_pose.heading. "
-                       "If start_pose is omitted, current pose is read from the camera. "
-                       "Use controller='pure_pursuit' (default) or controller='stanley'. "
-                       "Returns {success, planned_path, traversed_frames, elapsed_s, "
-                       "final_pose, final_heading_error_deg}."
-                   ),
-                   inputSchema={
-                       "type": "object",
-                       "properties": {
-                           "end_pose": {
-                               "type": "object",
-                               "description": "Target pose: {x, y, heading} — x/y in cm, heading in radians.",
-                               "properties": {
-                                   "x": {"type": "number"},
-                                   "y": {"type": "number"},
-                                   "heading": {"type": "number"},
-                               },
-                               "required": ["x", "y", "heading"],
-                           },
-                           "start_pose": {
-                               "type": "object",
-                               "description": "Start pose: {x, y, heading}. Omit to read from camera.",
-                               "properties": {
-                                   "x": {"type": "number"},
-                                   "y": {"type": "number"},
-                                   "heading": {"type": "number"},
-                               },
-                           },
-                           "waypoints": {
-                               "type": "array",
-                               "description": "Intermediate waypoints. Each is {x, y, heading?}.",
-                               "items": {
-                                   "type": "object",
-                                   "properties": {
-                                       "x": {"type": "number"},
-                                       "y": {"type": "number"},
-                                       "heading": {"type": "number"},
-                                   },
-                                   "required": ["x", "y"],
-                               },
-                               "default": [],
-                           },
-                           "method": {
-                               "type": "string",
-                               "description": "Path builder name.",
-                               "default": "bezier",
-                           },
-                           "preview": {
-                               "type": "boolean",
-                               "description": "Log/preview the planned polyline before driving.",
-                               "default": True,
-                           },
-                           "camera_index": {"type": "integer", "default": 3},
-                           "robot_tag": {"type": "integer", "default": 1},
-                           "timeout": {"type": "number", "default": 30.0},
-                           "lookahead": {
-                               "type": "number",
-                               "description": "Pure-pursuit lookahead radius in cm.",
-                               "default": 15.0,
-                           },
-                           "trackwidth": {
-                               "type": "number",
-                               "description": "Wheel-to-wheel spacing in cm.",
-                               "default": 9.0,
-                           },
-                           "base_speed": {
-                               "type": "number",
-                               "description": "Nominal forward motor command (0-100).",
-                               "default": 40.0,
-                           },
-                           "stop_dist": {
-                               "type": "number",
-                               "description": "Arrival threshold in cm.",
-                               "default": 5.0,
-                           },
-                           "controller": {
-                               "type": "string",
-                               "description": "Path-following controller: 'pure_pursuit' or 'stanley'.",
-                               "default": "pure_pursuit",
-                           },
-                       },
-                       "required": ["end_pose"],
-                   }),
-
         # OTOS sensor tools
         types.Tool(name="otos_init",
                    description="Send OI to the OTOS sensor (enable signal processing). "
@@ -698,7 +603,7 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[types.TextCont
                 camera_index=int(arguments.get("camera", 3)),
                 robot_tag=int(arguments.get("robot_tag", _default_robot_tag())),
                 timeout=float(arguments.get("timeout", 30)),
-                forward_only=bool(arguments.get("forward_only", False)))
+                speed_mms=int(arguments.get("speed_mms", 200)))
 
     elif name == "follow_path":
         err = _require_navigator()
@@ -712,11 +617,7 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[types.TextCont
                 camera_index=int(arguments.get("camera_index", 3)),
                 robot_tag=int(arguments.get("robot_tag", _default_robot_tag())),
                 timeout=float(arguments.get("timeout", 30.0)),
-                lookahead=float(arguments.get("lookahead", 15.0)),
-                trackwidth=float(arguments.get("trackwidth", 9.0)),
-                base_speed=float(arguments.get("base_speed", 40.0)),
-                stop_dist=float(arguments.get("stop_dist", 5.0)),
-                controller=str(arguments.get("controller", "pure_pursuit")))
+                speed_mms=int(arguments.get("speed_mms", 200)))
 
     elif name == "visit_tags":
         err = _require_navigator()
@@ -889,53 +790,6 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[types.TextCont
         points = [(float(p[0]), float(p[1])) for p in raw_points]
         stub = preview_mod.preview_polyline(points)
         result = {"status": "ok", "points": stub["points"]}
-
-    elif name == "follow_pose_path":
-        err = _require_navigator()
-        if err:
-            result = err
-        else:
-            raw_end = arguments["end_pose"]
-            end_pose = Pose(
-                x=float(raw_end["x"]),
-                y=float(raw_end["y"]),
-                heading=float(raw_end["heading"]),
-            )
-            raw_start = arguments.get("start_pose")
-            start_pose = None
-            if raw_start is not None:
-                start_pose = Pose(
-                    x=float(raw_start["x"]),
-                    y=float(raw_start["y"]),
-                    heading=float(raw_start["heading"]),
-                )
-            raw_waypoints = arguments.get("waypoints") or []
-            waypoints = [
-                Waypoint(
-                    x=float(wp["x"]),
-                    y=float(wp["y"]),
-                    heading=(float(wp["heading"])
-                             if "heading" in wp and wp["heading"] is not None
-                             else None),
-                )
-                for wp in raw_waypoints
-            ]
-            result = await asyncio.to_thread(
-                _navigator.follow_pose_path,
-                end_pose=end_pose,
-                start_pose=start_pose,
-                waypoints=waypoints,
-                method=str(arguments.get("method", "bezier")),
-                preview=bool(arguments.get("preview", True)),
-                camera_index=int(arguments.get("camera_index", 3)),
-                robot_tag=int(arguments.get("robot_tag", _default_robot_tag())),
-                timeout=float(arguments.get("timeout", 30.0)),
-                lookahead=float(arguments.get("lookahead", 15.0)),
-                trackwidth=float(arguments.get("trackwidth", 9.0)),
-                base_speed=float(arguments.get("base_speed", 40.0)),
-                stop_dist=float(arguments.get("stop_dist", 5.0)),
-                controller=str(arguments.get("controller", "pure_pursuit")),
-            )
 
     # -- OTOS sensor --
 

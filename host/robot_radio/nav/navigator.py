@@ -1,4 +1,15 @@
-"""Navigator — autonomous navigation fusing Robot commands with camera feedback."""
+"""Navigator — autonomous navigation via firmware G commands with camera feedback.
+
+After ticket 035-002 (pose-authority sprint A1), Navigator is a route planner:
+it sequences firmware G commands and reads camera pose for corrections.  The
+host-side dual-PID steering loop (ChaseController, _run_controller, follow_pose_path)
+has been deleted.  The firmware G path is the sole steering loop.
+
+Retained methods: navigate (G-wrapper), follow_path (G-wrapper),
+  visit_tags, approach, grab_at, release_at, read_pose,
+  adaptive_turn, gripper_position, _read_pose_from_field,
+  _drive_straight, _get_playfield, reset_camera, status, get_next_tags.
+"""
 
 import json
 import math
@@ -10,68 +21,16 @@ from aprilcam import Camera, Playfield, Tag
 
 from robot_radio.controllers.pid import PID, normalize_angle
 from robot_radio.nav.nav_params import NavParams
-from robot_radio.sensors.odometry import Odometry
 from robot_radio.nav.pose import Pose, Waypoint, heading_error
-from robot_radio.controllers import CONTROLLERS
-from robot_radio.path.builder import build_path
-import robot_radio.io.preview as _preview_mod
 from robot_radio.nav._approach_utils import (
     choose_phase,
     compute_far_command,
     load_approach_calibration,
 )
 
-def _build_controller(ctrl_cls, params, **kwargs):
-    """Instantiate a controller class from NavParams with optional overrides.
-
-    Parameters are read from *params* and may be overridden via *kwargs*.
-    ``PurePursuitTracker`` requires a placeholder path at construction; callers
-    must call ``set_path`` before ``compute``.
-
-    Returns
-    -------
-    Controller
-        A concrete controller instance.
-    """
-    import math as _math  # noqa: PLC0415
-    from robot_radio.controllers import PurePursuitTracker, StanleyController  # noqa: PLC0415
-
-    if ctrl_cls is PurePursuitTracker:
-        lookahead = kwargs.get("lookahead", getattr(params, "lookahead", 15.0))
-        trackwidth = kwargs.get("trackwidth", getattr(params, "trackwidth", 9.0))
-        base_speed = kwargs.get("base_speed", getattr(params, "base_speed", 40.0))
-        stop_dist = kwargs.get("stop_dist", getattr(params, "stop_dist", 5.0))
-        placeholder: list[tuple[float, float]] = [(0.0, 0.0), (1.0, 0.0)]
-        return PurePursuitTracker(
-            path=placeholder,
-            lookahead=float(lookahead),
-            trackwidth=float(trackwidth),
-            base_speed=float(base_speed),
-            stop_dist=float(stop_dist),
-        )
-
-    if ctrl_cls is StanleyController:
-        k = kwargs.get("k", getattr(params, "stanley_k", 0.8))
-        v_soft = kwargs.get("v_soft", getattr(params, "stanley_v_soft", 0.1))
-        omega_gain = kwargs.get("omega_gain", getattr(params, "stanley_omega_gain", 2.0))
-        goal_tolerance = kwargs.get("goal_tolerance", getattr(params, "stop_dist", 9.0))
-        base_speed = kwargs.get("base_speed", getattr(params, "base_speed", 40.0))
-        trackwidth = kwargs.get("trackwidth", getattr(params, "trackwidth", 9.0))
-        max_delta = kwargs.get(
-            "max_delta", getattr(params, "stanley_max_delta", _math.pi / 2)
-        )
-        return StanleyController(
-            k=float(k),
-            v_soft=float(v_soft),
-            omega_gain=float(omega_gain),
-            goal_tolerance=float(goal_tolerance),
-            base_speed=float(base_speed),
-            trackwidth=float(trackwidth),
-            max_delta=float(max_delta),
-        )
-
-    # Generic fallback: pass no args; caller must configure the controller
-    return ctrl_cls()
+# Default navigation speed for firmware G commands (mm/s).
+# Corresponds roughly to motor command 40 at the robot's calibration.
+_DEFAULT_NAV_SPEED_MMS = 200
 
 
 def _load_motor_deadband() -> int:
@@ -96,124 +55,24 @@ def log_record(file_path: str, record: dict[str, Any]) -> dict[str, Any]:
     return {"written": True, "file": file_path, "total_records": count}
 
 
-class ChaseController:
-    """Dual-PID controller: one for speed (distance), one for steering (angle)."""
-
-    def __init__(self, speed_pid: PID, steer_pid: PID, params: dict[str, float]):
-        self.speed_pid = speed_pid
-        self.steer_pid = steer_pid
-        self.p = params
-
-    @property
-    def max_speed(self): return self.p["max_speed"]
-    @property
-    def stop_dist(self): return self.p["stop_dist"]
-    @property
-    def TURN_THRESHOLD(self): return math.radians(self.p["turn_threshold"])
-    @property
-    def CRAWL_DIST(self): return self.p["crawl_dist"]
-    @property
-    def CRAWL_CM_PER_PULSE(self): return self.p["crawl_cm_per_pulse"]
-    @property
-    def CRAWL_DEG_PER_PULSE(self): return self.p["crawl_deg_per_pulse"]
-    @property
-    def CRAWL_SPEED(self): return int(self.p["crawl_speed"])
-    @property
-    def CRAWL_MS(self): return int(self.p["crawl_ms"])
-
-    def compute(self, robot_pos, robot_yaw, target_pos, now,
-                forward_only=False):
-        dx = target_pos[0] - robot_pos[0]
-        dy = target_pos[1] - robot_pos[1]
-        dist = math.sqrt(dx * dx + dy * dy)
-
-        if dist <= self.stop_dist:
-            self.speed_pid.reset()
-            self.steer_pid.reset()
-            return 0, 0
-
-        bearing = math.atan2(dy, dx)
-        angle_err = normalize_angle(bearing - robot_yaw)
-
-        reversing = False
-        if not forward_only and abs(angle_err) > math.pi / 2:
-            reverse_bearing = normalize_angle(bearing - math.pi)
-            angle_err = normalize_angle(reverse_bearing - robot_yaw)
-            reversing = True
-
-        # SPIN when heading is off by more than 45°
-        # Proportional speed: faster for large errors, but always above deadband
-        if abs(angle_err) > math.radians(45):
-            self.speed_pid.reset()
-            abs_err_deg = abs(math.degrees(angle_err))
-            if abs_err_deg > 90:
-                turn_speed = 60
-            elif abs_err_deg > 60:
-                turn_speed = 55
-            else:
-                turn_speed = 50
-            sign = 1 if angle_err > 0 else -1
-            return sign * turn_speed, -sign * turn_speed
-
-        # DRIVE with proportional steering (P-only, no I/D)
-        base = self.speed_pid.update(dist, now)
-        # Clamp base above motor deadband so the robot actually moves
-        base = max(MOTOR_DEADBAND + 5, min(self.max_speed, base))
-
-        if reversing:
-            base = -base
-
-        steer = self.p["steer_kp"] * angle_err
-
-        left = base + steer
-        right = base - steer
-
-        return max(-100, min(100, left)), max(-100, min(100, right))
-
-    def compute_crawl(self, robot_pos, robot_yaw, target_pos):
-        dx = target_pos[0] - robot_pos[0]
-        dy = target_pos[1] - robot_pos[1]
-        dist = math.sqrt(dx * dx + dy * dy)
-
-        if dist <= self.stop_dist:
-            return "arrived", 0, 0, 0
-
-        bearing = math.atan2(dy, dx)
-        angle_err = normalize_angle(bearing - robot_yaw)
-
-        spd = self.CRAWL_SPEED
-
-        # Large angle: pure spin
-        if abs(angle_err) > math.radians(60):
-            count = max(1, min(int(self.p["crawl_spin_max"]),
-                               int(abs(math.degrees(angle_err)) / self.CRAWL_DEG_PER_PULSE)))
-            if angle_err > 0:
-                return "spin", spd, -spd, count
-            else:
-                return "spin", -spd, spd, count
-
-        # Steered crawl: forward with differential
-        steer_gain = 0.8
-        steer = max(-1.0, min(1.0, angle_err / math.radians(60)))
-        steer_amount = steer * steer_gain * spd
-
-        left = int(spd + steer_amount)
-        right = int(spd - steer_amount)
-        left = max(-100, min(100, left))
-        right = max(-100, min(100, right))
-
-        count = max(1, int(dist / self.CRAWL_CM_PER_PULSE))
-        count = min(count, int(self.p["crawl_fwd_max"]))
-
-        return "steer", left, right, count
-
-
 _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 _DEFAULT_DATA_DIR = os.path.join(_SCRIPT_DIR, "..", "data")
 
 
 class Navigator:
-    """Autonomous navigation using a Robot + camera position source.
+    """Route planner that delegates point-to-point motion to the firmware G command.
+
+    ## navigate()
+
+    ``navigate(target_xy, timeout=30.0, ...)`` drives the robot to a world-
+    coordinate target by:
+    1. Reading the robot's current world pose from the camera.
+    2. Computing the robot-relative displacement in mm.
+    3. Issuing the firmware ``G <dx> <dy> <speed>`` command.
+    4. Waiting for ``EVT done G`` (blocking, via ``self._robot.go_to``).
+
+    Returns a dict with keys: ``success``, ``elapsed``, and optionally
+    ``outcome`` (the raw firmware outcome string).
 
     ## approach()
 
@@ -222,9 +81,9 @@ class Navigator:
 
     - **Far phase** (r > 100 mm): issue a single calibrated ``speed_for_time``
       command, re-read pose, repeat.
-    - **Near phase** (r ≤ 100 mm): issue short crawl pulses and re-read pose
+    - **Near phase** (r <= 100 mm): issue short crawl pulses and re-read pose
       after each pulse.
-    - **Done** (r ≤ tolerance_mm): stop and return.
+    - **Done** (r <= tolerance_mm): stop and return.
 
     Returns a dict with keys:
     ``success``, ``elapsed_s``, ``final_error_mm``, ``phases_used``,
@@ -287,241 +146,85 @@ class Navigator:
         field = self._get_playfield(camera_index)
         return list(field.tags().values())
 
-    # -- Core navigation --
+    # -- Core navigation (G-command wrappers, ticket 035-002) --
 
     def navigate(self, target_xy, camera_index=3, robot_tag=1,
-                 timeout=30.0, forward_only=False) -> dict[str, Any]:
-        """Run the dual-PID navigation loop. Blocks until arrived or timed out."""
-        if not self._robot.is_connected():
-            return {"error": "Not connected. Call connect first."}
+                 timeout=30.0, speed_mms: int = _DEFAULT_NAV_SPEED_MMS,
+                 forward_only=False) -> dict[str, Any]:
+        """Drive to *target_xy* via the firmware G command (035-002).
 
-        p = self.params.as_dict()
-
-        try:
-            field = self._get_playfield(camera_index)
-
-            speed_pid = PID(kp=p["speed_kp"], ki=p["speed_ki"], kd=p["speed_kd"],
-                            out_min=0, out_max=p["max_speed"])
-            steer_pid = PID(kp=p["steer_kp"], ki=p["steer_ki"], kd=p["steer_kd"],
-                            out_min=-40, out_max=40)
-            ctrl = ChaseController(speed_pid, steer_pid, p)
-
-            nav_hz = p.get("nav_loop_hz", 15)
-            cmd_ms = int(p.get("cmd_duration_ms", 150))
-            frames_stop = int(p.get("frames_before_stop", 5))
-            period = 1.0 / nav_hz
-            start = time.monotonic()
-            frames_no_robot = 0
-            backwards_recoveries = 0
-            max_recoveries = 3
-            last_dist = None
-            first_tag_ms = None
-            first_motion_ms = None
-            log_lines: list[str] = []
-            frame_count = 0
-
-            for tags in field.stream():
-                t0 = time.monotonic()
-                elapsed = t0 - start
-                frame_count += 1
-
-                if elapsed > timeout:
-                    self._robot.stop()
-                    return {"success": False, "reason": "timeout",
-                            "elapsed": round(elapsed, 1),
-                            "last_dist": round(last_dist, 1) if last_dist else None,
-                            "frames": frame_count,
-                            "fps": round(frame_count / elapsed, 1),
-                            "log": log_lines[-20:]}
-
-                robot_pos, robot_yaw = None, None
-                for t in tags:
-                    if t.id == robot_tag and t.wx is not None:
-                        if t.age > 0.3:
-                            continue
-                        robot_pos = (t.wx, t.wy)
-                        robot_yaw = t.orientation
-
-                if robot_pos is None:
-                    frames_no_robot += 1
-                    if frames_no_robot >= frames_stop:
-                        self._robot.stop()
-                    if frames_no_robot > nav_hz * 2:
-                        if backwards_recoveries >= max_recoveries:
-                            return {"success": False, "reason": "lost_robot_tag",
-                                    "elapsed": round(elapsed, 1),
-                                    "last_dist": round(last_dist, 1) if last_dist else None,
-                                    "frames": frame_count,
-                                    "log": log_lines[-20:]}
-                        log_lines.append("lost tag — driving backwards to recover")
-                        self._robot.speed_for_time(-30, -30, 300)
-                        self._robot.stop()
-                        frames_no_robot = 0
-                        backwards_recoveries += 1
-                    continue
-                else:
-                    frames_no_robot = 0
-                    if first_tag_ms is None:
-                        first_tag_ms = int(elapsed * 1000)
-
-                dx = target_xy[0] - robot_pos[0]
-                dy = target_xy[1] - robot_pos[1]
-                dist = math.sqrt(dx * dx + dy * dy)
-                last_dist = dist
-
-                # Check if arrived
-                if dist <= ctrl.stop_dist:
-                    self._robot.stop()
-                    return {"success": True,
-                            "final_dist": round(dist, 1),
-                            "final_pos": [round(robot_pos[0], 1), round(robot_pos[1], 1)],
-                            "elapsed": round(elapsed, 1),
-                            "frames": frame_count,
-                            "fps": round(frame_count / elapsed, 1) if elapsed > 0 else 0,
-                            "log": log_lines[-20:]}
-
-                # CRAWL MODE
-                if dist < ctrl.CRAWL_DIST:
-                    self._robot.stop()
-                    ctype, cl, cr, ccount = ctrl.compute_crawl(
-                        robot_pos, robot_yaw, target_xy)
-                    if ctype == "arrived":
-                        return {"success": True,
-                                "final_dist": round(dist, 1),
-                                "final_pos": [round(robot_pos[0], 1), round(robot_pos[1], 1)],
-                                "elapsed": round(elapsed, 1),
-                                "frames": frame_count,
-                                "fps": round(frame_count / elapsed, 1) if elapsed > 0 else 0,
-                                "log": log_lines[-20:]}
-                    self._robot.speed_for_time(cl, cr, ctrl.CRAWL_MS * ccount)
-                    status = (f"d={dist:.1f}cm CW {ctype} "
-                              f"L={cl:+d} R={cr:+d} x{ccount} t={elapsed:.1f}s")
-                    log_lines.append(status)
-                    if first_motion_ms is None:
-                        first_motion_ms = int(elapsed * 1000)
-                    continue
-
-                # PID MODE
-                left, right = ctrl.compute(robot_pos, robot_yaw, target_xy, t0,
-                                            forward_only=forward_only)
-
-                if left == 0 and right == 0:
-                    continue
-
-                self._robot.speed_for_time(int(left), int(right), cmd_ms)
-                if first_motion_ms is None and (int(left) != 0 or int(right) != 0):
-                    first_motion_ms = int(elapsed * 1000)
-
-                status = (f"d={dist:.1f}cm "
-                          f"L={left:+.0f} R={right:+.0f} t={elapsed:.1f}s")
-                log_lines.append(status)
-
-                dt = time.monotonic() - t0
-                if dt < period:
-                    time.sleep(period - dt)
-
-        except Exception as exc:
-            self._robot.stop()
-            return {"error": str(exc)}
-
-    def _run_controller(
-        self,
-        tracker: Any,
-        field,
-        odom: Odometry,
-        timeout: float,
-        start_time: float,
-        initial_frame_count: int = 0,
-    ) -> dict[str, Any]:
-        """Run the path-following control loop until arrival, timeout, or tag loss.
-
-        This private helper is shared by ``follow_path`` and
-        ``follow_pose_path`` so they both use identical controller semantics.
-        The *tracker* argument must satisfy the ``PathFollower`` protocol — any
-        object returned by ``make_controller`` qualifies.
+        Reads the robot's current world pose from the camera, converts the
+        world-cm target to robot-relative mm, and issues a firmware G command.
+        Blocks until ``EVT done G`` is received or *timeout* expires.
 
         Parameters
         ----------
-        tracker:
-            A ``PathFollower`` instance (e.g. ``PurePursuitTracker`` or
-            ``StanleyController``).  Must already have its path loaded via
-            ``set_path``.
-        field:
-            Active ``Playfield`` already started.
-        odom:
-            ``Odometry`` instance bound to *field*.
+        target_xy:
+            ``(x, y)`` in world-frame centimetres.
+        camera_index:
+            AprilCam camera index (default 3, B&W).
+        robot_tag:
+            AprilTag ID on the robot (default 1).
         timeout:
-            Absolute wall-clock deadline measured from *start_time*.
-        start_time:
-            ``time.monotonic()`` value captured before this call — used for
-            elapsed calculations and timeout checking.
-        initial_frame_count:
-            Frame counter value at entry (e.g. frames consumed by spin-align).
+            Maximum wall-clock seconds to wait for completion (default 30).
+        speed_mms:
+            Navigation speed in mm/s sent to the firmware G command
+            (default 200).
+        forward_only:
+            Ignored in the G-command implementation (firmware chooses its own
+            approach geometry).  Accepted for API compatibility.
 
         Returns
         -------
         dict
-            ``{"success": True, "final_pos": [...], "elapsed": float,
-            "frames": int}`` on arrival, or an error/timeout dict.
-            Motors are stopped by this method on every exit path.
+            ``{"success": True, "elapsed": float, "outcome": str}`` on success,
+            ``{"success": False, "elapsed": float, "reason": str}`` on failure,
+            or ``{"error": str}`` on exception.
         """
-        p = self.params.as_dict()
-        nav_hz = p.get("nav_loop_hz", 15)
-        cmd_ms = int(p.get("cmd_duration_ms", 150))
-        frames_stop = int(p.get("frames_before_stop", 5))
+        if not self._robot.is_connected():
+            return {"error": "Not connected. Call connect first."}
 
-        frame_count = initial_frame_count
-        frames_no_robot = 0
+        start = time.monotonic()
 
-        for tags in field.stream():
-            frame_count += 1
-            elapsed = time.monotonic() - start_time
+        try:
+            field = self._get_playfield(camera_index)
 
-            if elapsed > timeout:
-                self._robot.stop()
+            # Read current robot world pose from camera.
+            robot_pos, robot_yaw = self._read_pose_from_field(field, robot_tag)
+            if robot_pos is None:
                 return {
                     "success": False,
-                    "reason": "timeout",
-                    "elapsed": round(elapsed, 1),
-                    "frames": frame_count,
+                    "reason": "robot_tag_not_found",
+                    "elapsed": round(time.monotonic() - start, 1),
                 }
 
-            odom.update(tags)
-            if not odom.is_valid:
-                frames_no_robot += 1
-                if frames_no_robot >= frames_stop:
-                    self._robot.stop()
-                if frames_no_robot > nav_hz * 2:
-                    return {
-                        "success": False,
-                        "reason": "lost_robot_tag",
-                        "elapsed": round(elapsed, 1),
-                        "frames": frame_count,
-                    }
-                continue
+            # Convert world-cm target to robot-relative mm.
+            # The firmware G command takes robot-relative coordinates:
+            #   dx_robot =  dx_world_mm * cos(yaw) + dy_world_mm * sin(yaw)
+            #   dy_robot = -dx_world_mm * sin(yaw) + dy_world_mm * cos(yaw)
+            dx_mm = (target_xy[0] - robot_pos[0]) * 10.0  # cm → mm
+            dy_mm = (target_xy[1] - robot_pos[1]) * 10.0
+            dx_robot = int(round(dx_mm * math.cos(robot_yaw) + dy_mm * math.sin(robot_yaw)))
+            dy_robot = int(round(-dx_mm * math.sin(robot_yaw) + dy_mm * math.cos(robot_yaw)))
 
-            frames_no_robot = 0
-            left, right = tracker.compute((odom.x, odom.y), odom.yaw)
+            # Issue the firmware G command and wait for EVT done G.
+            enc_l, enc_r, outcome = self._robot.go_to(
+                dx_robot, dy_robot, speed_mms, timeout_s=timeout
+            )
 
-            if left == 0.0 and right == 0.0:
-                self._robot.stop()
+            elapsed = round(time.monotonic() - start, 1)
+            if outcome == "done":
+                return {"success": True, "elapsed": elapsed, "outcome": outcome}
+            else:
                 return {
-                    "success": True,
-                    "final_pos": [round(odom.x, 1), round(odom.y, 1)],
-                    "elapsed": round(elapsed, 1),
-                    "frames": frame_count,
+                    "success": False,
+                    "reason": outcome,
+                    "elapsed": elapsed,
+                    "outcome": outcome,
                 }
 
-            self._robot.speed_for_time(int(left), int(right), cmd_ms)
-
-        # Stream exhausted (shouldn't happen in normal operation)
-        self._robot.stop()
-        return {
-            "success": False,
-            "reason": "stream_exhausted",
-            "elapsed": round(time.monotonic() - start_time, 1),
-            "frames": frame_count,
-        }
+        except Exception as exc:
+            return {"error": str(exc)}
 
     def follow_path(
         self,
@@ -529,398 +232,78 @@ class Navigator:
         camera_index: int = 3,
         robot_tag: int = 1,
         timeout: float = 30.0,
+        speed_mms: int = _DEFAULT_NAV_SPEED_MMS,
+        # Legacy parameters accepted for API compatibility but unused:
         lookahead: float = 15.0,
         trackwidth: float = 9.0,
         base_speed: float = 40.0,
         stop_dist: float = 5.0,
-        controller: str = "pure_pursuit",
+        controller: str = "g_command",
     ) -> dict[str, Any]:
-        """Follow a multi-waypoint path using the selected path-following controller.
+        """Sequence one G command per consecutive waypoint (035-002).
 
-        Uses ``Odometry`` for camera-based pose reading and the controller
-        selected by *controller* for differential-drive wheel commands.
-
-        The loop iterates over frames from the playfield stream.  Each
-        iteration:
-
-        1. ``odom.update(tags)`` refreshes the robot pose from the current
-           frame (avoids a second camera fetch).
-        2. ``ctrl.compute(pos, yaw)`` returns ``(left, right)`` motor
-           commands.  A ``(0.0, 0.0)`` sentinel means the robot has arrived
-           within ``stop_dist`` of the final waypoint.
-        3. ``speed_for_time(left, right, cmd_ms)`` drives the motors for the
-           configured command duration.
+        Issues a firmware G command for each point in *path* in order,
+        waiting for ``EVT done G`` before advancing to the next waypoint.
 
         Parameters
         ----------
         path:
             Ordered list of ``(x, y)`` world-coordinate waypoints in cm.
-            Must contain at least two points.
-        camera_index:
-            Camera index to use for AprilTag detection (default 3 — B&W).
-        robot_tag:
-            AprilTag ID mounted on the robot (default 1).
-        timeout:
-            Maximum wall-clock seconds before giving up.
-        lookahead:
-            Lookahead circle radius in cm (default 15.0); used by
-            ``pure_pursuit``.
-        trackwidth:
-            Wheel-to-wheel spacing in cm (default 9.0 for QBot Pro).
-        base_speed:
-            Nominal forward motor command 0-100 (default 40.0).
-        stop_dist:
-            Distance from final waypoint at which arrival is declared,
-            in cm (default 5.0).
-        controller:
-            Controller name to use.  Accepted values: ``"pure_pursuit"``
-            (default), ``"stanley"``.  The controller is instantiated via
-            ``make_controller(controller, self.params)``.
-
-        Returns
-        -------
-        dict
-            On arrival::
-
-                {"success": True, "final_pos": [x, y],
-                 "elapsed": float, "frames": int}
-
-            On timeout::
-
-                {"success": False, "reason": "timeout", "elapsed": float,
-                 "frames": int}
-
-            When robot tag is lost for too long::
-
-                {"success": False, "reason": "lost_robot_tag",
-                 "elapsed": float, "frames": int}
-
-            On exception::
-
-                {"error": str}
-
-        Motors are stopped on every exit path (success, timeout, or
-        exception).
-        """
-        if not self._robot.is_connected():
-            return {"error": "Not connected. Call connect first."}
-
-        try:
-            field = self._get_playfield(camera_index)
-            odom = Odometry(field, robot_tag, otos=self._otos, params=self.params)
-            ctrl_cls = CONTROLLERS.get(controller)
-            if ctrl_cls is None:
-                raise ValueError(
-                    f"Unknown controller {controller!r}. "
-                    f"Supported values: {list(CONTROLLERS)}"
-                )
-            ctrl = _build_controller(ctrl_cls, self.params,
-                                     lookahead=lookahead,
-                                     trackwidth=trackwidth,
-                                     base_speed=base_speed,
-                                     stop_dist=stop_dist)
-            ctrl.set_path(path)
-            start = time.monotonic()
-            return self._run_controller(ctrl, field, odom, timeout, start)
-
-        except Exception as exc:
-            self._robot.stop()
-            return {"error": str(exc)}
-
-    def _spin_to_heading(
-        self,
-        target_heading_rad: float,
-        field,
-        odom: Odometry,
-        tolerance_deg: float,
-        max_frames: int,
-        speed: float,
-    ) -> dict[str, Any]:
-        """Rotate in place until heading error is within *tolerance_deg*.
-
-        Sends ``speed_for_time`` spin commands each frame and re-reads yaw
-        via *odom*.  Returns after the first frame where the error is within
-        tolerance, or after *max_frames* attempts.
-
-        Parameters
-        ----------
-        target_heading_rad:
-            Desired heading in radians (standard math convention).
-        field:
-            Active ``Playfield``.
-        odom:
-            ``Odometry`` bound to *field*.
-        tolerance_deg:
-            Stop spinning when ``|error| < tolerance_deg``.
-        max_frames:
-            Maximum camera frames to consume before giving up.
-        speed:
-            Motor speed magnitude for in-place spin (0-100).
-
-        Returns
-        -------
-        dict
-            ``{"aligned": bool, "heading_error_deg": float, "frames": int}``
-        """
-        p = self.params.as_dict()
-        cmd_ms = int(p.get("cmd_duration_ms", 150))
-        frames_stop = int(p.get("frames_before_stop", 5))
-
-        frame_count = 0
-        frames_no_robot = 0
-        tol_rad = math.radians(tolerance_deg)
-        spd = int(speed)
-
-        for tags in field.stream():
-            frame_count += 1
-            if frame_count > max_frames:
-                break
-
-            odom.update(tags)
-            if not odom.is_valid:
-                frames_no_robot += 1
-                if frames_no_robot >= frames_stop:
-                    self._robot.stop()
-                continue
-
-            frames_no_robot = 0
-            err = heading_error(odom.yaw, target_heading_rad)
-
-            if abs(err) < tol_rad:
-                self._robot.stop()
-                return {
-                    "aligned": True,
-                    "heading_error_deg": round(math.degrees(err), 2),
-                    "frames": frame_count,
-                }
-
-            # Spin: positive error → turn left (CCW) → left=-spd, right=+spd
-            if err > 0:
-                self._robot.speed_for_time(-spd, spd, cmd_ms)
-            else:
-                self._robot.speed_for_time(spd, -spd, cmd_ms)
-
-        self._robot.stop()
-        # Read final heading for reporting
-        err_final = 0.0
-        if odom.is_valid:
-            err_final = heading_error(odom.yaw, target_heading_rad)
-        return {
-            "aligned": False,
-            "heading_error_deg": round(math.degrees(err_final), 2),
-            "frames": frame_count,
-        }
-
-    def follow_pose_path(
-        self,
-        end_pose: Pose,
-        start_pose: Pose | None = None,
-        waypoints: list[Waypoint] | None = None,
-        method: str = "bezier",
-        preview: bool = True,
-        camera_index: int = 3,
-        robot_tag: int = 1,
-        timeout: float = 30.0,
-        lookahead: float = 15.0,
-        trackwidth: float = 9.0,
-        base_speed: float = 40.0,
-        stop_dist: float = 5.0,
-        controller: str = "pure_pursuit",
-    ) -> dict[str, Any]:
-        """Plan a curved path and drive to the end pose in three phases.
-
-        **Phase 1 — Spin-align:** If the heading error between the robot's
-        current yaw and the initial path tangent exceeds
-        ``params.spin_align_threshold_deg``, rotate in place until the error
-        is below ``params.spin_align_tolerance_deg``.
-
-        **Phase 2 — Path following:** Track the sampled path polyline using
-        the controller selected by *controller* until within *stop_dist* of
-        the final waypoint.
-
-        **Phase 3 — Final turn:** Rotate in place until the heading error to
-        ``end_pose.heading`` is below ``params.final_turn_tolerance_deg``.
-
-        Parameters
-        ----------
-        end_pose:
-            Target pose (position + heading) the robot should reach.
-        start_pose:
-            Starting pose.  When ``None``, the current pose is read from the
-            camera.  If the camera cannot locate the robot tag, an error dict
-            is returned.
-        waypoints:
-            Intermediate ``Waypoint`` objects (optional).
-        method:
-            Path builder name, default ``"bezier"``.
-        preview:
-            When ``True``, log/preview the planned polyline via
-            ``preview_polyline`` before driving.
+            Must contain at least one point.
         camera_index:
             Camera index (default 3, B&W).
         robot_tag:
             AprilTag ID on the robot (default 1).
         timeout:
-            Total wall-clock deadline in seconds.
-        lookahead:
-            Lookahead radius in cm; used by ``pure_pursuit``.
-        trackwidth:
-            Wheel-to-wheel spacing in cm.
-        base_speed:
-            Nominal forward motor command (0-100).
-        stop_dist:
-            Arrival threshold in cm.
-        controller:
-            Controller name to use for path tracking.  Accepted values:
-            ``"pure_pursuit"`` (default), ``"stanley"``.  Instantiated via
-            ``make_controller(controller, self.params)``.
+            Per-waypoint timeout in seconds (default 30.0).
+        speed_mms:
+            Navigation speed in mm/s for each G command (default 200).
+        lookahead, trackwidth, base_speed, stop_dist, controller:
+            Accepted for API compatibility; ignored.
 
         Returns
         -------
         dict
-            ``{success, planned_path, traversed_frames, elapsed_s,
-            final_pose, final_heading_error_deg}`` on success or
-            ``{..., error}`` on failure.
+            ``{"success": True, "waypoints_completed": int, "elapsed": float}``
+            on full completion, or
+            ``{"success": False, "reason": str, "waypoints_completed": int,
+            "elapsed": float}`` on failure.
         """
         if not self._robot.is_connected():
             return {"error": "Not connected. Call connect first."}
 
-        p = self.params.as_dict()
-        spin_align_threshold_deg = p.get("spin_align_threshold_deg", 90.0)
-        spin_align_tolerance_deg = p.get("spin_align_tolerance_deg", 15.0)
-        spin_align_max_frames = int(p.get("spin_align_max_frames", 60))
-        final_turn_tolerance_deg = p.get("final_turn_tolerance_deg", 5.0)
-        final_turn_speed = p.get("final_turn_speed", 45.0)
-        final_turn_max_frames = int(p.get("final_turn_max_frames", 60))
-        spin_speed = p.get("spin_speed", 45.0)
+        start = time.monotonic()
+        completed = 0
 
-        start_time = time.monotonic()
-
-        try:
-            field = self._get_playfield(camera_index)
-            odom = Odometry(field, robot_tag, otos=self._otos, params=self.params)
-
-            # -- Step 1: Resolve start_pose --
-            if start_pose is None:
-                odom.update()
-                if not odom.is_valid:
-                    return {"error": "Robot tag not found; cannot determine start pose."}
-                start_pose = Pose(x=odom.x, y=odom.y, heading=odom.yaw)
-
-            # -- Step 2: Build path --
-            path = build_path(
-                method,
-                start_pose,
-                end_pose,
-                waypoints or [],
-                spacing_cm=p.get("path_spacing_cm", 1.0),
-                tangent_frac=p.get("bezier_tangent_frac", 0.33),
+        for wp in path:
+            result = self.navigate(
+                wp,
+                camera_index=camera_index,
+                robot_tag=robot_tag,
+                timeout=timeout,
+                speed_mms=speed_mms,
             )
-            planned_path_dict = path.to_dict()
-
-            # -- Step 3: Preview --
-            if preview:
-                _preview_mod.preview_polyline(path.points)
-
-            # -- Step 4: Spin-align --
-            spin_frames = 0
-            if path.headings:
-                initial_tangent = path.headings[0]
-                # Read current yaw (odom may already be valid from step 1)
-                if not odom.is_valid:
-                    odom.update()
-                if odom.is_valid:
-                    err_rad = heading_error(odom.yaw, initial_tangent)
-                    if abs(math.degrees(err_rad)) > spin_align_threshold_deg:
-                        spin_result = self._spin_to_heading(
-                            target_heading_rad=initial_tangent,
-                            field=field,
-                            odom=odom,
-                            tolerance_deg=spin_align_tolerance_deg,
-                            max_frames=spin_align_max_frames,
-                            speed=spin_speed,
-                        )
-                        spin_frames = spin_result.get("frames", 0)
-
-            # -- Step 5: Path following --
-            ctrl_cls = CONTROLLERS.get(controller)
-            if ctrl_cls is None:
-                raise ValueError(
-                    f"Unknown controller {controller!r}. "
-                    f"Supported values: {list(CONTROLLERS)}"
-                )
-            ctrl = _build_controller(ctrl_cls, self.params,
-                                     lookahead=lookahead,
-                                     trackwidth=trackwidth,
-                                     base_speed=base_speed,
-                                     stop_dist=stop_dist)
-            ctrl.set_path(path.points)
-            pursuit_result = self._run_controller(
-                ctrl, field, odom, timeout, start_time,
-                initial_frame_count=spin_frames,
-            )
-
-            traversed_frames = pursuit_result.get("frames", spin_frames)
-            elapsed_s = round(time.monotonic() - start_time, 2)
-
-            # Build final_pose from odom (may be None if tag lost)
-            if odom.is_valid:
-                final_pose_dict = {
-                    "x": round(odom.x, 2),
-                    "y": round(odom.y, 2),
-                    "heading": round(odom.yaw, 4),
-                }
-            else:
-                final_pose_dict = None
-
-            if not pursuit_result.get("success"):
+            if result.get("error"):
                 return {
                     "success": False,
-                    "planned_path": planned_path_dict,
-                    "traversed_frames": traversed_frames,
-                    "elapsed_s": elapsed_s,
-                    "final_pose": final_pose_dict,
-                    "final_heading_error_deg": None,
-                    "error": pursuit_result.get("reason", "pursuit_failed"),
+                    "reason": result["error"],
+                    "waypoints_completed": completed,
+                    "elapsed": round(time.monotonic() - start, 1),
                 }
-
-            # -- Step 6: Final turn --
-            final_turn_result = self._spin_to_heading(
-                target_heading_rad=end_pose.heading,
-                field=field,
-                odom=odom,
-                tolerance_deg=final_turn_tolerance_deg,
-                max_frames=final_turn_max_frames,
-                speed=final_turn_speed,
-            )
-            traversed_frames += final_turn_result.get("frames", 0)
-
-            # Re-read final pose
-            if odom.is_valid:
-                final_pose_dict = {
-                    "x": round(odom.x, 2),
-                    "y": round(odom.y, 2),
-                    "heading": round(odom.yaw, 4),
+            if not result.get("success"):
+                return {
+                    "success": False,
+                    "reason": result.get("reason", "navigate_failed"),
+                    "waypoints_completed": completed,
+                    "elapsed": round(time.monotonic() - start, 1),
                 }
+            completed += 1
 
-            final_heading_error_deg = None
-            if odom.is_valid:
-                err = heading_error(odom.yaw, end_pose.heading)
-                final_heading_error_deg = round(math.degrees(err), 2)
-
-            elapsed_s = round(time.monotonic() - start_time, 2)
-            return {
-                "success": True,
-                "planned_path": planned_path_dict,
-                "traversed_frames": traversed_frames,
-                "elapsed_s": elapsed_s,
-                "final_pose": final_pose_dict,
-                "final_heading_error_deg": final_heading_error_deg,
-            }
-
-        except Exception as exc:
-            self._robot.stop()
-            return {"error": str(exc)}
+        return {
+            "success": True,
+            "waypoints_completed": completed,
+            "elapsed": round(time.monotonic() - start, 1),
+        }
 
     def read_pose(self, camera_index=3, robot_tag=1) -> dict[str, Any]:
         """Read robot position and orientation from camera."""
@@ -1133,8 +516,8 @@ class Navigator:
                                camera_index=camera_index,
                                robot_tag=robot_tag,
                                timeout=min(12, timeout * 0.5))
-        tag_dist = result.get('final_dist', -1)
-        log.append(f"phase1 done: tag_dist={tag_dist:.1f}")
+        tag_dist = result.get('final_dist', result.get('elapsed', -1))
+        log.append(f"phase1 done: navigate={'ok' if result.get('success') else 'failed'}")
         time.sleep(0.3)
 
         # Phase 2: Closed-loop gripper correction
@@ -1183,8 +566,7 @@ class Navigator:
                                    robot_tag=robot_tag,
                                    timeout=min(8, timeout - (time.monotonic() - start)))
 
-            tag_dist = result.get('final_dist', -1)
-            log.append(f"  nav done: tag_dist={tag_dist:.1f}")
+            log.append(f"  nav done: success={result.get('success')}")
 
             time.sleep(0.2)
 

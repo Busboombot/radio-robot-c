@@ -17,14 +17,15 @@ Classes that import cleanly in this environment:
        here to avoid contaminating sys.modules with cv2 for other tests)
   path: SampledPath, catmull_rom, plan_path, build_safe_spline,
         four_leaf_waypoints, BezierPathBuilder (numpy OK), arc.compute_arc
-  controllers: Controller (ABC), PID, normalize_angle, PurePursuitTracker,
-               StanleyController
+  controllers: Controller (ABC), PID, normalize_angle
+               (PurePursuitTracker, StanleyController, LTVController deleted
+               in ticket 035-002 — pose-authority sprint A1)
   kinematics: (package-level __init__ only — no wpimath required)
 
 Classes behind wpimath (now import cleanly — robotpy-wpimath is installed —
 but still LAZILY, so a bare subpackage import must not eagerly pull them):
-  controllers.LTVController — ``robot_radio.controllers.ltv``
   kinematics.DifferentialDriveKinematics — ``robot_radio.kinematics.differential_drive``
+  (controllers.LTVController deleted in ticket 035-002)
 
 CRITICAL: Do NOT import anything from vendor/PythonRobotics.
 Do NOT import robot_radio.nav.navigator here — it pulls in aprilcam → cv2
@@ -191,8 +192,9 @@ class TestPathImports:
 class TestControllersImports:
     """controllers subpackage import chain.
 
-    Eager imports (in __init__): base, pure_pursuit, stanley.
-    Lazy import (via __getattr__): LTVController (requires wpimath — absent).
+    After ticket 035-002 (pose-authority sprint A1), the host-side steering
+    controllers (PurePursuitTracker, StanleyController, LTVController) are
+    deleted.  Only base (Controller ABC) and pid (PID) remain.
     """
 
     def test_controllers_package_imports(self):
@@ -203,25 +205,6 @@ class TestControllersImports:
 
     def test_controllers_pid_imports(self):
         _fresh_import("robot_radio.controllers.pid")
-
-    def test_controllers_pure_pursuit_imports(self):
-        _fresh_import("robot_radio.controllers.pure_pursuit")
-
-    def test_controllers_stanley_imports(self):
-        _fresh_import("robot_radio.controllers.stanley")
-
-    def test_controllers_ltv_imports(self):
-        """ltv requires wpimath, now installed (robotpy-wpimath) — imports clean."""
-        # Remove cached module to force a fresh import.
-        sys.modules.pop("robot_radio.controllers.ltv", None)
-
-        importlib.import_module("robot_radio.controllers.ltv")
-
-    def test_controllers_ltv_via_getattr_returns_class(self):
-        """Accessing LTVController via the package __getattr__ returns the class."""
-        import robot_radio.controllers as ctrl
-
-        assert ctrl.LTVController is not None
 
 
 # ---------------------------------------------------------------------------
@@ -280,12 +263,11 @@ class TestLazyGuarantee:
         sys.modules is meaningless (an earlier test may have loaded it); we
         instead assert the lazy __getattr__ keeps the guarded submodules
         deferred until first access.
+
+        Note: robot_radio.controllers.ltv was deleted in ticket 035-002
+        (pose-authority sprint A1) — only kinematics laziness is checked here.
         """
-        for mod in (
-            "robot_radio.kinematics.differential_drive",
-            "robot_radio.controllers.ltv",
-        ):
-            sys.modules.pop(mod, None)
+        sys.modules.pop("robot_radio.kinematics.differential_drive", None)
 
         import robot_radio.nav       # noqa: F401
         import robot_radio.path      # noqa: F401
@@ -295,10 +277,6 @@ class TestLazyGuarantee:
         assert "robot_radio.kinematics.differential_drive" not in sys.modules, (
             "kinematics.differential_drive loaded eagerly — it must stay behind "
             "the lazy __getattr__ so a bare subpackage import is wpimath-free"
-        )
-        assert "robot_radio.controllers.ltv" not in sys.modules, (
-            "controllers.ltv loaded eagerly — it must stay behind the lazy "
-            "__getattr__ so a bare subpackage import is wpimath-free"
         )
 
     def test_no_matplotlib_after_subpackage_imports(self):
@@ -351,23 +329,6 @@ class TestConstruction:
 
         pid = PID(kp=1.0, ki=0.0, kd=0.0)
         assert pid.kp == 1.0
-
-    def test_pure_pursuit_construction(self):
-        from robot_radio.controllers.pure_pursuit import PurePursuitTracker
-
-        tracker = PurePursuitTracker(
-            path=[(0.0, 0.0), (10.0, 0.0)],
-            lookahead=5.0,
-            trackwidth=9.0,
-            base_speed=40.0,
-        )
-        assert tracker.lookahead == 5.0
-
-    def test_stanley_construction(self):
-        from robot_radio.controllers.stanley import StanleyController
-
-        ctrl = StanleyController(k=0.8, base_speed=40.0, trackwidth=9.0)
-        assert ctrl.k == 0.8
 
     def test_sampled_path_construction(self):
         from robot_radio.path.sampled_path import SampledPath
