@@ -1,10 +1,11 @@
 ---
-status: in-progress
+status: done
 sprint: '034'
 tickets:
 - 034-001
 - 034-002
 - 034-003
+- 034-004
 - 034-005
 - 034-006
 ---

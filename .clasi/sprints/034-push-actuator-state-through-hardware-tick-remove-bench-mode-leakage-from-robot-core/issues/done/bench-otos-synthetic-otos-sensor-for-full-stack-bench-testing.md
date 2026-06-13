@@ -1,8 +1,9 @@
 ---
-status: in-progress
+status: done
 sprint: '034'
 tickets:
 - 034-004
+- 034-006
 ---
 
 # Bench OTOS — synthetic OTOS sensor for full-stack bench testing
