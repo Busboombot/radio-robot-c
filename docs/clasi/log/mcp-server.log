@@ -1,0 +1,50 @@
+2026-06-13T08:10:25 [INFO] ============================================================
+2026-06-13T08:10:25 [INFO] CLASI MCP server starting
+2026-06-13T08:10:25 [INFO]   serving: team-lead (tier 0)
+2026-06-13T08:10:25 [INFO]   project_root: /Users/eric/proj/league/robotics/radio-robot
+2026-06-13T08:10:25 [INFO]   clasi_dir: /Users/eric/proj/league/robotics/radio-robot/docs/clasi
+2026-06-13T08:10:25 [INFO]   content_root: /Users/eric/.local/pipx/venvs/clasi/lib/python3.12/site-packages/clasi
+2026-06-13T08:10:25 [INFO]   python: /Users/eric/.local/pipx/venvs/clasi/bin/python
+2026-06-13T08:10:25 [INFO]   log_file: /Users/eric/proj/league/robotics/radio-robot/docs/clasi/log/mcp-server.log
+2026-06-13T08:10:25 [INFO]   tools registered: 30
+2026-06-13T08:10:25 [INFO] CLASI MCP server ready
+2026-06-13T08:20:10 [INFO] ============================================================
+2026-06-13T08:20:10 [INFO] CLASI MCP server starting
+2026-06-13T08:20:10 [INFO]   serving: team-lead (tier 0)
+2026-06-13T08:20:10 [INFO]   project_root: /Users/eric/proj/league/robotics/radio-robot
+2026-06-13T08:20:10 [INFO]   clasi_dir: /Users/eric/proj/league/robotics/radio-robot/docs/clasi
+2026-06-13T08:20:10 [INFO]   content_root: /Users/eric/.local/pipx/venvs/clasi/lib/python3.12/site-packages/clasi
+2026-06-13T08:20:10 [INFO]   python: /Users/eric/.local/pipx/venvs/clasi/bin/python
+2026-06-13T08:20:10 [INFO]   log_file: /Users/eric/proj/league/robotics/radio-robot/docs/clasi/log/mcp-server.log
+2026-06-13T08:20:10 [INFO]   tools registered: 30
+2026-06-13T08:20:10 [INFO] CLASI MCP server ready
+2026-06-13T08:20:35 [INFO] ============================================================
+2026-06-13T08:20:35 [INFO] CLASI MCP server starting
+2026-06-13T08:20:35 [INFO]   serving: team-lead (tier 0)
+2026-06-13T08:20:35 [INFO]   project_root: /Users/eric/proj/league/robotics/radio-robot
+2026-06-13T08:20:35 [INFO]   clasi_dir: /Users/eric/proj/league/robotics/radio-robot/docs/clasi
+2026-06-13T08:20:35 [INFO]   content_root: /Users/eric/.local/pipx/venvs/clasi/lib/python3.12/site-packages/clasi
+2026-06-13T08:20:35 [INFO]   python: /Users/eric/.local/pipx/venvs/clasi/bin/python
+2026-06-13T08:20:35 [INFO]   log_file: /Users/eric/proj/league/robotics/radio-robot/docs/clasi/log/mcp-server.log
+2026-06-13T08:20:35 [INFO]   tools registered: 30
+2026-06-13T08:20:35 [INFO] CLASI MCP server ready
+2026-06-13T08:21:18 [INFO] ============================================================
+2026-06-13T08:21:18 [INFO] CLASI MCP server starting
+2026-06-13T08:21:18 [INFO]   serving: team-lead (tier 0)
+2026-06-13T08:21:18 [INFO]   project_root: /Users/eric/proj/league/robotics/radio-robot
+2026-06-13T08:21:18 [INFO]   clasi_dir: /Users/eric/proj/league/robotics/radio-robot/docs/clasi
+2026-06-13T08:21:18 [INFO]   content_root: /Users/eric/.local/pipx/venvs/clasi/lib/python3.12/site-packages/clasi
+2026-06-13T08:21:18 [INFO]   python: /Users/eric/.local/pipx/venvs/clasi/bin/python
+2026-06-13T08:21:18 [INFO]   log_file: /Users/eric/proj/league/robotics/radio-robot/docs/clasi/log/mcp-server.log
+2026-06-13T08:21:18 [INFO]   tools registered: 30
+2026-06-13T08:21:18 [INFO] CLASI MCP server ready
+2026-06-13T08:22:56 [INFO] ============================================================
+2026-06-13T08:22:56 [INFO] CLASI MCP server starting
+2026-06-13T08:22:56 [INFO]   serving: team-lead (tier 0)
+2026-06-13T08:22:56 [INFO]   project_root: /Users/eric/proj/league/robotics/radio-robot
+2026-06-13T08:22:56 [INFO]   clasi_dir: /Users/eric/proj/league/robotics/radio-robot/docs/clasi
+2026-06-13T08:22:56 [INFO]   content_root: /Users/eric/.local/pipx/venvs/clasi/lib/python3.12/site-packages/clasi
+2026-06-13T08:22:56 [INFO]   python: /Users/eric/.local/pipx/venvs/clasi/bin/python
+2026-06-13T08:22:56 [INFO]   log_file: /Users/eric/proj/league/robotics/radio-robot/docs/clasi/log/mcp-server.log
+2026-06-13T08:22:56 [INFO]   tools registered: 30
+2026-06-13T08:22:56 [INFO] CLASI MCP server ready

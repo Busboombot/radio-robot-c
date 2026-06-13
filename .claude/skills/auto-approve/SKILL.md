@@ -1,1 +1,1 @@
-/Volumes/Proj/proj/RobotProjects/radio-robot-c/.agents/skills/auto-approve/SKILL.md
+/Users/eric/proj/league/robotics/radio-robot/.agents/skills/auto-approve/SKILL.md

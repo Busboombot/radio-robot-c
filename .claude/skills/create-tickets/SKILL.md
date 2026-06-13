@@ -1,1 +1,1 @@
-/Volumes/Proj/proj/RobotProjects/radio-robot-c/.agents/skills/create-tickets/SKILL.md
+/Users/eric/proj/league/robotics/radio-robot/.agents/skills/create-tickets/SKILL.md

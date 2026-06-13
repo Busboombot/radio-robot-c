@@ -1,1 +1,1 @@
-/Volumes/Proj/proj/RobotProjects/radio-robot-c/.agents/skills/consolidate-architecture/SKILL.md
+/Users/eric/proj/league/robotics/radio-robot/.agents/skills/consolidate-architecture/SKILL.md

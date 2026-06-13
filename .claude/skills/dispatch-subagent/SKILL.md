@@ -1,1 +1,1 @@
-/Volumes/Proj/proj/RobotProjects/radio-robot-c/.agents/skills/dispatch-subagent/SKILL.md
+/Users/eric/proj/league/robotics/radio-robot/.agents/skills/dispatch-subagent/SKILL.md

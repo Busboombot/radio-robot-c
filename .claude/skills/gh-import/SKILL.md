@@ -1,1 +1,1 @@
-/Volumes/Proj/proj/RobotProjects/radio-robot-c/.agents/skills/gh-import/SKILL.md
+/Users/eric/proj/league/robotics/radio-robot/.agents/skills/gh-import/SKILL.md
