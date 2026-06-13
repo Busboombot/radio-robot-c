@@ -14,6 +14,7 @@
 #include "Robot.h"
 #include "CommandProcessor.h"
 #include "MotionCommandHandlers.h"
+#include "ConfigCommands.h"
 #include "DebugCommandable.h"
 
 #ifndef HOST_BUILD
@@ -563,83 +564,12 @@ static void handleRf(const ArgList& args, const char* corrId,
 }
 
 // ---------------------------------------------------------------------------
-// GET VEL -- per-wheel velocity readout (separate descriptor from GET).
-//   prefix "GET VEL"; parseFn nullptr.
-//   Reply: OK get vel=<vL>:E,<vR>:E
+// GET VEL / GET / SET -- config-registry commands.
+//
+// Moved to source/app/ConfigCommands.cpp (finding A3 split).  The parse*/handle*
+// functions live there as file-local statics; their descriptors are registered
+// onto the command table below via appendConfigCommands().
 // ---------------------------------------------------------------------------
-
-static ParseResult parseGetVel(const char* const* /*tokens*/, int /*ntokens*/,
-                                const KVPair* /*kvs*/, int /*nkv*/)
-{
-    ParseResult r; r.ok = true; r.args.count = 0; return r;
-}
-
-static void handleGetVel(const ArgList& /*args*/, const char* corrId,
-                          ReplyFn replyFn, void* replyCtx, void* handlerCtx)
-{
-    Robot* robot = ctxFrom(handlerCtx).robot;
-    float vL = robot->state.inputs.velLMms;
-    float vR = robot->state.inputs.velRMms;
-    char rbuf[64];
-    char body[48];
-    snprintf(body, sizeof(body), "vel=%d:E,%d:E", (int)vL, (int)vR);
-    CommandProcessor::replyOK(rbuf, sizeof(rbuf), "get", body, corrId, replyFn, replyCtx);
-}
-
-// ---------------------------------------------------------------------------
-// parseGet -- convert positional key-name tokens into STR args for handleGet.
-//   Each token becomes args[i].sval = key name.
-// ---------------------------------------------------------------------------
-
-static ParseResult parseGet(const char* const* tokens, int ntokens,
-                             const KVPair* /*kvs*/, int /*nkv*/)
-{
-    ParseResult r;
-    r.ok = true;
-    int n = (ntokens > MAX_ARGS) ? MAX_ARGS : ntokens;
-    r.args.count = n;
-    for (int i = 0; i < n; ++i) {
-        r.args.args[i].type = ArgType::STR;
-        r.args.args[i].ival = 0;
-        r.args.args[i].fval = 0.0f;
-        int j = 0;
-        for (; tokens[i][j] != '\0' && j < (int)sizeof(r.args.args[i].sval) - 1; ++j)
-            r.args.args[i].sval[j] = tokens[i][j];
-        r.args.args[i].sval[j] = '\0';
-    }
-    return r;
-}
-
-// ---------------------------------------------------------------------------
-// parseSet -- convert kv pairs into "key=value" STR args for handleSet.
-// ---------------------------------------------------------------------------
-
-static ParseResult parseSet(const char* const* /*tokens*/, int /*ntokens*/,
-                             const KVPair* kvs, int nkv)
-{
-    ParseResult r;
-    if (nkv == 0) {
-        r.ok = false;
-        r.err = { "badarg", "no key=value pairs" };
-        return r;
-    }
-    r.ok = true;
-    int n = (nkv > MAX_ARGS) ? MAX_ARGS : nkv;
-    r.args.count = 0;
-    for (int i = 0; i < n; ++i) {
-        if (!kvs[i].key) continue;
-        char* dst = r.args.args[r.args.count].sval;
-        int cap = (int)(sizeof(r.args.args[0].sval) - 1);
-        int written = snprintf(dst, (size_t)(cap + 1), "%s=%s",
-                               kvs[i].key, kvs[i].value);
-        if (written > cap) dst[cap] = '\0';
-        r.args.args[r.args.count].type = ArgType::STR;
-        r.args.args[r.args.count].ival = 0;
-        r.args.args[r.args.count].fval = 0.0f;
-        ++r.args.count;
-    }
-    return r;
-}
 
 // ---------------------------------------------------------------------------
 // + -- keepalive command.
@@ -1187,9 +1117,9 @@ std::vector<CommandDescriptor> Robot::buildCommandTable(
     cmds.push_back(makeCmd("+",        parseKeepalive, handleKeepalive, sysCtxPtr, "badarg")); // keepalive: reset watchdog
     cmds.push_back(makeCmd("SAFE",     parseSafe,      handleSafe,      sysCtxPtr, "badarg")); // enable/disable safety watchdog + set timeout
     cmds.push_back(makeCmd("SI",       parseSI,        handleSI,        sysCtxPtr, "badarg")); // set odometry world pose (x_mm y_mm h_cdeg)
-    cmds.push_back(makeCmd("GET VEL",  parseGetVel,    handleGetVel,    sysCtxPtr, "badarg")); // get velocity PID params
-    cmds.push_back(makeCmd("GET",      parseGet,       handleGet,       &_cfgCtx,  "badkey")); // get config value by key
-    cmds.push_back(makeCmd("SET",      parseSet,       handleSet,       &_cfgCtx,  "badkey")); // set config value by key
+    // GET VEL / GET / SET descriptors live in ConfigCommands.cpp (A3 split).
+    // GET VEL is registered first so its longer prefix wins the linear scan.
+    appendConfigCommands(cmds, &_cfgCtx, sysCtxPtr);
 
     return cmds;
 }
