@@ -1,5 +1,5 @@
 ---
-status: pending
+status: done
 ---
 
 # A3 — Split the two firmware god objects (MotionController.cpp, Robot.cpp)
