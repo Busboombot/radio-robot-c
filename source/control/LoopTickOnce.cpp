@@ -92,11 +92,14 @@ void loopTickOnce(Robot& robot, CommandProcessor& cmd, CommandQueue& queue,
     robot.odometry.predict(robot.state.inputs, cfg.trackwidthMm,
                            cfg.rotationalSlip, now);
 
-    // ===== BENCH OTOS: integrate commanded velocity into BenchOtosSensor ======
-    // Must run before the OTOS block so BenchOtosSensor::tick() advances its
-    // accumulators before otosCorrect() calls readTransformed().
-    // benchOtosTick() is a no-op when bench mode is off (fast early-return).
-    robot.benchOtosTick(now);
+    // ===== HAL ACTUATOR TICK: deliver commanded velocity to the HAL ===========
+    // Pass the commanded actuator state to the HAL so a bench-mode sensor plant
+    // (BenchOtosSensor in NezhaHAL) can integrate it.  Must run before the OTOS
+    // block so the plant advances its accumulators before otosCorrect() calls
+    // readTransformed().  Production NezhaHAL / MockHAL implement this as a
+    // near-no-op when bench mode is off; the robot core no longer reaches into
+    // the concrete HAL to do this (034-002, replaces robot.benchOtosTick).
+    robot.hal.tick(now, robot.state.commands);
 
     // ===== OTOS: timed I2C pose read + EKF fusion ============================
     // In firmware: run when enOtos is set and lagOtosMs has elapsed.
