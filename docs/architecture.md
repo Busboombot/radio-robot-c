@@ -293,3 +293,51 @@ graph TD
 | PathFollower copies waypoints (MAX=32) | No lifetime dependency on caller buffer; 256 bytes/follower static cost |
 | `uBit.sleep(tickMs)` not busy-wait | Yields fiber so CODAL radio event handler runs between ticks |
 | Integrators survive S-command keepalive | `resetIntegrators()` on mode change only; no step response on re-send |
+
+## Navigation Architecture & Pose Authority
+
+(Established by the pose-authority decision, `docs/decisions/029-pose-authority.md`,
+sprint 035 / issue a1.)
+
+**Pose authority.** The **firmware EKF** (`source/control/Odometry.cpp` +
+`EKF.cpp`, fusing OTOS and encoder odometry) is the single authoritative pose
+source for short-horizon motion. The host does **not** run a parallel steering
+loop — there is no host-side pose estimator or controller racing the firmware.
+All closed-loop steering happens on the robot.
+
+**Camera corrections.** The camera (aprilcam daemon) provides an absolute,
+drift-free fix. The host reads the daemon pose and seeds the firmware EKF with
+`OV`/`SI` commands (a discrete pose reset, not a continuous loop). `rogo sync pose`
+is the manual trigger. Between corrections the firmware dead-reckons; corrections
+are occasional re-baselines, not a steering feedback path.
+
+**The firmware `G` (go-to) command** is the navigation primitive. It takes
+**robot-relative** coordinates `(forward_mm, left_mm)` and transforms them to a
+world target using the current pose (`MotionController::beginGoTo`); it
+pre-rotates toward the bearing then pursues, stopping at the world target. Hosts
+that hold a *world* target must convert to robot-relative first.
+
+**Two host navigation entry points, both thin over the firmware:**
+
+- **CLI point-to-point** (`rogo goto <x> <y>`, `rogo turnto <deg>`) →
+  `host/robot_radio/nav/camera_goto.py` (`go_to_world_camera`,
+  `spin_to_yaw_camera`). Uses real-time camera feedback for precise single-target
+  convergence. This is the one intentional host-side feedback path (camera-closed,
+  not a duplicate odometry/steering stack), kept because it leans on the camera
+  as truth, not a host pose estimate.
+- **Route planning / MCP** (`navigate_to`, `follow_path`) →
+  `host/robot_radio/nav/navigator.py`. `navigate()` reads the camera world pose,
+  converts the world target to robot-relative mm, and issues a single firmware
+  `G` command, blocking on `EVT done G`. `follow_path()` sequences one `navigate()`
+  per waypoint. The navigator is a **route planner**, not a steering loop.
+
+**Deleted (sprint 035, a1b).** The host-side steering controllers
+(`controllers/pure_pursuit.py`, `stanley.py`, `ltv.py`) and the dual-PID
+`Navigator.navigate`/`follow_path`/`follow_pose_path`/`_run_controller`/
+`ChaseController` steering loops were removed — they duplicated firmware
+responsibilities and competed with the EKF for pose authority. The
+`follow_pose_path` MCP tool was removed (no clean `G` equivalent).
+
+**Out of scope (future).** The `NezhaKinematic.go_to_world` (G4) host path, and
+automatic camera correction *during* a traversal (today corrections are between
+moves).
