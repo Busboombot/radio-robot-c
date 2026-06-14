@@ -11,6 +11,7 @@ No hardware or camera daemon required — all gRPC/cv2 dependencies are mocked.
 
 from __future__ import annotations
 
+import subprocess
 import sys
 import math
 from pathlib import Path
@@ -326,35 +327,53 @@ class TestCamTrackerTagFiltering:
 # ---------------------------------------------------------------------------
 
 class TestSensorsInitLaziness:
-    """Importing robot_radio.sensors must NOT pull in cv2/aprilcam/grpc."""
+    """Importing robot_radio.sensors must NOT pull in cv2/aprilcam/grpc.
+
+    These tests use a fresh subprocess for each check so that cv2 imported by
+    other tests (e.g. test_playfield.py via aprilcam) cannot pollute the
+    assertion.  The subprocess exits 0 if the invariant holds, non-zero if it
+    is violated — so the tests still fail if someone makes sensors import cv2
+    eagerly.
+    """
+
+    def _run_snippet(self, snippet: str) -> None:
+        """Run *snippet* in a fresh interpreter and assert it exits 0."""
+        result = subprocess.run(
+            [sys.executable, "-c", snippet],
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0, (
+            f"Subprocess check failed (rc={result.returncode}):\n"
+            f"stdout: {result.stdout}\n"
+            f"stderr: {result.stderr}"
+        )
 
     def test_cv2_not_in_sys_modules_after_import(self) -> None:
         """Bare import of robot_radio.sensors must leave cv2 absent."""
-        # cv2 is not installed in the test venv, but even if it were,
-        # it must not be imported as a side-effect of 'import robot_radio.sensors'.
-        # We check sys.modules regardless — if cv2 was already there from
-        # a prior import in this session, skip (note: cam_tracker is not
-        # imported in any other test in this file before this point).
-        import importlib
-        # Force a fresh attribute lookup by removing cached value if present
-        import robot_radio.sensors as _s
-        for name in ("CamTracker", "Otos"):
-            _s.__dict__.pop(name, None)
-
-        # Now check that cv2 is not in sys.modules (it shouldn't be)
-        # as a result of the bare sensors import.
-        assert "cv2" not in sys.modules, (
-            "cv2 was imported as a side-effect of 'import robot_radio.sensors'. "
-            "The sensors/__init__.py must not eagerly import cam_tracker."
+        self._run_snippet(
+            "import sys\n"
+            "import robot_radio.sensors as _s\n"
+            "# Remove any lazy-cached names to simulate a fresh attribute lookup\n"
+            "for name in ('CamTracker', 'Otos'):\n"
+            "    _s.__dict__.pop(name, None)\n"
+            "assert 'cv2' not in sys.modules, (\n"
+            "    'cv2 was imported as a side-effect of import robot_radio.sensors. '\n"
+            "    'The sensors/__init__.py must not eagerly import cam_tracker.'\n"
+            ")\n"
         )
 
     def test_odom_tracker_available_without_cv2(self) -> None:
         """OdomTracker should be available without triggering a cv2 import."""
-        import robot_radio.sensors as sensors
-        assert hasattr(sensors, "OdomTracker")
-        # Accessing OdomTracker must not import cv2
-        _ = sensors.OdomTracker
-        assert "cv2" not in sys.modules
+        self._run_snippet(
+            "import sys\n"
+            "import robot_radio.sensors as sensors\n"
+            "assert hasattr(sensors, 'OdomTracker'), 'OdomTracker missing'\n"
+            "_ = sensors.OdomTracker\n"
+            "assert 'cv2' not in sys.modules, (\n"
+            "    'cv2 was imported when accessing sensors.OdomTracker'\n"
+            ")\n"
+        )
 
     def test_cam_tracker_lazy_import(self) -> None:
         """CamTracker is accessible via lazy __getattr__ without pre-loading cv2."""
@@ -370,18 +389,24 @@ class TestSensorsInitLaziness:
 
     def test_sensors_all_exports_accessible(self) -> None:
         """All non-lazy __all__ names must resolve without cv2."""
-        import robot_radio.sensors as sensors
         eager_names = [
             "Odometry", "OdomTracker", "parse_so", "parse_tlm",
             "ColorClassifier", "nezha_classifier", "calibrate_white",
             "ThrashMonitor", "CalibrationError", "load", "to_wire_values",
             "apply", "load_and_apply",
         ]
-        for name in eager_names:
-            obj = getattr(sensors, name)
-            assert obj is not None, f"sensors.{name} resolved to None"
-        # cv2 must still be absent
-        assert "cv2" not in sys.modules
+        names_repr = repr(eager_names)
+        self._run_snippet(
+            "import sys\n"
+            "import robot_radio.sensors as sensors\n"
+            f"eager_names = {names_repr}\n"
+            "for name in eager_names:\n"
+            "    obj = getattr(sensors, name)\n"
+            "    assert obj is not None, f'sensors.{name} resolved to None'\n"
+            "assert 'cv2' not in sys.modules, (\n"
+            "    'cv2 was imported after accessing eager sensors exports'\n"
+            ")\n"
+        )
 
 
 # ---------------------------------------------------------------------------
