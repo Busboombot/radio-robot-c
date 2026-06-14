@@ -1,210 +1,287 @@
 #!/usr/bin/env python
-"""Random playfield tour — drive the robot from slot to slot with single G commands,
-and draw two paths on the AprilCam view: the robot's own odometry (telemetry) and
-the camera's tag-100 track.
+"""Playfield tour — ONE smooth firmware G per leg, camera between legs.
 
-Each hop:
-  1. select_location() — ask the camera where the robot is (x, y, heading).
-  2. select_target()   — rank all playfield slots (squares + dots) by distance,
-                         randomly pick one of the 5 farthest.
-  3. compute_g()       — from (position, target) return the G command parameters.
-  4. issue that ONE G, then keepalive_until_done() drives the watchdog while
-     COLLECTING (a) every line the robot sends back (telemetry response) and
-     (b) the camera tag-100 poses sampled during the move.
-  5. extract_telemetry() pulls the odometry track out of the response, and
-     draw_paths() draws odometry + camera tracks onto the view via the daemon
-     overlay API (gRPC socket).
+Per leg:
+  1. CHECK    — read the camera (averaged) for the robot's world pose.
+  2. ANCHOR   — robot.update_world_pose() fixes the firmware OTOS to that pose.
+  3. CALCULATE — robot-relative (fwd_mm, left_mm) to the next rectangle.
+  4. DRIVE    — robot.go_to(fwd, lft, SPEED, on_tick=on_tick_cb) issues ONE
+                smooth firmware G arc. The on_tick callback feeds the camera
+                poll each telemetry tick, records both camera and odometry
+                tracks, and returns False to abort if the robot leaves the
+                safe box.
 
-Run 5 hops in a loop.
+Turn sign: the firmware turns CW for a positive relative angle, so the
+lateral component is NEGATED — a target on the robot's left gets a negative
+`left`, which makes the firmware turn left (CCW). beginGoTo turns by
+atan2(left, fwd) and drives sqrt(fwd^2+left^2), so the absolute SI heading
+cancels out of the motion.
 
-  uv run --group calibrate python host_tests/playfield_tour/playfield_random_tour.py
+Draws two persistent paths on the live view: camera track (cyan dots) and
+the robot's streamed odometry (small light-yellow crosses).
+
+Usage::
+
+    uv run --group calibrate python host_tests/playfield_tour/playfield_random_tour.py
+
+Optional flags::
+
+    --port  /dev/cu.usbmodem2121402   # relay USB port (auto-detected if omitted)
+    --hops  6
+    --speed 160
 """
-import json
+from __future__ import annotations
+
+import argparse
 import math
-import re
-import time
 import random
+import sys
+import time
 
-import serial
-from aprilcam.config import Config
-from aprilcam.client.control import DaemonControl
+ROBOT_TAG = 100
+SPEED = 160                # mm/s — smooth single-G arc
+HOPS = 6
+ARRIVE_CM = 8.0            # within this of the rectangle = arrived
+MAX_G_PER_LEG = 3          # full smooth G per try; recompute from camera if short
+# Safety box (cm) — abort the leg if the camera shows the robot centre leaving it.
+ABORT_X = 40.0
+ABORT_Y = 33.0
 
-RELAY = "/dev/cu.usbmodem2121402"          # radio relay serial port
-ROBOT_TAG = 100                            # robot's AprilTag id
-SPEED = 140                                # mm/s
-STREAM_MS = 100                            # robot telemetry stream period
-PLAYFIELD = "/Volumes/Proj/proj/RobotProjects/AprilTags/data/aprilcam/playfield.json"
+# ---------------------------------------------------------------------------
+# Module-level track lists — cleared per run
+# ---------------------------------------------------------------------------
 
-ODO_COLOR = [255, 140, 0]                  # odometry track  (orange)
-CAM_COLOR = [0, 200, 255]                  # camera track    (cyan)
-
-# Target slots: the defined colored RECTANGLES only (the dots sit at the field
-# edges where the robot can't reach and the camera read is parallax-corrupt).
-_pf = json.load(open(PLAYFIELD))
-SLOTS = [(s["slug"], float(s["x"]), float(s["y"]))
-         for s in _pf["rectangles"]]
-
-# --- camera connection -----------------------------------------------------
-dc = DaemonControl.connect_default(Config.load())
-cam = dc.list_cameras()[0]
-
-# --- robot connection (relay !GO data-plane) -------------------------------
-p = serial.Serial(RELAY, 115200, timeout=0.3)
-time.sleep(1.6); p.reset_input_buffer()
+CAM_TRACK: list[tuple[float, float]] = []
+ODO_TRACK: list[tuple[float, float]] = []
 
 
-def send(c):
-    p.write((c + "\n").encode()); p.flush()
+# ---------------------------------------------------------------------------
+# Pure maths helpers (unchanged from original)
+# ---------------------------------------------------------------------------
+
+def distance(target_slug_xy: tuple, loc: tuple[float, float, float]) -> float:
+    """Euclidean cm distance from loc (x, y, heading) to target (slug, x, y)."""
+    return math.hypot(target_slug_xy[1] - loc[0], target_slug_xy[2] - loc[1])
 
 
-def keepalive():
-    """Feed the robot's all-motion safety watchdog over the radio link."""
-    p.write(b"+\n"); p.flush()
+def in_bounds(x: float, y: float) -> bool:
+    return abs(x) <= ABORT_X and abs(y) <= ABORT_Y
 
 
-def robot_camera_xy():
-    """Latest camera (x_cm, y_cm) for the robot tag, or None."""
-    tf = dc.get_tags(cam)
-    t = next((t for t in tf.tags if t.id == ROBOT_TAG and t.world_xy), None)
-    return tuple(t.world_xy) if t else None
-
-
-def keepalive_until_done(tmax):
-    """Drive the watchdog until the robot reports the move done (or tmax elapses).
-
-    While waiting it does two things and returns both:
-      * collects EVERY line the robot sends back -> one block of response text;
-      * samples the camera tag-100 position each tick -> a list of (x_cm, y_cm).
-    Returns (response_text, camera_poses)."""
-    chunks = []
-    camera_poses = []
-    t0 = time.time()
-    while time.time() - t0 < tmax:
-        keepalive()
-        send("SNAP")                       # reliable telemetry (request/reply)
-        time.sleep(0.15)
-        chunk = p.read(8192).decode(errors="replace")
-        if chunk:
-            chunks.append(chunk)
-        xy = robot_camera_xy()
-        if xy:
-            camera_poses.append(xy)
-        if chunk and "done" in chunk.lower():
-            break
-    return ("".join(chunks), camera_poses)
-
-
-# TLM frames arrive back-to-back with no newlines, so scan the whole blob for
-# every "pose=x_mm,y_mm" field rather than splitting into lines.
-_POSE_RE = re.compile(r"pose=(-?\d+),(-?\d+)")
-
-
-def extract_telemetry(response_text):
-    """Pull the odometry track out of a response block: (x_cm, y_cm) per TLM frame."""
-    return [(int(x) / 10.0, int(y) / 10.0)
-            for x, y in _POSE_RE.findall(response_text)]
-
-
-def draw_paths(odometry, camera_track):
-    """Draw odometry + camera tracks on the AprilCam view via the daemon overlay API."""
-    elems = []
-    if len(camera_track) >= 2:
-        flat = [v for xy in camera_track for v in xy]
-        elems.append({"type": "polyline", "params": flat,
-                      "color": CAM_COLOR, "thickness": 3})
-    if len(odometry) >= 2:
-        flat = [v for xy in odometry for v in xy]
-        elems.append({"type": "polyline", "params": flat,
-                      "color": ODO_COLOR, "thickness": 2})
-    if elems:
-        dc.publish_overlay(cam, elems, ttl=120.0)
-
-
-def distance(target, location):
-    """Planar distance in cm between a slot (slug, x, y) and a location (x, y, ...)."""
-    return math.hypot(target[1] - location[0], target[2] - location[1])
-
-
-def select_location():
-    """Use the camera to figure out where we are: (x_cm, y_cm, heading_rad).
-
-    Heading = tag yaw + 90deg (the robot's forward axis)."""
-    for _ in range(60):
-        xy = robot_camera_xy()
-        if xy:
-            tf = dc.get_tags(cam)
-            t = next((t for t in tf.tags if t.id == ROBOT_TAG and t.world_xy), None)
-            if t:
-                return (t.world_xy[0], t.world_xy[1], t.yaw + math.pi / 2.0)
-        time.sleep(0.05)
-    raise RuntimeError("robot tag 100 not visible to camera")
-
-
-def select_target(location):
-    """Given our location, return a slot randomly chosen from the 5 farthest away."""
-    ranked = sorted(SLOTS, key=lambda s: distance(s, location), reverse=True)
+def select_target(slots: list[tuple], loc: tuple[float, float, float]):
+    """Pick a random target from the 5 farthest rectangles."""
+    ranked = sorted(slots, key=lambda s: distance(s, loc), reverse=True)
     return random.choice(ranked[:5])
 
 
-def compute_g(location, target):
-    """From our position+heading and the target position, return G params (fwd_mm, left_mm).
-
-    Robot-relative, standard right-handed: forward along the heading, left = +90deg
-    CCW. The firmware beginGoTo converts this back to a world target with the SAME
-    standard rotation (world = pose + R(h)*(fwd,left)), and hop() SIs the firmware
-    heading to this H, so the two rotations cancel and the robot drives to (tx,ty)
-    exactly. (Do NOT negate the lateral — that reflects the target across H.)"""
-    x, y, H = location
-    tx, ty = target[1], target[2]
-    dx, dy = tx - x, ty - y
+def compute_g(loc: tuple[float, float, float], target: tuple) -> tuple[float, float]:
+    """Return robot-relative (fwd_mm, left_mm). Lateral NEGATED (see module docstring)."""
+    x, y, H = loc
+    dx, dy = target[1] - x, target[2] - y
     fwd = dx * math.cos(H) + dy * math.sin(H)
-    lft = -dx * math.sin(H) + dy * math.cos(H)
+    lft = dx * math.sin(H) - dy * math.cos(H)
     return (fwd * 10.0, lft * 10.0)
 
 
-# Accumulated tracks across the whole tour, redrawn each hop.
-all_odo = []
-all_cam = []
+# ---------------------------------------------------------------------------
+# Camera helpers
+# ---------------------------------------------------------------------------
+
+def select_location(field, n: int = 5) -> tuple[float, float, float]:
+    """Averaged camera pose (x_cm, y_cm, yaw_rad); retries through tag dropouts."""
+    xs, ys, ss, cc = [], [], [], []
+    deadline = time.time() + 4.0
+    while time.time() < deadline and len(xs) < n:
+        tag = field.get_tag(ROBOT_TAG)
+        if tag is not None:
+            xs.append(tag.x)
+            ys.append(tag.y)
+            ss.append(math.sin(tag.yaw))
+            cc.append(math.cos(tag.yaw))
+        time.sleep(0.04)
+    if not xs:
+        raise RuntimeError("robot tag 100 not visible to camera")
+    return (
+        sum(xs) / len(xs),
+        sum(ys) / len(ys),
+        math.atan2(sum(ss) / len(ss), sum(cc) / len(cc)),
+    )
 
 
-def hop():
-    """One place-to-place move: locate, pick a far target, drive, collect + draw tracks."""
-    loc = select_location()
-    target = select_target(loc)
-    fwd, lft = compute_g(loc, target)
-    dist = distance(target, loc)
-    print(f"at ({loc[0]:+5.0f},{loc[1]:+5.0f}) H={math.degrees(loc[2]) % 360:3.0f}  "
-          f"-> {target[0]:22s} ({target[1]:+5.0f},{target[2]:+5.0f})  "
-          f"G {fwd:.0f} {lft:.0f} {SPEED}")
+# ---------------------------------------------------------------------------
+# Per-leg on_tick callback
+# ---------------------------------------------------------------------------
 
-    # Anchor the firmware odometry to the camera world pose so the telemetry
-    # track is in the same frame as the camera track.
-    send(f"SI {loc[0] * 10:.0f} {loc[1] * 10:.0f} {math.degrees(loc[2]) * 100:.0f}")
-    time.sleep(0.2); p.read(8192)
+def _make_on_tick(field, robot_ref_holder: list):
+    """Return an on_tick(robot) callback that records tracks and checks bounds.
 
-    send(f"G {fwd:.0f} {lft:.0f} {SPEED}")
-    response, camera_poses = keepalive_until_done(dist * 10 / SPEED + 6.0)
-    send("X"); time.sleep(0.3); p.read(8192)
+    robot_ref_holder is a one-element list so the closure can update
+    the reference (Python closures bind names, not values).
+    """
+    def on_tick(robot) -> bool | None:
+        # 1. Camera sample for track.
+        tag = field.get_tag(ROBOT_TAG)
+        if tag is not None:
+            CAM_TRACK.append((tag.x, tag.y))
+            # 2. Bounds check — return False to abort.
+            if not in_bounds(tag.x, tag.y):
+                return False
 
-    odometry = extract_telemetry(response)
-    all_odo.extend(odometry)
-    all_cam.extend(camera_poses)
-    draw_paths(all_odo, all_cam)
+        # 3. Odometry track from robot state (x_mm / 10 → cm).
+        pose = robot.state.pose
+        ODO_TRACK.append((pose.x / 10.0, pose.y / 10.0))
 
-    final = select_location()
-    err = distance(target, final)
-    print(f"   arrived ({final[0]:+5.0f},{final[1]:+5.0f})  err={err:.1f}cm  "
-          f"odo={len(odometry)}pts cam={len(camera_poses)}pts")
+        # 4. Draw both tracks.
+        if len(CAM_TRACK) >= 2:
+            field.add_path(
+                "camera", CAM_TRACK,
+                symbol="filled_circle",
+                color=(0, 200, 255),
+                size_cm=1.2,
+            )
+        if len(ODO_TRACK) >= 2:
+            field.add_path(
+                "odometry", ODO_TRACK,
+                symbol="x",
+                color=(255, 235, 130),
+                size_cm=0.8,
+            )
+        return None  # continue
+
+    return on_tick
 
 
-try:
-    for c in ("!GO", "X", "STOP", "SET sTimeout=60000", "SET turnGate=35",
-              f"STREAM {STREAM_MS}"):
-        send(c); time.sleep(0.4); p.read(8192)
-    for i in range(5):
-        print(f"=== hop {i + 1}/5 ===")
-        hop()
-        time.sleep(0.4)
-finally:
-    send("STREAM 0"); send("X"); p.close(); dc.close()
-print("tour done")
+# ---------------------------------------------------------------------------
+# Hop
+# ---------------------------------------------------------------------------
+
+def hop(i: int, field, robot, slots: list[tuple]) -> None:
+    """Execute one hop: pick a target, drive to it with camera-anchored G arcs."""
+    target = select_target(slots, select_location(field))
+    print(f"=== hop {i}/{HOPS}: {target[0]} ({target[1]:+.0f},{target[2]:+.0f}) ===")
+
+    on_tick = _make_on_tick(field, [robot])
+
+    for attempt in range(MAX_G_PER_LEG):
+        loc = select_location(field)
+        d = distance(target, loc)
+        if d <= ARRIVE_CM:
+            break
+        if not in_bounds(loc[0], loc[1]):
+            print("   start out of safe box — stop")
+            break
+
+        fwd, lft = compute_g(loc, target)
+        print(
+            f"   G{attempt + 1}: from ({loc[0]:+.0f},{loc[1]:+.0f}) "
+            f"H={math.degrees(loc[2]) % 360:.0f}  d={d:.0f}cm  "
+            f"G {fwd:.0f} {lft:.0f} {SPEED}"
+        )
+
+        # Anchor OTOS to camera fix.
+        robot.update_world_pose(loc[0], loc[1], loc[2])
+        time.sleep(0.1)
+
+        # Compute timeout: distance at speed + 6 s margin.
+        timeout_s = d * 10.0 / SPEED + 6.0
+
+        _el, _er, outcome = robot.go_to(
+            round(fwd), round(lft), SPEED,
+            on_tick=on_tick,
+            timeout_s=timeout_s,
+        )
+
+        # Flush remaining path data after the leg.
+        if len(CAM_TRACK) >= 2:
+            field.add_path(
+                "camera", CAM_TRACK,
+                symbol="filled_circle",
+                color=(0, 200, 255),
+                size_cm=1.2,
+            )
+        if len(ODO_TRACK) >= 2:
+            field.add_path(
+                "odometry", ODO_TRACK,
+                symbol="x",
+                color=(255, 235, 130),
+                size_cm=0.8,
+            )
+
+        if outcome == "aborted":
+            print("   [BOUNDS-ABORT]")
+            break
+
+    final = select_location(field)
+    print(
+        f"   reached ({final[0]:+.0f},{final[1]:+.0f})  "
+        f"err={distance(target, final):.1f}cm"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Entry point
+# ---------------------------------------------------------------------------
+
+def main(argv=None) -> int:
+    ap = argparse.ArgumentParser(description="Playfield random tour demo")
+    ap.add_argument("--port", default=None,
+                    help="Serial port (relay USB, e.g. /dev/cu.usbmodem2121402). "
+                         "Auto-detected if omitted.")
+    ap.add_argument("--hops", type=int, default=HOPS)
+    ap.add_argument("--speed", type=int, default=SPEED)
+    args = ap.parse_args(argv)
+
+    # Defer all hardware imports until inside main() so that
+    # 'import playfield_random_tour' and ast.parse work without hardware.
+    from robot_radio.field.playfield import Playfield
+    from robot_radio.robot.connection import make_robot
+
+    # Build a minimal args-like object for make_robot's port resolution.
+    class _Args:
+        port = args.port
+        verbose = False
+
+    robot, conn, _ = make_robot(
+        port=args.port,
+        mode=None,
+        verbose=False,
+        args=_Args(),
+    )
+
+    field = Playfield.open()
+
+    # Load slot list from the playfield.
+    slots: list[tuple] = []
+    for rec in field._playfield_data.get("rectangles", []):
+        slots.append((rec["slug"], float(rec["x"]), float(rec["y"])))
+    if not slots:
+        print("No rectangles found in playfield.json — check playfield config.",
+              file=sys.stderr)
+        conn.disconnect()
+        field.close()
+        return 1
+
+    # Push config to firmware.
+    robot.set_config(sTimeout=60000, turnGate=35, alphaYaw=0, yawRateMax=60)
+
+    # Clear any stale overlay paths.
+    field.clear_paths()
+
+    try:
+        for i in range(1, args.hops + 1):
+            hop(i, field, robot, slots)
+            time.sleep(0.3)
+    finally:
+        robot.stop()
+        try:
+            conn.disconnect()
+        except Exception:
+            pass
+        field.close()
+
+    print("tour done")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
