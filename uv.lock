@@ -1810,7 +1810,7 @@ wheels = [
 
 [[package]]
 name = "microbit-v2-samples-tools"
-version = "0.20260613.2"
+version = "0.20260613.3"
 source = { virtual = "." }
 dependencies = [
     { name = "ipykernel" },
