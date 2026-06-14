@@ -1,7 +1,7 @@
 ---
 id: '037'
 title: Consolidate tests into one tree; target-switchable tools (sim/bench/production)
-status: ticketing
+status: done
 branch: sprint/037-consolidate-tests-into-one-tree-target-switchable-tools-sim-bench-production
 use-cases:
 - SUC-001

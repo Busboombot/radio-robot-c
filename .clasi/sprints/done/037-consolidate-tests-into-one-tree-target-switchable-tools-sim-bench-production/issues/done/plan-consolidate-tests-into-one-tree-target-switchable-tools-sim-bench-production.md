@@ -1,8 +1,9 @@
 ---
-status: in-progress
+status: done
 sprint: '037'
 tickets:
-- 037-001
+- 037-004
+- 037-005
 ---
 
 # Plan: Consolidate tests into one tree + target-switchable tools (sim / bench / production)

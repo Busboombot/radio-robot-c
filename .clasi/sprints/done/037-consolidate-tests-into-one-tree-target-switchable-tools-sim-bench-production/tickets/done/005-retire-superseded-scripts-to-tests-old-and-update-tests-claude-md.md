@@ -1,7 +1,7 @@
 ---
 id: '005'
 title: Retire superseded scripts to tests/old/ and update tests/CLAUDE.md
-status: open
+status: done
 use-cases:
 - SUC-009
 depends-on:
