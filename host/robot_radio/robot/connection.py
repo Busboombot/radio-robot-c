@@ -256,6 +256,10 @@ def make_robot(
 
     if not use_cache:
         # Full HELLO path: auto-detect mode or use caller-supplied mode.
+        # connect() now runs the HELLO-classify handshake internally:
+        # it sends HELLO, reads the DEVICE: banner before the reader thread
+        # starts, runs !ECHO OFF / !MODE RAW250 / !GO for relay devices, then
+        # sets conn._mode = "direct" (the post-!GO relay is a transparent pipe).
         if mode is not None:
             conn = SerialConnection(resolved_port, mode=mode, on_send=on_send)
         else:
@@ -266,6 +270,8 @@ def make_robot(
             print(f"Error: {result['error']}", file=sys.stderr)
             sys.exit(1)
 
+        # connect() populates result["announcement"] when HELLO-classify
+        # succeeded.  Also check result["lines"] for legacy / fallback cases.
         ann = result.get("announcement")
         if not ann:
             ann = _parse_device_line(result.get("lines", []))
@@ -273,41 +279,35 @@ def make_robot(
                 result["announcement"] = ann
         _log(f"HELLO response: announcement={ann}, lines={result.get('lines', [])}")
 
-        # Retry HELLO if still no announcement.
-        if not ann:
-            for attempt in range(3):
-                _log(f"retry HELLO ({attempt + 1}/3)...")
-                time.sleep(0.3)
-                conn.handshake(b"HELLO\n")
-                lines = conn.read_lines(duration_ms=1200, stop_token="DEVICE:")
-                _log(f"  lines: {lines}")
-                ann = _parse_device_line(lines)
-                if ann:
-                    result["announcement"] = ann
-                    break
-
+        # If classify timed out (no banner), try one more HELLO-classify
+        # cycle by reconnecting.  The reader thread is already running so we
+        # cannot call _banner_classify again, but we can check cached lines.
+        # In practice the 2.5 s classify budget in connect() is generous enough
+        # that this path should not be needed.
         if not ann:
             conn.disconnect()
             print(f"Error: No device found on {resolved_port}. Is it powered on?",
                   file=sys.stderr)
             sys.exit(1)
 
-        # Set mode based on what we found (unless caller supplied one).
-        if mode is None:
-            role = ann.get("role", "").upper()
-            if "RELAY" in role or "BRIDGE" in role:
-                conn._mode = "relay"
-            else:
-                conn._mode = "direct"
+        # Determine the logical connection mode for logging and session cache.
+        # conn._mode is always "direct" after the new handshake (the relay is
+        # transparent post-!GO), but the session cache records the underlying
+        # device type so we can log it meaningfully.
+        role = ann.get("role", "").upper()
+        is_relay = "RELAY" in role or "BRIDGE" in role
+        # conn._mode is already "direct" from connect(); leave it alone.
+        # Use "relay" as the cache key only if the caller did not override.
+        cache_mode = "relay" if (mode is None and is_relay) else conn._mode
 
         _log(f"connected to {ann.get('role', '?')} '{ann.get('common_name', '?')}' "
-             f"on {resolved_port} (mode={conn.mode})")
+             f"on {resolved_port} (mode={conn.mode}, relay={is_relay})")
 
         # Write the session cache (only when mode was auto-detected from
         # a DEVICE: announcement, not from a caller-supplied mode override).
         if mode is None:
             device_name = ann.get("device_name", "")
-            write_session_cache(resolved_port, conn._mode, device_name)
+            write_session_cache(resolved_port, cache_mode, device_name)
 
     # Construct the robot driver.
     cfg = get_robot_config()

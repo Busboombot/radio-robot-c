@@ -19,12 +19,51 @@ demultiplexes every incoming line into one of three queues:
 Nothing outside ``SerialConnection`` reads from ``_ser`` directly.  The only
 intentional internal ``_ser`` access points are:
 
+- ``_banner_classify`` — ``write()`` / ``readline()`` during the pre-reader
+                         HELLO classify handshake (before ``connect()`` returns).
+- ``_relay_handshake``  — ``write()`` / ``readline()`` during the relay
+                         ``!ECHO OFF`` / ``!MODE RAW250`` / ``!GO`` sequence,
+                         also before the reader thread starts.
 - ``_poll_ready``    — ``reset_input_buffer()``, ``write()``, ``readline()``
                        before the reader thread starts.
 - ``_keepalive_loop`` — ``write()`` / ``flush()`` under ``_write_lock``.
 - ``handshake()``   — ``write()`` / ``flush()`` under ``_write_lock``, before
                        the reader thread starts (device-detection phase only).
 - ``_reader_loop``  — sole owner of ``readline()`` after ``connect()`` returns.
+
+Connection handshake (sprint 036, ticket 007):
+----------------------------------------------
+``connect()`` now performs a HELLO-classify step before the reader thread starts:
+
+1. The port is opened **with DTR asserted** (pyserial default).  DTR pulses on
+   open-time close/reopen, resetting any micro:bit on the port and causing it to
+   emit a ``DEVICE:`` announcement banner.  There is no ``dtr = False`` override.
+
+2. ``_banner_classify()`` sends ``HELLO`` repeatedly (up to ~10 times, ~200 ms
+   apart) and reads each response until it captures a ``DEVICE:<ROLE>:...`` line.
+   Parsed ROLE determines the connection mode:
+
+   - ``RADIOBRIDGE`` → relay; proceed to ``_relay_handshake()``.
+   - ``NEZHA2``      → direct USB robot; skip to readiness poll.
+
+3. ``_relay_handshake()`` sends ``!ECHO OFF``, ``!MODE RAW250``, then ``!GO``
+   and waits for ``# entering data plane``.  After ``!GO`` the relay is a
+   transparent byte pipe.  All subsequent traffic is **plain** (no ``>`` prefix).
+
+4. After the handshake, ``connect()`` proceeds with the PING readiness poll, then
+   starts the keepalive daemon and reader thread as before.  From the reader
+   thread's perspective the relay connection is indistinguishable from direct: the
+   same plain send, same ``+`` keepalive, same ``#<id>`` corr-id.
+
+Radio channel note:
+   The relay's channel, group, and mode persist in its flash.  Matching those
+   values between the relay and the robot is a bench-setup concern, not managed
+   here.  ``_banner_classify()`` queries ``?`` and logs the relay's reported
+   channel/group/mode so mismatches are visible in verbose output.
+
+Reader loop:
+   Lines beginning with ``#`` are relay status/comment lines.  The reader loop
+   drops them silently; they do not generate protocol errors.
 """
 
 import glob
@@ -62,6 +101,14 @@ _POLL_TOTAL_NORMAL_S = 1.5
 # Shorter to preserve the cache speedup; device should already be running.
 _POLL_TOTAL_FAST_S = 0.6
 
+# HELLO-classify constants (sprint 036, ticket 007).
+# Per-attempt delay between HELLO sends in the banner-classify loop.
+_HELLO_ATTEMPT_DELAY_S = 0.20
+# Total timeout budget for the HELLO-classify step.
+_HELLO_CLASSIFY_TIMEOUT_S = 2.5
+# Timeout for each relay command during the !GO handshake sequence.
+_RELAY_CMD_TIMEOUT_S = 1.0
+
 # Bounded TLM queue depth: if the consumer is slow, oldest frames are dropped.
 _TLM_QUEUE_DEPTH = 256
 
@@ -85,6 +132,27 @@ def _disable_hupcl(ser) -> None:
         termios.tcsetattr(fd, termios.TCSANOW, attrs)
     except Exception:
         pass
+
+
+def _parse_device_banner(line: str) -> dict[str, Any] | None:
+    """Parse a ``DEVICE:<ROLE>:<common>:<name>:<serial>`` announcement line.
+
+    Tolerant of garbled prefix — locates ``DEVICE:`` anywhere in the line.
+    Returns a dict with ``role``, ``common_name``, ``device_name``,
+    ``serial_field`` keys, or ``None`` if no ``DEVICE:`` segment is found.
+    """
+    idx = line.find("DEVICE:")
+    if idx < 0:
+        return None
+    parts = line[idx:].split(":")
+    if len(parts) < 5:
+        return None
+    return {
+        "role": parts[1],
+        "common_name": parts[2],
+        "device_name": parts[3],
+        "serial_field": ":".join(parts[4:]),
+    }
 
 
 class SerialConnection:
@@ -149,29 +217,53 @@ class SerialConnection:
         return self._mode
 
     def connect(self, skip_ping: bool = False, reset: bool = False) -> dict[str, Any]:
-        """Open port, send PING (v2), confirm readiness, start reader thread.
+        """Open port, classify device, run handshake, start reader thread.
 
-        After opening the serial port the device is not immediately ready —
-        the first command's reply is reliably lost if we simply sleep.  Both
-        paths use an active readiness poll: repeatedly send PING with a short
-        per-attempt read window until a valid response arrives or the total
-        timeout expires.
+        Handshake algorithm (sprint 036, ticket 007):
 
-        The background reader thread is started after ``_poll_ready`` returns
-        and after ``start_keepalive()`` is called.
+        1. Open the port with **DTR asserted** (pyserial default — no
+           ``dtr = False`` override).  Opening the port toggles DTR, which
+           resets any micro:bit (via the DAPLink) into a clean command plane.
+           The relay then emits a ``DEVICE:`` boot announcement.  Without a
+           reset (no DTR pulse) there is no boot banner; the classify step sends
+           ``HELLO`` to request one explicitly.
 
-        In relay mode (self._mode == "relay"), the relay is transparent and
-        the PING is forwarded to the robot.  The relay self-identifies via its
-        own messages (e.g. "RX:" or "TX:" prefixes); we do not parse those here.
+        2. ``_banner_classify()`` sends ``HELLO`` repeatedly (up to the
+           ``_HELLO_CLASSIFY_TIMEOUT_S`` budget) until a ``DEVICE:<ROLE>:...``
+           line is captured.  The ``DEVICE:`` line is read RAW (before the
+           reader thread starts) so it is never silently dropped by the reader.
+           Returns ``(role, banner_line)``.
 
-        If ``self._mode`` is None on entry, it defaults to "relay" (the normal
-        deployment: host -> relay -> robot).  Set ``mode="direct"`` on
-        construction for a direct USB connection.
+        3a. If ROLE is ``RADIOBRIDGE`` (relay): ``_relay_handshake()`` sends
+            ``?`` (log channel/group/mode), ``!ECHO OFF``, ``!MODE RAW250``,
+            then ``!GO``.  After ``# entering data plane`` the relay is a
+            transparent byte pipe.  ``self._mode`` is set to ``"direct"``
+            (indistinguishable from a direct robot connection from the reader's
+            perspective).
+
+        3b. If ROLE is ``NEZHA2`` (direct robot): no ``!GO`` needed.
+            ``self._mode`` is set to ``"direct"``.
+
+        After the handshake, ``connect()`` proceeds with the PING readiness
+        poll, starts the keepalive daemon, then the reader thread.
+
+        Notes on HUPCL and DTR:
+            On macOS/Linux close() pulses DTR via the HUPCL termios flag.
+            For the relay this is desirable (next open will reset it again).
+            For a direct robot connection it is undesirable (SET state lost).
+            The ``reset`` parameter and ``_disable_hupcl`` control this.
+
+        Radio channel note:
+            Channel/group matching between relay and robot is a bench-setup
+            concern.  ``_relay_handshake()`` queries and logs relay config via
+            ``?`` so mismatches are visible to the operator.
 
         Args:
-            skip_ping: When True (cache-hit fast path), skip the readiness poll
-                and use the cached ``self._mode``.  The return dict will have
-                ``lines=[]`` and ``pinged=False``.
+            skip_ping: When True (cache-hit fast path), skip the HELLO
+                classify and readiness poll; use the cached ``self._mode``.
+                The return dict will have ``lines=[]`` and ``pinged=False``.
+            reset: When True, do NOT disable HUPCL — let close() pulse DTR and
+                reset the device on exit.  Default False (preserve device state).
         """
         if self.is_open:
             if self._ser.port == self._port:
@@ -179,32 +271,35 @@ class SerialConnection:
             self._ser.close()
 
         try:
-            # Open the port WITHOUT toggling DTR.  On macOS the default
-            # pyserial behaviour pulses DTR low on open() and again on close(),
-            # which the micro:bit's DAPLink interface interprets as a target
-            # reset request.  Opening with dsrdtr=False and explicitly holding
-            # DTR/RTS at their current level avoids resetting the chip every
-            # time a CLI invocation connects or exits.
+            # Open the port with DTR asserted (pyserial default).
+            #
+            # Historical note: an earlier version of this code forced
+            # ``dtr=False`` to avoid resetting the device on open.  That
+            # worked for direct robot connections where the device was already
+            # running, but prevented the relay from emitting its DEVICE: banner
+            # (no DTR pulse → no reset → no boot announcement).  The banner is
+            # required for HELLO-classify.  DTR assertion is the correct default
+            # for the relay path; for direct connections it merely resets the
+            # robot into a clean state, which is benign.
             self._ser = serial.Serial(baudrate=self._baud, timeout=READ_TIMEOUT_S,
                                       dsrdtr=False, rtscts=False)
             self._ser.port = self._port
-            if not reset:
-                self._ser.dtr = False   # hold DTR de-asserted → no reset on open
-                self._ser.rts = False
+            # Do NOT force dtr=False here.  Let DTR stay asserted (the
+            # dsrdtr=False kwarg above disables *hardware* flow-control, not
+            # the DTR signal itself; pyserial defaults DTR to True when opening).
             self._ser.open()
             if not reset:
-                # On macOS/Linux, close() pulses DTR via the HUPCL termios flag,
-                # which the DAPLink reads as a target reset — so every CLI command
-                # would reboot the robot on exit (losing SET state, laser, etc.).
-                # Clear HUPCL so close() leaves the line alone. Pass reset=True
-                # (e.g. `--reset`) to deliberately reboot the robot instead.
+                # On macOS/Linux, close() pulses DTR via the HUPCL termios
+                # flag, which the DAPLink reads as a target reset.  Clear HUPCL
+                # so that close() leaves the line alone and does not reboot the
+                # device on CLI exit.  Pass reset=True to deliberately reboot.
                 _disable_hupcl(self._ser)
 
-            # Default mode to relay if not set.
-            if self._mode is None:
-                self._mode = "relay"
-
             if skip_ping:
+                # Fast cache-hit path: skip HELLO classify and PING poll.
+                # Mode was set by the caller from the session cache.
+                if self._mode is None:
+                    self._mode = "direct"
                 self.start_keepalive()
                 self._start_reader()
                 return {
@@ -215,22 +310,164 @@ class SerialConnection:
                     "pinged": False,
                 }
 
+            # HELLO-classify: identify device role BEFORE starting the reader.
+            # All I/O here is raw (_ser direct); the reader thread is not yet
+            # running so DEVICE: lines cannot be silently dropped by it.
+            announce: dict[str, Any] | None = None
+            if self._mode is None:
+                role, banner_line = self._banner_classify(
+                    timeout_s=_HELLO_CLASSIFY_TIMEOUT_S)
+                if banner_line:
+                    announce = _parse_device_banner(banner_line)
+                if role == "relay":
+                    relay_info = self._relay_handshake(timeout_s=_RELAY_CMD_TIMEOUT_S)
+                    self._mode = "direct"  # post-!GO: transparent plain pipe
+                else:
+                    # NEZHA2 or unknown role → treat as direct robot.
+                    self._mode = "direct"
+            else:
+                # Caller supplied an explicit mode; skip classify.
+                role = "relay" if self._mode == "relay" else "direct"
+
             # Normal path: active readiness poll via PING.
             # _poll_ready uses _ser directly (reader not running yet).
             lines = self._poll_ready(total_timeout_s=_POLL_TOTAL_NORMAL_S)
 
             self.start_keepalive()
             self._start_reader()
-            return {
+
+            result: dict[str, Any] = {
                 "status": "connected",
                 "port": self._port,
                 "mode": self._mode,
                 "lines": lines,
                 "pinged": bool(lines),
             }
+            if announce:
+                result["announcement"] = announce
+            return result
+
         except Exception as exc:
             self._ser = None
             return {"error": str(exc), "port": self._port}
+
+    # ── HELLO-classify and relay handshake (sprint 036, ticket 007) ─────────
+
+    def _banner_classify(
+        self, timeout_s: float = _HELLO_CLASSIFY_TIMEOUT_S
+    ) -> tuple[str, str]:
+        """Send HELLO until a DEVICE: banner arrives; return (role, banner_line).
+
+        Operates on ``_ser`` directly (before the reader thread starts).
+        Sends ``HELLO`` up to once per ``_HELLO_ATTEMPT_DELAY_S`` and reads
+        until ``timeout_s`` is exhausted.
+
+        Returns:
+            (role, banner_line) where role is ``"relay"`` or ``"direct"``.
+            If no banner is captured within the timeout, returns
+            ``("direct", "")``.
+        """
+        deadline = time.time() + timeout_s
+        next_hello = 0.0  # send immediately on the first iteration
+
+        while time.time() < deadline:
+            now = time.time()
+            if now >= next_hello:
+                try:
+                    self._ser.write(b"HELLO\n")
+                    self._ser.flush()
+                except Exception:
+                    break
+                next_hello = now + _HELLO_ATTEMPT_DELAY_S
+
+            try:
+                raw = self._ser.readline()
+            except Exception:
+                break
+            if not raw:
+                continue
+
+            try:
+                text = raw.decode("utf-8", "ignore").strip()
+            except Exception:
+                continue
+
+            if not text:
+                continue
+
+            # Look for the DEVICE: announcement.
+            idx = text.find("DEVICE:")
+            if idx >= 0:
+                parts = text[idx:].split(":")
+                # DEVICE:<ROLE>:<common_name>:<device_name>:<serial>
+                role_field = parts[1].upper() if len(parts) >= 2 else ""
+                if "RADIOBRIDGE" in role_field or "RADIORELAY" in role_field:
+                    return "relay", text
+                # NEZHA2 or any other robot type → direct
+                return "direct", text
+
+        # Timeout reached without a banner.
+        return "direct", ""
+
+    def _relay_handshake(self, timeout_s: float = _RELAY_CMD_TIMEOUT_S) -> dict[str, Any]:
+        """Run the relay command-plane setup and enter the data plane.
+
+        Sequence (must be done before the reader thread starts):
+          1. ``?``         — query and log channel/group/mode/power.
+          2. ``!ECHO OFF`` — disable transponder echo.
+          3. ``!MODE RAW250`` — select headerless 250-byte framing.
+          4. ``!GO``       — enter the transparent data plane.
+
+        Returns a dict with the relay's reported config (from ``?``) and
+        whether ``# entering data plane`` was seen.
+
+        Operates on ``_ser`` directly.  All relay responses are ``#``-prefixed
+        comment lines which the reader loop would silently drop; we consume them
+        here before the reader starts.
+        """
+        info: dict[str, Any] = {}
+
+        def _send_relay_cmd(cmd_bytes: bytes, ack_fragment: str) -> str:
+            """Send a relay command and wait for a line containing ack_fragment."""
+            try:
+                self._ser.write(cmd_bytes)
+                self._ser.flush()
+            except Exception:
+                return ""
+            deadline = time.time() + timeout_s
+            while time.time() < deadline:
+                try:
+                    raw = self._ser.readline()
+                except Exception:
+                    break
+                if not raw:
+                    continue
+                try:
+                    text = raw.decode("utf-8", "ignore").strip()
+                except Exception:
+                    continue
+                if not text:
+                    continue
+                if ack_fragment in text:
+                    return text
+            return ""
+
+        # Query relay config for logging; result is informational.
+        query_resp = _send_relay_cmd(b"?\n", "channel:")
+        if query_resp:
+            info["relay_config"] = query_resp
+
+        # !ECHO OFF — disable echo (transponder mode off).
+        _send_relay_cmd(b"!ECHO OFF\n", "echo:")
+
+        # !MODE RAW250 — headerless framing (must match robot firmware).
+        _send_relay_cmd(b"!MODE RAW250\n", "mode:")
+
+        # !GO — enter data plane.  Relay replies with "# entering data plane".
+        go_resp = _send_relay_cmd(b"!GO\n", "entering data plane")
+        info["entered_data_plane"] = "entering data plane" in go_resp
+
+        return info
 
     def _start_reader(self) -> None:
         """Start the background reader thread.  Idempotent."""
@@ -263,6 +500,7 @@ class SerialConnection:
         - ``OK``/``ERR``/``CFG`` with ``#<id>`` suffix → ``_reply_queues[id]``
         - ``OK``/``ERR``/``CFG`` with no corr-id → ``_reply_queues[""]``
         - ``OK keepalive`` / lines containing ``keepalive`` → dropped silently
+        - Lines beginning with ``#`` → relay status/comment lines, dropped
         - Anything else → dropped silently
         """
         while not self._reader_stop.is_set():
@@ -286,6 +524,13 @@ class SerialConnection:
 
             # Drop keepalive acks.
             if "keepalive" in text:
+                continue
+
+            # Drop relay comment/status lines (# channel:, # entering data
+            # plane, # echo:, # mode:, # DBG ..., etc.).  These are relay
+            # command-plane responses that should have been consumed during the
+            # pre-reader handshake; any that leak through post-!GO are benign.
+            if text.startswith("#"):
                 continue
 
             if text.startswith("TLM"):
@@ -319,21 +564,22 @@ class SerialConnection:
                 # If no queue is registered for this id, drop silently.
                 continue
 
-            # All other lines: drop silently (relay noise, diagnostics, etc.)
+            # All other lines: drop silently (diagnostics, unknown, etc.)
 
     def _poll_ready(self, total_timeout_s: float = _POLL_TOTAL_NORMAL_S) -> list[str]:
         """Poll PING until the device responds or total_timeout_s is exceeded.
 
-        Sends PING (with relay prefix if in relay mode), reads for
-        _POLL_ATTEMPT_MS, and returns immediately if any non-empty response
-        is received. Retries until total_timeout_s expires.
-        Returns the response lines from the first successful attempt (or []).
+        Sends PING (always plain — after the !GO handshake the relay is a
+        transparent pipe), reads for _POLL_ATTEMPT_MS, and returns immediately
+        if any non-empty response is received. Retries until total_timeout_s
+        expires.  Returns the response lines from the first successful attempt
+        (or []).
 
         This method uses ``_ser`` directly and must only be called before the
         reader thread starts.
         """
         deadline = time.time() + total_timeout_s
-        cmd = b">PING\n" if self._mode == "relay" else b"PING\n"
+        cmd = b"PING\n"
         while time.time() < deadline:
             self._ser.reset_input_buffer()
             self._ser.write(cmd)
@@ -400,7 +646,10 @@ class SerialConnection:
         self._ka_thread = None
 
     def _keepalive_loop(self, period_s: float) -> None:
-        msg = b">+\n" if self._mode == "relay" else b"+\n"
+        # Always plain "+": after !GO the relay is a transparent pipe, and
+        # direct connections were already plain.  The old ">+" relay prefix is
+        # no longer used on any code path.
+        msg = b"+\n"
         while not self._ka_stop.wait(period_s):
             try:
                 if not self.is_open:
@@ -413,17 +662,21 @@ class SerialConnection:
                 break   # port closed / gone — let the robot safety-stop
 
     def send(self, message: str, read_ms: int = 500, stop_token: str | None = "OK") -> dict[str, Any]:
-        """Send command with mode prefix, read and return responses.
+        """Send a plain command, read and return responses.
 
         Appends a ``#<corr_id>`` suffix to the command so the reader thread
         can route the reply to this call's private queue.  Blocks on that
         queue until a reply arrives or ``read_ms + 500 ms`` timeout elapses.
 
+        All commands are sent **plain** (no ``>`` prefix).  After the
+        HELLO-classify / !GO handshake the relay is a transparent byte pipe,
+        so no prefix is needed.  Direct robot connections were always plain.
+
         No ``reset_input_buffer()`` is called — the reader thread is the sole
         owner of the input side of the port.
 
         Args:
-            message: Command string to send (without mode prefix or newline).
+            message: Command string to send (without newline).
             read_ms: Maximum time to wait for the primary reply, in
                 milliseconds.  An extra 500 ms grace is added for queue
                 blocking to account for in-flight bytes.
@@ -442,12 +695,9 @@ class SerialConnection:
             reply_q: queue.Queue = queue.Queue()
             self._reply_queues[corr_id] = reply_q
 
-        # Build command with relay prefix and corr-id suffix.
+        # Build plain command with corr-id suffix.
         corr_suffix = f" #{corr_id}"
-        if self._mode == "relay":
-            cmd = f">{message}{corr_suffix}\n"
-        else:
-            cmd = f"{message}{corr_suffix}\n"
+        cmd = f"{message}{corr_suffix}\n"
 
         if self.on_send:
             self.on_send(cmd.rstrip())
@@ -484,10 +734,13 @@ class SerialConnection:
         return {"sent": message, "mode": self._mode, "responses": lines}
 
     def send_fast(self, message: str) -> None:
-        """Fire-and-forget: send with mode prefix, no response reading."""
+        """Fire-and-forget: send plain command, no response reading.
+
+        Always plain (no ``>`` prefix) — after !GO the relay is transparent.
+        """
         if not self.is_open:
             raise ConnectionError("Not connected. Call connect first.")
-        cmd = f">{message}\n" if self._mode == "relay" else f"{message}\n"
+        cmd = f"{message}\n"
 
         if self.on_send:
             self.on_send(cmd.rstrip())
