@@ -1,7 +1,7 @@
 ---
 id: '003'
 title: Port velocity_chart and playfield_tour to tests/tools/ using make_target
-status: open
+status: done
 use-cases:
 - SUC-007
 - SUC-008
@@ -83,13 +83,13 @@ Model the `drive_leg` pattern from `playfield_tour_drive.py`: it separates the l
 
 ## Acceptance Criteria
 
-- [ ] `tests/tools/` directory exists with `velocity_chart.py` and `playfield_tour.py`.
-- [ ] `python3 tests/tools/velocity_chart.py --target sim --full-speed` completes without error (sim target, no hardware).
-- [ ] `python3 tests/tools/playfield_tour.py --target sim --full-speed` drives the sim through at least two waypoints from `playfield.json` without error.
-- [ ] `--real-time` flag is accepted and passed to `make_target`.
-- [ ] Superseded tour variants are moved to `tests/old/`.
-- [ ] `tests/bench/velocity_chart.py` is moved to `tests/old/velocity_chart_bench.py`.
-- [ ] No target-switching branches (`if target == "sim": ...`) exist in either tool.
+- [x] `tests/tools/` directory exists with `velocity_chart.py` and `playfield_tour.py`.
+- [x] `python3 tests/tools/velocity_chart.py --target sim --full-speed` completes without error (sim target, no hardware).
+- [x] `python3 tests/tools/playfield_tour.py --target sim --full-speed` drives the sim through at least two waypoints from `playfield.json` without error.
+- [x] `--real-time` flag is accepted and passed to `make_target`.
+- [ ] Superseded tour variants are moved to `tests/old/`. **DEFERRED to ticket 005 (retire superseded files).**
+- [ ] `tests/bench/velocity_chart.py` is moved to `tests/old/velocity_chart_bench.py`. **DEFERRED to ticket 005 (retire superseded files).**
+- [x] No target-switching branches (`if target == "sim": ...`) exist in either tool.
 
 ## Testing Plan
 
