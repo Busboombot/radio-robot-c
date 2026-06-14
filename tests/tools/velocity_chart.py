@@ -111,6 +111,15 @@ def main(argv: list[str] | None = None) -> int:
         result = tr.robot.send(f"SET {k}={v}", 300)
         print(f"  SET {kv} -> {result}")
 
+    # Clear any encoder I2C wedge so per-wheel velocity reads correctly on
+    # bench/production: the encoders can boot frozen at 0 until a ZERO enc
+    # resets them, which would make the velocity panel read flat 0 even while
+    # the robot drives.  Harmless on sim (encoders start at 0 anyway).
+    try:
+        tr.robot.zero_encoders()
+    except Exception:
+        pass
+
     # Build the dashboard (lazy matplotlib — deferred until show()).
     panels = [
         ("Wheel velocity (mm/s)", "mm/s", ["vL", "vR"]),
